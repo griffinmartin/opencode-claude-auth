@@ -1,9 +1,31 @@
 import type { Plugin, AuthHook } from "@opencode-ai/plugin"
 import { execSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
+import { homedir } from "node:os"
 import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
+
+function clearOpencodeAuth(): void {
+  const authPaths = [
+    join(homedir(), ".local", "share", "opencode", "auth.json"),
+    join(process.env.APPDATA ?? homedir(), "opencode", "auth.json"),
+    join(homedir(), ".opencode", "auth.json"),
+  ]
+
+  for (const path of authPaths) {
+    try {
+      if (existsSync(path)) {
+        const raw = readFileSync(path, "utf-8")
+        const auth = JSON.parse(raw)
+        delete auth.anthropic
+        writeFileSync(path, JSON.stringify(auth), "utf-8")
+      }
+    } catch {
+      // Non-fatal: may not have write permissions
+    }
+  }
+}
 
 function refreshViaCli(): void {
   try {
@@ -70,6 +92,8 @@ const plugin: Plugin = async (input) => {
   const auth: AuthHook = {
     provider: "anthropic",
     loader: async (_getAuth, _provider) => {
+      clearOpencodeAuth()
+
       const initialCreds = readClaudeCredentials()
       if (!initialCreds) {
         throw new Error(
