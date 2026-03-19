@@ -16,5 +16,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: googleapis/release-please-action@v4
+        id: release-please
         with:
           release-type: node
+
+      - name: Convert lightweight tag to annotated
+        if: steps.release-please.outputs.releases_created == 'true'
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          git tag -d "$TAG"
+          git push origin :refs/tags/"$TAG"
+          git tag -a "$TAG" -m "Release $TAG" ${{ github.sha }}
+          git push origin "$TAG"
