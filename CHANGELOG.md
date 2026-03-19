@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.2.0...v0.2.1) (2026-03-19)
+
+
+### Bug Fixes
+
+* clear anthropic entry from auth.json before setting credentials ([#8](https://github.com/griffinmartin/opencode-claude-auth/issues/8)) ([1851524](https://github.com/griffinmartin/opencode-claude-auth/commit/18515249415fa7ca6544b11306ed039f44d35eb7))
+
 ## [0.2.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.1.0...v0.2.0) (2026-03-19)
 
 
