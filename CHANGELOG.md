@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.2.1...v0.2.2) (2026-03-19)
+
+
+### Bug Fixes
+
+* convert lightweight tags to annotated tags after release ([#10](https://github.com/griffinmartin/opencode-claude-auth/issues/10)) ([7b21f8a](https://github.com/griffinmartin/opencode-claude-auth/commit/7b21f8a64ae001cde16127f93491049b1d9cb9b1))
+
 ## [0.2.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.2.0...v0.2.1) (2026-03-19)
 
 
