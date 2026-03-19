@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.2.2...v0.2.3) (2026-03-19)
+
+
+### Bug Fixes
+
+* fetch tags in checkout and script for annotated tag conversion ([#12](https://github.com/griffinmartin/opencode-claude-auth/issues/12)) ([7a56103](https://github.com/griffinmartin/opencode-claude-auth/commit/7a561031bd8cd44ea75967a64a9881495da4e1a1))
+
 ## [0.2.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.2.1...v0.2.2) (2026-03-19)
 
 
