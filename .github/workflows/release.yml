@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: googleapis/release-please-action@v4
         id: release-please
@@ -23,6 +25,7 @@ jobs:
       - name: Convert lightweight tag to annotated
         if: steps.release-please.outputs.releases_created == 'true'
         run: |
+          git fetch --tags
           TAG=$(git describe --tags --abbrev=0)
           git tag -d "$TAG"
           git push origin :refs/tags/"$TAG"
