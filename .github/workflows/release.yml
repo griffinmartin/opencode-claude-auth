@@ -9,6 +9,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  id-token: write
 
 jobs:
   release:
@@ -28,7 +29,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
 
-      - name: Convert lightweight tag to annotated
+      - name: Convert lightweight tag to annotated and publish
         if: steps.release-please.outputs.releases_created == 'true'
         run: |
           git fetch --tags
@@ -37,3 +38,20 @@ jobs:
           git push origin :refs/tags/"$TAG"
           git tag -a "$TAG" -m "Release $TAG" ${{ github.sha }}
           git push origin "$TAG"
+
+      - uses: actions/setup-node@v4
+        if: steps.release-please.outputs.releases_created == 'true'
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+        if: steps.release-please.outputs.releases_created == 'true'
+
+      - run: npm run build
+        if: steps.release-please.outputs.releases_created == 'true'
+
+      - run: npm publish --access public --provenance
+        if: steps.release-please.outputs.releases_created == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
