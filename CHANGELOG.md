@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.0...v0.5.1) (2026-03-19)
+
+
+### Bug Fixes
+
+* combine release and npm publish in single workflow ([#19](https://github.com/griffinmartin/opencode-claude-auth/issues/19)) ([e36ae44](https://github.com/griffinmartin/opencode-claude-auth/commit/e36ae44c85da4e91f6d1e45edb94805add4a1ff9))
+
 ## [0.5.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.4.0...v0.5.0) (2026-03-19)
 
 
