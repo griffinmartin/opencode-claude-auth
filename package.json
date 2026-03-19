@@ -1,5 +1,5 @@
 {
-  "name": "@griffinmartin/opencode-claude-auth",
+  "name": "opencode-claude-auth",
   "version": "0.1.0",
   "description": "OpenCode plugin that uses your Claude Code credentials — no separate login needed.",
   "main": "dist/index.js",
@@ -10,9 +10,6 @@
     "dist",
     "installation.md"
   ],
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
   "scripts": {
     "build": "tsc && cp src/anthropic-prompt.txt dist/",
     "test": "node --test --experimental-strip-types src/**/*.test.ts",
