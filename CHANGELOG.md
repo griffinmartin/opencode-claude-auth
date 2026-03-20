@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.7](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.6...v0.5.7) (2026-03-20)
+
+
+### Bug Fixes
+
+* write auth.json to both Windows paths to cover all install methods ([#41](https://github.com/griffinmartin/opencode-claude-auth/issues/41)) ([a2c585a](https://github.com/griffinmartin/opencode-claude-auth/commit/a2c585a8a0ebfb7b766be19f51c39294990e11b9)), closes [#33](https://github.com/griffinmartin/opencode-claude-auth/issues/33)
+
+## [0.5.6](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.5...v0.5.6) (2026-03-20)
+
+
+### Bug Fixes
+
+* use stable haiku alias for CLI token refresh ([#35](https://github.com/griffinmartin/opencode-claude-auth/issues/35)) ([d284762](https://github.com/griffinmartin/opencode-claude-auth/commit/d2847621bd315b2d7f5d2ae8fba8009ee6853781))
+
 ## [0.5.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.4...v0.5.5) (2026-03-20)
 
 

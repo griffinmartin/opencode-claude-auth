@@ -8,7 +8,7 @@ OpenCode plugin that uses your existing Claude Code credentials — no separate 
 
 ## How it works
 
-Claude Code stores OAuth tokens in the macOS Keychain (or `~/.claude/.credentials.json` on other platforms). This plugin reads those tokens and writes them to OpenCode's `~/.local/share/opencode/auth.json` (`%LOCALAPPDATA%\opencode\auth.json` on Windows), so you don't need to log in twice. It re-syncs every 5 minutes to pick up token refreshes. If a token is near expiry, it runs the Claude CLI to trigger a refresh.
+Claude Code stores OAuth tokens in the macOS Keychain (or `~/.claude/.credentials.json` on other platforms). This plugin reads those tokens and writes them to OpenCode's `~/.local/share/opencode/auth.json` (on Windows, it writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json` to cover all installation methods), so you don't need to log in twice. It re-syncs every 5 minutes to pick up token refreshes. If a token is near expiry, it runs the Claude CLI to trigger a refresh.
 
 ## Prerequisites
 
@@ -66,7 +66,7 @@ The plugin checks these in order:
 ## How it works (technical)
 
 - Reads OAuth tokens from macOS Keychain (`Claude Code-credentials` entry) or `~/.claude/.credentials.json` fallback
-- Writes an `anthropic` entry to `~/.local/share/opencode/auth.json` (`%LOCALAPPDATA%\opencode\auth.json` on Windows) in OpenCode's native OAuth format
+- Writes an `anthropic` entry to `~/.local/share/opencode/auth.json` (on Windows, writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json`) in OpenCode's native OAuth format
 - Preserves other provider entries already in auth.json
 - Re-syncs credentials every 5 minutes in the background
 - When a token is within 60 seconds of expiry, runs `claude` CLI to trigger a refresh

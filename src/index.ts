@@ -19,16 +19,19 @@ const CREDENTIAL_CACHE_TTL_MS = 30_000
 let cachedCredentials: ClaudeCredentials | null = null
 let cachedCredentialsAt = 0
 
-function getAuthJsonPath(): string {
+function getAuthJsonPaths(): string[] {
+  const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
   if (process.platform === "win32") {
     const appData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
-    return join(appData, "opencode", "auth.json")
+    const localAppDataPath = join(appData, "opencode", "auth.json")
+    // Write to both paths on Windows: some installs (Chocolatey, npm global)
+    // use the XDG-style path, others use %LOCALAPPDATA%. See #33.
+    return [xdgPath, localAppDataPath]
   }
-  return join(homedir(), ".local", "share", "opencode", "auth.json")
+  return [xdgPath]
 }
 
-function syncAuthJson(creds: ClaudeCredentials): void {
-  const authPath = getAuthJsonPath()
+function syncToPath(authPath: string, creds: ClaudeCredentials): void {
   let auth: Record<string, unknown> = {}
   if (existsSync(authPath)) {
     const raw = readFileSync(authPath, "utf-8").trim()
@@ -53,9 +56,15 @@ function syncAuthJson(creds: ClaudeCredentials): void {
   writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8")
 }
 
+function syncAuthJson(creds: ClaudeCredentials): void {
+  for (const authPath of getAuthJsonPaths()) {
+    syncToPath(authPath, creds)
+  }
+}
+
 function refreshViaCli(): void {
   try {
-    execSync("claude -p . --model claude-haiku-4-5-20250514", {
+    execSync("claude -p . --model haiku", {
       timeout: 60_000,
       encoding: "utf-8",
       env: { ...process.env, TERM: "dumb" },
