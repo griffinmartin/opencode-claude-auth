@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.7...v0.6.0) (2026-03-20)
+
+
+### Features
+
+* self-contained auth provider (no builtin dependency, anti-fingerprint) ([#38](https://github.com/griffinmartin/opencode-claude-auth/issues/38)) ([34ae5df](https://github.com/griffinmartin/opencode-claude-auth/commit/34ae5dfe1bbae4c57cc5be86a2dcf25579d85a06))
+
 ## [0.5.7](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.6...v0.5.7) (2026-03-20)
 
 
