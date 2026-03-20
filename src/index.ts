@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { execSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
@@ -37,6 +38,33 @@ function syncAuthJson(creds: ClaudeCredentials): void {
   writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8")
 }
 
+function refreshViaCli(): void {
+  try {
+    execSync("claude -p . --model claude-haiku-4-5-20250514", {
+      timeout: 60_000,
+      encoding: "utf-8",
+      env: { ...process.env, TERM: "dumb" },
+      stdio: "ignore",
+    })
+  } catch {
+    // Non-fatal: Claude CLI may not be available
+  }
+}
+
+function refreshIfNeeded(): ClaudeCredentials | null {
+  let creds = readClaudeCredentials()
+  if (creds && creds.expiresAt > Date.now() + 60_000) {
+    return creds
+  }
+  // Token is expired or near expiry, try CLI refresh
+  refreshViaCli()
+  creds = readClaudeCredentials()
+  if (creds && creds.expiresAt > Date.now() + 60_000) {
+    return creds
+  }
+  return null
+}
+
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 
 const plugin: Plugin = async () => {
@@ -61,10 +89,10 @@ const plugin: Plugin = async () => {
   // Sync credentials to auth.json on startup
   syncAuthJson(creds)
 
-  // Keep auth.json synced in the background
+  // Keep auth.json synced, refreshing via CLI if token is near expiry
   setInterval(() => {
     try {
-      const fresh = readClaudeCredentials()
+      const fresh = refreshIfNeeded()
       if (fresh) {
         syncAuthJson(fresh)
       }
