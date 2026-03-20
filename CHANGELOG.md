@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.1...v0.5.2) (2026-03-20)
+
+
+### Bug Fixes
+
+* add -g flag to npm install and preferGlobal ([#22](https://github.com/griffinmartin/opencode-claude-auth/issues/22)) ([fba53ef](https://github.com/griffinmartin/opencode-claude-auth/commit/fba53ef30afd4e15f95afa10e2e0a2f98d49c938))
+
 ## [0.5.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.0...v0.5.1) (2026-03-19)
 
 
