@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.0...v0.7.1) (2026-03-20)
+
+
+### Bug Fixes
+
+* version-gate context-1m beta to opus/sonnet 4.6+ only ([#44](https://github.com/griffinmartin/opencode-claude-auth/issues/44)) ([#47](https://github.com/griffinmartin/opencode-claude-auth/issues/47)) ([75bce64](https://github.com/griffinmartin/opencode-claude-auth/commit/75bce64fef0952fe76076f4ab0b4256b60d8129a))
+
 ## [0.7.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.6.0...v0.7.0) (2026-03-20)
 
 
