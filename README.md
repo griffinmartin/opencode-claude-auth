@@ -66,6 +66,22 @@ The plugin checks these in order:
 | Keychain read timed out | Restart Keychain Access (can happen on macOS Tahoe) |
 | "Credentials are unavailable or expired" | Run `claude` to refresh your Claude Code credentials |
 
+## Environment variable overrides
+
+All configurable parameters can be overridden via environment variables. If Anthropic changes something before we publish an update, set an env var and keep working:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ANTHROPIC_CLI_VERSION` | Claude CLI version for user-agent and billing headers | `2.1.80` |
+| `ANTHROPIC_USER_AGENT` | Full User-Agent string (overrides CLI version) | `claude-cli/{version} (external, cli)` |
+| `ANTHROPIC_BETA_FLAGS` | Comma-separated beta feature flags | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
+
+Example:
+
+```bash
+export ANTHROPIC_CLI_VERSION=2.2.0
+```
+
 ## How it works (technical)
 
 - Registers an `auth.loader` with a custom `fetch` that intercepts all Anthropic API requests
@@ -76,9 +92,14 @@ The plugin checks these in order:
 - Sets required API headers (beta flags, billing, user-agent) with model-aware selection
 - Syncs credentials to `auth.json` on startup and every 5 minutes as a fallback
 - On Windows, writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json`
-- When a token is within 60 seconds of expiry, runs `claude` CLI to trigger a refresh
+- Retries API requests on 429 (rate limit) and 529 (overloaded) with exponential backoff, respecting `retry-after` headers
+- When a token is within 60 seconds of expiry, runs `claude` CLI to trigger a refresh (with one automatic retry)
 - If credentials aren't OAuth-based, the auth loader returns `{}` and falls through to API key auth
 - If credentials are unavailable or unreadable, the plugin disables itself and OpenCode continues without Claude auth
+
+## Disclaimer
+
+This plugin uses Claude Code's OAuth credentials to authenticate with Anthropic's API. Anthropic's Terms of Service state that Claude Pro/Max subscription tokens should only be used with official Anthropic clients. This plugin exists as a community workaround and may stop working if Anthropic changes their OAuth infrastructure. Use at your own discretion.
 
 ## License
 

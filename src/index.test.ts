@@ -372,6 +372,129 @@ describe("exported helpers", () => {
     }
   })
 
+  it("buildRequestHeaders uses ANTHROPIC_CLI_VERSION for user-agent", () => {
+    process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
+    try {
+      const headers = helpers.buildRequestHeaders(
+        "https://api.anthropic.com/v1/messages",
+        { headers: {} },
+        "token",
+        "claude-sonnet-4-6",
+      )
+      assert.ok(
+        headers.get("user-agent")?.includes("9.9.9"),
+        `Expected user-agent to include 9.9.9, got: ${headers.get("user-agent")}`,
+      )
+    } finally {
+      delete process.env.ANTHROPIC_CLI_VERSION
+    }
+  })
+
+  it("buildRequestHeaders uses ANTHROPIC_USER_AGENT when set", () => {
+    process.env.ANTHROPIC_USER_AGENT = "custom-agent/1.0"
+    try {
+      const headers = helpers.buildRequestHeaders(
+        "https://api.anthropic.com/v1/messages",
+        { headers: {} },
+        "token",
+        "claude-sonnet-4-6",
+      )
+      assert.equal(headers.get("user-agent"), "custom-agent/1.0")
+    } finally {
+      delete process.env.ANTHROPIC_USER_AGENT
+    }
+  })
+
+  it("getBillingHeader uses ANTHROPIC_CLI_VERSION when set", () => {
+    process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
+    try {
+      const header = helpers.getBillingHeader("claude-opus-4-1")
+      assert.ok(
+        header.includes("cc_version=9.9.9"),
+        `Expected billing header to include 9.9.9, got: ${header}`,
+      )
+    } finally {
+      delete process.env.ANTHROPIC_CLI_VERSION
+    }
+  })
+
+  it("getModelBetas uses ANTHROPIC_BETA_FLAGS when set", () => {
+    process.env.ANTHROPIC_BETA_FLAGS = "custom-beta-1,custom-beta-2"
+    try {
+      const betas = helpers.getModelBetas("claude-sonnet-4-6")
+      assert.ok(betas.includes("custom-beta-1"), "Expected custom-beta-1")
+      assert.ok(betas.includes("custom-beta-2"), "Expected custom-beta-2")
+      // Model-specific additions should still apply on top of overridden base
+      assert.ok(betas.includes("context-1m-2025-08-07"), "Expected sonnet context-1m beta")
+    } finally {
+      delete process.env.ANTHROPIC_BETA_FLAGS
+    }
+  })
+
+  it("fetchWithRetry retries on 429 and succeeds", async () => {
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve(new Response("rate limited", { status: 429 }))
+      return Promise.resolve(new Response("ok", { status: 200 }))
+    }) as unknown as typeof fetch
+    const res = await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    assert.equal(res.status, 200)
+    assert.equal(callCount, 2)
+  })
+
+  it("fetchWithRetry retries on 529 and succeeds", async () => {
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve(new Response("overloaded", { status: 529 }))
+      return Promise.resolve(new Response("ok", { status: 200 }))
+    }) as unknown as typeof fetch
+    const res = await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    assert.equal(res.status, 200)
+    assert.equal(callCount, 2)
+  })
+
+  it("fetchWithRetry returns non-retryable errors immediately", async () => {
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      return Promise.resolve(new Response("bad request", { status: 400 }))
+    }) as unknown as typeof fetch
+    const res = await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    assert.equal(res.status, 400)
+    assert.equal(callCount, 1)
+  })
+
+  it("fetchWithRetry gives up after max retries", async () => {
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      return Promise.resolve(new Response("rate limited", { status: 429 }))
+    }) as unknown as typeof fetch
+    const res = await helpers.fetchWithRetry("https://example.com", {}, 2, mockFetch)
+    assert.equal(res.status, 429)
+    assert.equal(callCount, 2)
+  })
+
+  it("fetchWithRetry respects retry-after header", async () => {
+    const start = Date.now()
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      if (callCount === 1) {
+        return Promise.resolve(new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "1" },
+        }))
+      }
+      return Promise.resolve(new Response("ok", { status: 200 }))
+    }) as unknown as typeof fetch
+    await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    const elapsed = Date.now() - start
+    assert.ok(elapsed >= 900, `Expected at least 900ms delay, got ${elapsed}ms`)
+  })
+
   it("auth fetch forwards original input URL unchanged", async () => {
     const originalNow = Date.now
     const originalSetInterval = globalThis.setInterval

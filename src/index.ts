@@ -7,17 +7,48 @@ import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
 
 const SYSTEM_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 const TOOL_PREFIX = "mcp_"
-const CC_VERSION = "2.1.80"
-const REQUIRED_BETAS = [
-  "claude-code-20250219",
-  "oauth-2025-04-20",
-  "interleaved-thinking-2025-05-14",
-  "prompt-caching-scope-2026-01-05",
-]
+const DEFAULT_CC_VERSION = "2.1.80"
+const DEFAULT_BETA_FLAGS = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05"
+
+function getCliVersion(): string {
+  return process.env.ANTHROPIC_CLI_VERSION ?? DEFAULT_CC_VERSION
+}
+
+function getUserAgent(): string {
+  return process.env.ANTHROPIC_USER_AGENT ?? `claude-cli/${getCliVersion()} (external, cli)`
+}
+
+function getRequiredBetas(): string[] {
+  return (process.env.ANTHROPIC_BETA_FLAGS ?? DEFAULT_BETA_FLAGS)
+    .split(",").map(s => s.trim()).filter(Boolean)
+}
 const CREDENTIAL_CACHE_TTL_MS = 30_000
 
 let cachedCredentials: ClaudeCredentials | null = null
 let cachedCredentialsAt = 0
+
+type FetchFn = typeof fetch
+
+export async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  retries = 3,
+  fetchImpl: FetchFn = fetch,
+): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    const res = await fetchImpl(input, init)
+    if ((res.status === 429 || res.status === 529) && i < retries - 1) {
+      const retryAfter = res.headers.get("retry-after")
+      const delay = retryAfter
+        ? parseInt(retryAfter, 10) * 1000
+        : (i + 1) * 2000
+      await new Promise(r => setTimeout(r, delay))
+      continue
+    }
+    return res
+  }
+  return fetchImpl(input, init)
+}
 
 function getAuthJsonPaths(): string[] {
   const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
@@ -63,15 +94,19 @@ function syncAuthJson(creds: ClaudeCredentials): void {
 }
 
 function refreshViaCli(): void {
-  try {
-    execSync("claude -p . --model haiku", {
-      timeout: 60_000,
-      encoding: "utf-8",
-      env: { ...process.env, TERM: "dumb" },
-      stdio: "ignore",
-    })
-  } catch {
-    // Non-fatal: Claude CLI may not be available
+  const maxAttempts = 2
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      execSync("claude -p . --model haiku", {
+        timeout: 60_000,
+        encoding: "utf-8",
+        env: { ...process.env, TERM: "dumb" },
+        stdio: "ignore",
+      })
+      return
+    } catch {
+      // Non-fatal: retry once, then give up
+    }
   }
 }
 
@@ -154,7 +189,7 @@ export function buildRequestHeaders(
   headers.set("authorization", `Bearer ${accessToken}`)
   headers.set("anthropic-beta", mergedBetas.join(","))
   headers.set("x-app", "cli")
-  headers.set("user-agent", `claude-cli/${CC_VERSION} (external, cli)`)
+  headers.set("user-agent", getUserAgent())
   headers.set("x-anthropic-billing-header", getBillingHeader(modelId))
   headers.delete("x-api-key")
 
@@ -163,11 +198,11 @@ export function buildRequestHeaders(
 
 export function getBillingHeader(modelId: string): string {
   const entrypoint = "cli"
-  return `cc_version=${CC_VERSION}.${modelId}; cc_entrypoint=${entrypoint}; cch=00000;`
+  return `cc_version=${getCliVersion()}.${modelId}; cc_entrypoint=${entrypoint}; cch=00000;`
 }
 
 export function getModelBetas(modelId: string): string[] {
-  const betas = [...REQUIRED_BETAS]
+  const betas = [...getRequiredBetas()]
   const lower = modelId.toLowerCase()
 
   // context-1m for opus/sonnet 4.6+ models
@@ -367,7 +402,7 @@ const plugin: Plugin = async () => {
             }
             const headers = buildRequestHeaders(input, requestInit, latest.accessToken, modelId)
             const body = transformBody(requestInit.body)
-            const response = await fetch(input, {
+            const response = await fetchWithRetry(input, {
               ...requestInit,
               body,
               headers,
