@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.2...v0.7.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* handle date-suffixed model IDs and additional long context error message ([4d790a9](https://github.com/griffinmartin/opencode-claude-auth/commit/4d790a9bf0f862a1a547705ec2cd0584cf98d402))
+
 ## [0.7.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.1...v0.7.2) (2026-03-20)
 
 

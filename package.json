@@ -1,6 +1,6 @@
 {
   "name": "opencode-claude-auth",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "OpenCode plugin that uses your Claude Code credentials — no separate login needed.",
   "preferGlobal": true,
   "main": "dist/index.js",
