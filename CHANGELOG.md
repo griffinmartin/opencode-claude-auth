@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.6.0...v0.7.0) (2026-03-20)
+
+
+### Features
+
+* add env var overrides and retry logic with backoff ([#45](https://github.com/griffinmartin/opencode-claude-auth/issues/45)) ([1335286](https://github.com/griffinmartin/opencode-claude-auth/commit/13352867a1472fe29bc859e66328ff93e75713ff))
+
 ## [0.6.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.7...v0.6.0) (2026-03-20)
 
 
