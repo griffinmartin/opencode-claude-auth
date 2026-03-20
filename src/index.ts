@@ -5,16 +5,19 @@ import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
 
-function getAuthJsonPath(): string {
+function getAuthJsonPaths(): string[] {
+  const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
   if (process.platform === "win32") {
     const appData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
-    return join(appData, "opencode", "auth.json")
+    const localAppDataPath = join(appData, "opencode", "auth.json")
+    // Write to both paths on Windows: some installs (Chocolatey, npm global)
+    // use the XDG-style path, others use %LOCALAPPDATA%. See #33.
+    return [xdgPath, localAppDataPath]
   }
-  return join(homedir(), ".local", "share", "opencode", "auth.json")
+  return [xdgPath]
 }
 
-function syncAuthJson(creds: ClaudeCredentials): void {
-  const authPath = getAuthJsonPath()
+function syncToPath(authPath: string, creds: ClaudeCredentials): void {
   let auth: Record<string, unknown> = {}
   if (existsSync(authPath)) {
     const raw = readFileSync(authPath, "utf-8").trim()
@@ -37,6 +40,12 @@ function syncAuthJson(creds: ClaudeCredentials): void {
     mkdirSync(dir, { recursive: true })
   }
   writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8")
+}
+
+function syncAuthJson(creds: ClaudeCredentials): void {
+  for (const authPath of getAuthJsonPaths()) {
+    syncToPath(authPath, creds)
+  }
 }
 
 function refreshViaCli(): void {
