@@ -28,7 +28,7 @@ Fetch https://raw.githubusercontent.com/griffinmartin/opencode-claude-auth/main/
 ### Manual install
 
 ```bash
-npm install opencode-claude-auth
+npm install -g opencode-claude-auth
 ```
 
 Then add to the `plugin` array in your `opencode.json`:

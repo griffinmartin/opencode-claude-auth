@@ -45,7 +45,7 @@ This will prompt you to log in and store credentials in Keychain (macOS) or `~/.
 ### Step 1: Install the package
 
 ```bash
-npm install opencode-claude-auth
+npm install -g opencode-claude-auth
 ```
 
 ### Step 2: Add to OpenCode configuration
