@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.2...v0.5.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* sync Claude Code credentials to auth.json directly ([#25](https://github.com/griffinmartin/opencode-claude-auth/issues/25)) ([98ac5b7](https://github.com/griffinmartin/opencode-claude-auth/commit/98ac5b79ffa2f51e860e8e28e08321f34624fa51))
+
 ## [0.5.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.5.1...v0.5.2) (2026-03-20)
 
 
