@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.1...v0.7.2) (2026-03-20)
+
+
+### Bug Fixes
+
+* auto-retry with beta flag fallback for long context errors ([#52](https://github.com/griffinmartin/opencode-claude-auth/issues/52)) ([a6664f4](https://github.com/griffinmartin/opencode-claude-auth/commit/a6664f461cc103c51eff9fca9ebc38aeb6e97a36)), closes [#51](https://github.com/griffinmartin/opencode-claude-auth/issues/51)
+
 ## [0.7.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.0...v0.7.1) (2026-03-20)
 
 
