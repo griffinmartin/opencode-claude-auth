@@ -9,6 +9,7 @@
   "type": "module",
   "files": [
     "dist",
+    "claude-auth-plugin.js",
     "installation.md"
   ],
   "scripts": {

@@ -14,6 +14,10 @@ const REQUIRED_BETAS = [
   "interleaved-thinking-2025-05-14",
   "prompt-caching-scope-2026-01-05",
 ]
+const CREDENTIAL_CACHE_TTL_MS = 30_000
+
+let cachedCredentials: ClaudeCredentials | null = null
+let cachedCredentialsAt = 0
 
 function getAuthJsonPath(): string {
   if (process.platform === "win32") {
@@ -76,11 +80,33 @@ function refreshIfNeeded(): ClaudeCredentials | null {
   return null
 }
 
-function getLatestCredentials(): ClaudeCredentials | null {
-  return refreshIfNeeded()
+function isCredentialUsable(creds: ClaudeCredentials): boolean {
+  return creds.expiresAt > Date.now() + 60_000
 }
 
-function buildRequestHeaders(
+export function getCachedCredentials(): ClaudeCredentials | null {
+  const now = Date.now()
+  if (
+    cachedCredentials &&
+    now - cachedCredentialsAt < CREDENTIAL_CACHE_TTL_MS &&
+    isCredentialUsable(cachedCredentials)
+  ) {
+    return cachedCredentials
+  }
+
+  const latest = refreshIfNeeded()
+  if (!latest) {
+    cachedCredentials = null
+    cachedCredentialsAt = 0
+    return null
+  }
+
+  cachedCredentials = latest
+  cachedCredentialsAt = now
+  return latest
+}
+
+export function buildRequestHeaders(
   input: RequestInfo | URL,
   init: RequestInit,
   accessToken: string,
@@ -126,12 +152,12 @@ function buildRequestHeaders(
   return headers
 }
 
-function getBillingHeader(modelId: string): string {
+export function getBillingHeader(modelId: string): string {
   const entrypoint = "cli"
   return `cc_version=${CC_VERSION}.${modelId}; cc_entrypoint=${entrypoint}; cch=00000;`
 }
 
-function getModelBetas(modelId: string): string[] {
+export function getModelBetas(modelId: string): string[] {
   const betas = [...REQUIRED_BETAS]
   const lower = modelId.toLowerCase()
 
@@ -149,7 +175,7 @@ function getModelBetas(modelId: string): string[] {
   return betas
 }
 
-function transformBody(body: BodyInit | null | undefined): BodyInit | null | undefined {
+export function transformBody(body: BodyInit | null | undefined): BodyInit | null | undefined {
   if (typeof body !== "string") {
     return body
   }
@@ -160,19 +186,6 @@ function transformBody(body: BodyInit | null | undefined): BodyInit | null | und
       system?: Array<{ type?: string; text?: string }>
       tools?: Array<{ name?: string } & Record<string, unknown>>
       messages?: Array<{ content?: Array<Record<string, unknown>> }>
-    }
-
-    if (Array.isArray(parsed.system)) {
-      parsed.system = parsed.system.map((item) => {
-        if (item.type !== "text" || !item.text) {
-          return item
-        }
-
-        return {
-          ...item,
-          text: item.text.replace(/OpenCode/g, "Claude Code").replace(/opencode/gi, "Claude"),
-        }
-      })
     }
 
     if (Array.isArray(parsed.tools)) {
@@ -210,33 +223,11 @@ function transformBody(body: BodyInit | null | undefined): BodyInit | null | und
   }
 }
 
-function rewriteMessagesUrl(input: RequestInfo | URL): RequestInfo | URL {
-  let url: URL
-
-  try {
-    if (typeof input === "string" || input instanceof URL) {
-      url = new URL(input.toString())
-    } else {
-      url = new URL(input.url)
-    }
-  } catch {
-    return input
-  }
-
-  if (url.pathname !== "/v1/messages" || url.searchParams.has("beta")) {
-    return input
-  }
-
-  url.searchParams.set("beta", "true")
-
-  if (input instanceof Request) {
-    return new Request(url.toString(), input)
-  }
-
-  return url
+export function stripToolPrefix(text: string): string {
+  return text.replace(/"name"\s*:\s*"mcp_([^"]+)"/g, '"name": "$1"')
 }
 
-function transformResponseStream(response: Response): Response {
+export function transformResponseStream(response: Response): Response {
   if (!response.body) {
     return response
   }
@@ -244,20 +235,32 @@ function transformResponseStream(response: Response): Response {
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
+  let buffer = ""
 
   const stream = new ReadableStream({
     async pull(controller) {
-      const { done, value } = await reader.read()
-      if (done) {
-        controller.close()
-        return
+      for (;;) {
+        const boundary = buffer.indexOf("\n\n")
+        if (boundary !== -1) {
+          const completeEvent = buffer.slice(0, boundary + 2)
+          buffer = buffer.slice(boundary + 2)
+          controller.enqueue(encoder.encode(stripToolPrefix(completeEvent)))
+          return
+        }
+
+        const { done, value } = await reader.read()
+
+        if (done) {
+          if (buffer) {
+            controller.enqueue(encoder.encode(stripToolPrefix(buffer)))
+            buffer = ""
+          }
+          controller.close()
+          return
+        }
+
+        buffer += decoder.decode(value, { stream: true })
       }
-
-      const text = decoder
-        .decode(value, { stream: true })
-        .replace(/"name"\s*:\s*"mcp_([^"]+)"/g, '"name": "$1"')
-
-      controller.enqueue(encoder.encode(text))
     },
   })
 
@@ -289,7 +292,7 @@ const plugin: Plugin = async () => {
     return {}
   }
 
-  const freshCreds = getLatestCredentials()
+  const freshCreds = getCachedCredentials()
   if (freshCreds) {
     syncAuthJson(freshCreds)
   } else {
@@ -316,9 +319,9 @@ const plugin: Plugin = async () => {
         return
       }
 
-      output.system.unshift(SYSTEM_IDENTITY_PREFIX)
-      if (output.system[1]) {
-        output.system[1] = `${SYSTEM_IDENTITY_PREFIX}\n\n${output.system[1]}`
+      const hasIdentityPrefix = output.system.some((entry) => entry.includes(SYSTEM_IDENTITY_PREFIX))
+      if (!hasIdentityPrefix) {
+        output.system.unshift(SYSTEM_IDENTITY_PREFIX)
       }
     },
     auth: {
@@ -340,14 +343,12 @@ const plugin: Plugin = async () => {
         return {
           apiKey: "",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const latest = getLatestCredentials()
+            const latest = getCachedCredentials()
             if (!latest) {
               throw new Error(
                 "Claude Code credentials are unavailable or expired. Run `claude` to refresh them.",
               )
             }
-
-            syncAuthJson(latest)
 
             const requestInit = init ?? {}
             const bodyStr = typeof requestInit.body === "string" ? requestInit.body : undefined
@@ -357,8 +358,7 @@ const plugin: Plugin = async () => {
             }
             const headers = buildRequestHeaders(input, requestInit, latest.accessToken, modelId)
             const body = transformBody(requestInit.body)
-            const requestInput = rewriteMessagesUrl(input)
-            const response = await fetch(requestInput, {
+            const response = await fetch(input, {
               ...requestInit,
               body,
               headers,
