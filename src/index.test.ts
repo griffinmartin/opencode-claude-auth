@@ -142,6 +142,23 @@ describe("exported helpers", () => {
     assert.ok(!haikuBetas.includes("claude-code-20250219"))
   })
 
+  it("getModelBetas excludes context-1m for pre-4.6 models", () => {
+    const sonnet45 = helpers.getModelBetas("claude-sonnet-4-5-20250514")
+    assert.ok(!sonnet45.includes("context-1m-2025-08-07"), "sonnet 4.5 should not get 1M beta")
+    assert.ok(sonnet45.includes("claude-code-20250219"), "sonnet 4.5 should still get claude-code beta")
+
+    const opus45 = helpers.getModelBetas("claude-opus-4-5-20250514")
+    assert.ok(!opus45.includes("context-1m-2025-08-07"), "opus 4.5 should not get 1M beta")
+  })
+
+  it("getModelBetas excludes context-1m for unversioned aliases", () => {
+    const bare = helpers.getModelBetas("sonnet")
+    assert.ok(!bare.includes("context-1m-2025-08-07"), "bare 'sonnet' alias should not get 1M beta")
+
+    const bareOpus = helpers.getModelBetas("opus")
+    assert.ok(!bareOpus.includes("context-1m-2025-08-07"), "bare 'opus' alias should not get 1M beta")
+  })
+
   it("getBillingHeader includes version and model", () => {
     const header = helpers.getBillingHeader("claude-opus-4-1")
     assert.ok(header.includes("cc_version=2.1.80.claude-opus-4-1"))

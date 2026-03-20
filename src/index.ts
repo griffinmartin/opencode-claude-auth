@@ -205,9 +205,17 @@ export function getModelBetas(modelId: string): string[] {
   const betas = [...getRequiredBetas()]
   const lower = modelId.toLowerCase()
 
-  // context-1m for opus/sonnet 4.6+ models
+  // context-1m only for opus/sonnet 4.6+ models
   if (lower.includes("opus") || lower.includes("sonnet")) {
-    betas.push("context-1m-2025-08-07")
+    const versionMatch = lower.match(/(opus|sonnet)-(\d+)-(\d+)/)
+    if (versionMatch) {
+      const major = parseInt(versionMatch[2], 10)
+      const minor = parseInt(versionMatch[3], 10)
+      if (major > 4 || (major === 4 && minor >= 6)) {
+        betas.push("context-1m-2025-08-07")
+      }
+    }
+    // If no version found (bare alias like "sonnet"), exclude 1M beta
   }
 
   // haiku doesn't get claude-code-20250219
