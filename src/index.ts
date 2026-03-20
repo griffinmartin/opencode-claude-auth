@@ -1,143 +1,79 @@
-import type { Plugin, AuthHook } from "@opencode-ai/plugin"
-import { execSync } from "node:child_process"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
+import type { Plugin } from "@opencode-ai/plugin"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
 
-function clearOpencodeAuth(): void {
-  const authPaths = [
-    join(homedir(), ".local", "share", "opencode", "auth.json"),
-    join(process.env.APPDATA ?? homedir(), "opencode", "auth.json"),
-    join(homedir(), ".opencode", "auth.json"),
-  ]
-
-  for (const path of authPaths) {
-    try {
-      if (existsSync(path)) {
-        const raw = readFileSync(path, "utf-8")
-        const auth = JSON.parse(raw)
-        delete auth.anthropic
-        writeFileSync(path, JSON.stringify(auth), "utf-8")
-      }
-    } catch {
-      // Non-fatal: may not have write permissions
-    }
+function getAuthJsonPath(): string {
+  if (process.platform === "win32") {
+    return join(process.env.USERPROFILE ?? homedir(), ".local", "share", "opencode", "auth.json")
   }
+  return join(homedir(), ".local", "share", "opencode", "auth.json")
 }
 
-function refreshViaCli(): void {
-  try {
-    execSync("claude -p . --model claude-haiku-4-5-20250514", {
-      timeout: 60_000,
-      encoding: "utf-8",
-      env: { ...process.env, TERM: "dumb" },
-      stdio: "ignore",
-    })
-  } catch {
-    // Non-fatal: Claude CLI may not be available
-  }
-}
-
-function loadSessionPrompt(): string {
-  try {
-    const dir = dirname(fileURLToPath(import.meta.url))
-    const promptPath = join(dir, "anthropic-prompt.txt")
-    return readFileSync(promptPath, "utf-8")
-  } catch {
-    return "You are Claude Code, Anthropic's official CLI for Claude."
-  }
-}
-
-function createAuthFetch(
-  initial: ClaudeCredentials,
-  onRefresh: (updated: ClaudeCredentials) => void,
-): (...args: Parameters<typeof fetch>) => Promise<Response> {
-  let current = initial
-
-  return async (fetchInput, init): Promise<Response> => {
-    if (current.expiresAt < Date.now() + 60_000) {
-      const fresh = readClaudeCredentials()
-      if (fresh && fresh.expiresAt > Date.now() + 60_000) {
-        current = fresh
-        onRefresh(current)
-      } else {
-        refreshViaCli()
-        const afterRefresh = readClaudeCredentials()
-        if (afterRefresh && afterRefresh.expiresAt > Date.now() + 60_000) {
-          current = afterRefresh
-          onRefresh(current)
-        } else {
-          throw new Error(
-            "opencode-claude-auth: Token expired and refresh failed. " +
-              "Re-authenticate with Claude Code by running `claude` in your terminal.",
-          )
-        }
+function syncAuthJson(creds: ClaudeCredentials): void {
+  const authPath = getAuthJsonPath()
+  let auth: Record<string, unknown> = {}
+  if (existsSync(authPath)) {
+    const raw = readFileSync(authPath, "utf-8").trim()
+    if (raw) {
+      try {
+        auth = JSON.parse(raw)
+      } catch {
+        // Malformed file, start fresh
       }
     }
-
-    const headers = new Headers(init?.headers)
-    headers.set("Authorization", `Bearer ${current.accessToken}`)
-    return fetch(fetchInput, { ...init, headers })
   }
+  auth.anthropic = {
+    type: "oauth",
+    access: creds.accessToken,
+    refresh: creds.refreshToken,
+    expires: creds.expiresAt,
+  }
+  const dir = dirname(authPath)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+  writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8")
 }
 
-const plugin: Plugin = async (input) => {
-  const creds = readClaudeCredentials()
+const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
+
+const plugin: Plugin = async () => {
+  let creds: ClaudeCredentials | null = null
+  try {
+    creds = readClaudeCredentials()
+  } catch (err) {
+    console.warn(
+      "opencode-claude-auth: Failed to read Claude Code credentials:",
+      err instanceof Error ? err.message : err,
+    )
+    return {}
+  }
   if (!creds) {
+    console.warn(
+      "opencode-claude-auth: No Claude Code credentials found. " +
+        "Plugin disabled. Run `claude` to authenticate.",
+    )
     return {}
   }
 
-  const auth: AuthHook = {
-    provider: "anthropic",
-    loader: async (_getAuth, _provider) => {
-      clearOpencodeAuth()
+  // Sync credentials to auth.json on startup
+  syncAuthJson(creds)
 
-      const initialCreds = readClaudeCredentials()
-      if (!initialCreds) {
-        throw new Error(
-          "opencode-claude-auth: Claude Code credentials not found. " +
-            "Please authenticate with Claude Code first by running `claude` in your terminal.",
-        )
+  // Keep auth.json synced in the background
+  setInterval(() => {
+    try {
+      const fresh = readClaudeCredentials()
+      if (fresh) {
+        syncAuthJson(fresh)
       }
+    } catch {
+      // Non-fatal
+    }
+  }, SYNC_INTERVAL)
 
-      await input.client.auth.set({
-        path: { id: "anthropic" },
-        body: {
-          type: "oauth",
-          access: initialCreds.accessToken,
-          refresh: initialCreds.refreshToken,
-          expires: initialCreds.expiresAt,
-        },
-      })
-
-      return {
-        apiKey: "oauth",
-        fetch: createAuthFetch(initialCreds, (updated) => {
-          void input.client.auth.set({
-            path: { id: "anthropic" },
-            body: {
-              type: "oauth",
-              access: updated.accessToken,
-              refresh: updated.refreshToken,
-              expires: updated.expiresAt,
-            },
-          })
-        }),
-      }
-    },
-    methods: [] as AuthHook["methods"],
-  }
-
-  return {
-    auth,
-    async "experimental.chat.system.transform"(hookInput, output) {
-      if (hookInput.model.providerID !== "anthropic") return
-      const prompt = loadSessionPrompt()
-      output.system.unshift(prompt)
-    },
-  }
+  return {}
 }
 
 export default plugin
