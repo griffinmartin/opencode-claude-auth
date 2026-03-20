@@ -41,7 +41,7 @@ function syncAuthJson(creds: ClaudeCredentials): void {
 
 function refreshViaCli(): void {
   try {
-    execSync("claude -p . --model claude-haiku-4-5-20250514", {
+    execSync("claude -p . --model haiku", {
       timeout: 60_000,
       encoding: "utf-8",
       env: { ...process.env, TERM: "dumb" },
