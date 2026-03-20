@@ -7,7 +7,8 @@ import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
 
 function getAuthJsonPath(): string {
   if (process.platform === "win32") {
-    return join(process.env.USERPROFILE ?? homedir(), ".local", "share", "opencode", "auth.json")
+    const appData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
+    return join(appData, "opencode", "auth.json")
   }
   return join(homedir(), ".local", "share", "opencode", "auth.json")
 }
