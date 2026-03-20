@@ -24,8 +24,14 @@ function getRequiredBetas(): string[] {
 }
 const CREDENTIAL_CACHE_TTL_MS = 30_000
 
+// Beta flags to try removing in order when "long context" errors occur
+const LONG_CONTEXT_BETAS = ["context-1m-2025-08-07", "interleaved-thinking-2025-05-14"]
+
 let cachedCredentials: ClaudeCredentials | null = null
 let cachedCredentialsAt = 0
+
+// Session-level cache of excluded beta flags per model (resets on process restart)
+const excludedBetas: Map<string, Set<string>> = new Map()
 
 type FetchFn = typeof fetch
 
@@ -128,6 +134,47 @@ function isCredentialUsable(creds: ClaudeCredentials): boolean {
   return creds.expiresAt > Date.now() + 60_000
 }
 
+// Track the last-seen beta flags env var and model to detect changes
+let lastBetaFlagsEnv: string | undefined = process.env.ANTHROPIC_BETA_FLAGS
+let lastModelId: string | undefined
+
+function getExcludedBetas(modelId: string): Set<string> {
+  // Reset exclusions if user changed ANTHROPIC_BETA_FLAGS
+  const currentBetaFlags = process.env.ANTHROPIC_BETA_FLAGS
+  if (currentBetaFlags !== lastBetaFlagsEnv) {
+    excludedBetas.clear()
+    lastBetaFlagsEnv = currentBetaFlags
+  }
+  
+  // Reset exclusions if user switched models (new model may support different betas)
+  if (lastModelId !== undefined && lastModelId !== modelId) {
+    excludedBetas.clear()
+  }
+  lastModelId = modelId
+  
+  return excludedBetas.get(modelId) ?? new Set()
+}
+
+function addExcludedBeta(modelId: string, beta: string): void {
+  const existing = excludedBetas.get(modelId) ?? new Set()
+  existing.add(beta)
+  excludedBetas.set(modelId, existing)
+}
+
+export function isLongContextError(responseBody: string): boolean {
+  return responseBody.includes("Extra usage is required for long context requests")
+}
+
+function getNextBetaToExclude(modelId: string): string | null {
+  const excluded = getExcludedBetas(modelId)
+  for (const beta of LONG_CONTEXT_BETAS) {
+    if (!excluded.has(beta)) {
+      return beta
+    }
+  }
+  return null // All long-context betas already excluded
+}
+
 export function getCachedCredentials(): ClaudeCredentials | null {
   const now = Date.now()
   if (
@@ -155,6 +202,7 @@ export function buildRequestHeaders(
   init: RequestInit,
   accessToken: string,
   modelId = "unknown",
+  excludedBetas?: Set<string>,
 ): Headers {
   const headers = new Headers()
 
@@ -182,7 +230,7 @@ export function buildRequestHeaders(
     }
   }
 
-  const modelBetas = getModelBetas(modelId)
+  const modelBetas = getModelBetas(modelId, excludedBetas)
   const incomingBeta = headers.get("anthropic-beta") ?? ""
   const mergedBetas = [...new Set([...modelBetas, ...incomingBeta.split(",").map((item) => item.trim()).filter(Boolean)])]
 
@@ -201,7 +249,7 @@ export function getBillingHeader(modelId: string): string {
   return `cc_version=${getCliVersion()}.${modelId}; cc_entrypoint=${entrypoint}; cch=00000;`
 }
 
-export function getModelBetas(modelId: string): string[] {
+export function getModelBetas(modelId: string, excluded?: Set<string>): string[] {
   const betas = [...getRequiredBetas()]
   const lower = modelId.toLowerCase()
 
@@ -222,6 +270,11 @@ export function getModelBetas(modelId: string): string[] {
   if (lower.includes("haiku")) {
     const idx = betas.indexOf("claude-code-20250219")
     if (idx !== -1) betas.splice(idx, 1)
+  }
+
+  // Filter out excluded betas (from previous failed requests due to long context errors)
+  if (excluded && excluded.size > 0) {
+    return betas.filter(beta => !excluded.has(beta))
   }
 
   return betas
@@ -408,13 +461,49 @@ const plugin: Plugin = async () => {
             if (bodyStr) {
               try { modelId = (JSON.parse(bodyStr) as { model?: string }).model ?? "unknown" } catch {}
             }
-            const headers = buildRequestHeaders(input, requestInit, latest.accessToken, modelId)
+
+            // Get excluded betas for this model (from previous failed requests)
+            const excluded = getExcludedBetas(modelId)
+            const headers = buildRequestHeaders(input, requestInit, latest.accessToken, modelId, excluded)
             const body = transformBody(requestInit.body)
-            const response = await fetchWithRetry(input, {
+
+            let response = await fetchWithRetry(input, {
               ...requestInit,
               body,
               headers,
             })
+
+            // Check for long-context beta errors and retry with betas excluded
+            // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
+            for (let attempt = 0; attempt < LONG_CONTEXT_BETAS.length; attempt++) {
+              if (response.status !== 400 && response.status !== 429) {
+                break
+              }
+
+              const cloned = response.clone()
+              const responseBody = await cloned.text()
+
+              if (!isLongContextError(responseBody)) {
+                break
+              }
+
+              const betaToExclude = getNextBetaToExclude(modelId)
+              if (!betaToExclude) {
+                break // All long-context betas already excluded
+              }
+
+              addExcludedBeta(modelId, betaToExclude)
+
+              // Rebuild headers without the excluded beta and retry
+              const newExcluded = getExcludedBetas(modelId)
+              const newHeaders = buildRequestHeaders(input, requestInit, latest.accessToken, modelId, newExcluded)
+
+              response = await fetchWithRetry(input, {
+                ...requestInit,
+                body,
+                headers: newHeaders,
+              })
+            }
 
             return transformResponseStream(response)
           },

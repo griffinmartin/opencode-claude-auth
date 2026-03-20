@@ -159,6 +159,43 @@ describe("exported helpers", () => {
     assert.ok(!bareOpus.includes("context-1m-2025-08-07"), "bare 'opus' alias should not get 1M beta")
   })
 
+  it("getModelBetas filters out excluded betas when provided", () => {
+    const excluded = new Set(["interleaved-thinking-2025-05-14"])
+    const betas = helpers.getModelBetas("claude-sonnet-4-6", excluded)
+    
+    assert.ok(!betas.includes("interleaved-thinking-2025-05-14"), "excluded beta should be filtered out")
+    assert.ok(betas.includes("context-1m-2025-08-07"), "non-excluded beta should remain")
+    assert.ok(betas.includes("claude-code-20250219"), "non-excluded beta should remain")
+  })
+
+  it("getModelBetas filters out multiple excluded betas", () => {
+    const excluded = new Set(["interleaved-thinking-2025-05-14", "context-1m-2025-08-07"])
+    const betas = helpers.getModelBetas("claude-sonnet-4-6", excluded)
+    
+    assert.ok(!betas.includes("interleaved-thinking-2025-05-14"), "excluded beta should be filtered out")
+    assert.ok(!betas.includes("context-1m-2025-08-07"), "excluded beta should be filtered out")
+    assert.ok(betas.includes("claude-code-20250219"), "non-excluded beta should remain")
+  })
+
+  it("isLongContextError detects the specific error message", () => {
+    assert.ok(
+      helpers.isLongContextError("Extra usage is required for long context requests"),
+      "should detect exact error message"
+    )
+    assert.ok(
+      helpers.isLongContextError('{"error": {"message": "Extra usage is required for long context requests"}}'),
+      "should detect error in JSON response"
+    )
+    assert.ok(
+      !helpers.isLongContextError("Some other error message"),
+      "should not match other errors"
+    )
+    assert.ok(
+      !helpers.isLongContextError(""),
+      "should not match empty string"
+    )
+  })
+
   it("getBillingHeader includes version and model", () => {
     const header = helpers.getBillingHeader("claude-opus-4-1")
     assert.ok(header.includes("cc_version=2.1.80.claude-opus-4-1"))
