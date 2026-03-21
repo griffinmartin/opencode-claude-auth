@@ -13,8 +13,12 @@ export interface ClaudeCredentials {
 const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), ".claude")
 const DEFAULT_SERVICE_NAME = "Claude Code-credentials"
 
+function getConfigDirEnv(): string | undefined {
+  return process.env.CLAUDE_CONFIG_DIR || undefined
+}
+
 function getClaudeConfigDir(): string {
-  return (process.env.CLAUDE_CONFIG_DIR ?? DEFAULT_CLAUDE_CONFIG_DIR).normalize("NFC")
+  return (getConfigDirEnv() ?? DEFAULT_CLAUDE_CONFIG_DIR).normalize("NFC")
 }
 
 function getCredentialsFilePath(): string {
@@ -22,7 +26,7 @@ function getCredentialsFilePath(): string {
 }
 
 function getClaudeCredentialServiceName(): string {
-  if (!process.env.CLAUDE_CONFIG_DIR) {
+  if (!getConfigDirEnv()) {
     return DEFAULT_SERVICE_NAME
   }
 
