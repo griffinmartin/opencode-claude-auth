@@ -47,6 +47,24 @@ Then add to the `plugin` array in your `opencode.json`:
 
 Just run OpenCode. The plugin handles auth automatically — it reads your Claude Code credentials, provides them to the Anthropic API, and refreshes them in the background. If your credentials aren't OAuth-based, the plugin falls through to standard API key auth.
 
+## Supported models
+
+All Claude 4.x models work with this plugin. Legacy Claude 3.x models are not supported via OAuth.
+
+| Model | Status |
+|-------|--------|
+| claude-opus-4-6 | Supported |
+| claude-sonnet-4-6 | Supported |
+| claude-opus-4-5 | Supported |
+| claude-sonnet-4-5 | Supported |
+| claude-opus-4-1 | Supported |
+| claude-sonnet-4-0 / opus-4-0 | Supported |
+| claude-haiku-4-5 | Supported |
+| claude-3-haiku-20240307 | Supported |
+| claude-3.x (sonnet, opus) | Not supported |
+
+Run `npm run test:models` to verify against your account.
+
 ## Credential sources
 
 The plugin checks these in order:
