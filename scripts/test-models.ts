@@ -27,6 +27,24 @@ interface ModelResult {
   timeMs: number
 }
 
+interface FailedModelEntry {
+  lastTested: string
+  lastPassedAt: string | null
+  error: string
+  consecutiveFailures: number
+}
+
+interface FailedModelsCache {
+  [model: string]: FailedModelEntry
+}
+
+interface SkippedModel {
+  model: string
+  reason: string
+  lastTested: string
+  lastError: string
+}
+
 async function discoverModels(): Promise<string[]> {
   const { createOpencode } = await import("@opencode-ai/sdk")
 
@@ -51,6 +69,30 @@ async function discoverModels(): Promise<string[]> {
   } finally {
     server.close()
   }
+}
+
+function getFailedModelsCachePath(): string {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  return join(__dirname, "..", "test-results", "failed-models.json")
+}
+
+function loadFailedModelsCache(): FailedModelsCache {
+  const cachePath = getFailedModelsCachePath()
+  if (!existsSync(cachePath)) return {}
+
+  try {
+    const raw = readFileSync(cachePath, "utf-8")
+    return JSON.parse(raw) as FailedModelsCache
+  } catch {
+    return {}
+  }
+}
+
+function shouldSkipModel(model: string, cache: FailedModelsCache): boolean {
+  const entry = cache[model]
+  if (!entry) return false
+  // Skip only if the model has never passed
+  return entry.lastPassedAt === null
 }
 
 async function testModel(modelId: string, accessToken: string): Promise<ModelResult> {
@@ -165,9 +207,9 @@ function printResult(result: ModelResult): void {
   console.log(line)
 }
 
-function writeResultsFile(results: ModelResult[], version: string): void {
+function writeResultsFile(results: ModelResult[], skipped: SkippedModel[], version: string): void {
   const __dirname = dirname(fileURLToPath(import.meta.url))
-  const outPath = join(__dirname, "..", "test-results", "model-smoke-test.md")
+  const outPath = join(__dirname, "..", "test-results", "model-smoke-test.json")
 
   const dir = dirname(outPath)
   if (!existsSync(dir)) {
@@ -175,31 +217,77 @@ function writeResultsFile(results: ModelResult[], version: string): void {
   }
 
   const passed = results.filter(r => r.status === "pass").length
-  const total = results.length
-  const date = new Date().toISOString()
+  const failed = results.filter(r => r.status === "fail").length
 
-  const rows = results.map(r => {
-    const status = r.status === "pass" ? "pass" : "**FAIL**"
-    const time = `${(r.timeMs / 1000).toFixed(1)}s`
-    const betas = r.betas.join(", ")
-    const excluded = r.excluded.join(", ") || ""
-    const error = r.error ?? ""
-    return `| ${r.model} | ${status} | ${time} | ${betas} | ${excluded} | ${error} |`
-  })
+  const output = {
+    version,
+    date: new Date().toISOString(),
+    summary: {
+      tested: results.length,
+      passed,
+      failed,
+      skipped: skipped.length,
+    },
+    results: results.map(r => ({
+      model: r.model,
+      status: r.status,
+      timeMs: r.timeMs,
+      betas: r.betas,
+      excluded: r.excluded,
+      error: r.error ?? null,
+    })),
+    skipped: skipped.map(s => ({
+      model: s.model,
+      reason: s.reason,
+      lastTested: s.lastTested,
+      lastError: s.lastError,
+    })),
+  }
 
-  const md = `# Model Smoke Test Results
+  writeFileSync(outPath, JSON.stringify(output, null, 2) + "\n", "utf-8")
+  console.log(c.dim(`\nResults written to test-results/model-smoke-test.json`))
+}
 
-**Version:** ${version}
-**Date:** ${date}
-**Summary:** ${passed}/${total} passed
+function writeFailedModelsCache(
+  results: ModelResult[],
+  skipped: SkippedModel[],
+  previousCache: FailedModelsCache,
+): void {
+  const cachePath = getFailedModelsCachePath()
+  const now = new Date().toISOString()
+  const updated: FailedModelsCache = {}
 
-| Model | Status | Time | Betas | Excluded | Error |
-|-------|--------|------|-------|----------|-------|
-${rows.join("\n")}
-`
+  // Carry forward skipped models unchanged
+  for (const s of skipped) {
+    if (previousCache[s.model]) {
+      updated[s.model] = previousCache[s.model]
+    }
+  }
 
-  writeFileSync(outPath, md, "utf-8")
-  console.log(c.dim(`\nResults written to test-results/model-smoke-test.md`))
+  // Process tested models
+  for (const r of results) {
+    if (r.status === "pass") {
+      // Model passed — remove from cache (don't add to updated)
+      continue
+    }
+
+    // Model failed — add or update cache entry
+    const previous = previousCache[r.model]
+    updated[r.model] = {
+      lastTested: now,
+      lastPassedAt: previous?.lastPassedAt ?? null,
+      error: r.error ?? `HTTP failure`,
+      consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+    }
+  }
+
+  const dir = dirname(cachePath)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+
+  writeFileSync(cachePath, JSON.stringify(updated, null, 2) + "\n", "utf-8")
+  console.log(c.dim(`Failed models cache written to test-results/failed-models.json`))
 }
 
 function updateReadme(results: ModelResult[]): void {
@@ -210,26 +298,19 @@ function updateReadme(results: ModelResult[]): void {
 
   const readme = readFileSync(readmePath, "utf-8")
 
-  // Sort: passing models first, then failing; alphabetical within each group
-  const sorted = [...results].sort((a, b) => {
-    if (a.status !== b.status) return a.status === "pass" ? -1 : 1
-    return a.model.localeCompare(b.model)
-  })
+  // Only include passing models, sorted alphabetically
+  const supported = results
+    .filter(r => r.status === "pass")
+    .sort((a, b) => a.model.localeCompare(b.model))
 
-  const rows = sorted.map(r => {
-    const status = r.status === "pass" ? "Supported" : "Not supported"
-    return `| ${r.model} | ${status} |`
-  })
-
-  const passed = results.filter(r => r.status === "pass").length
-  const total = results.length
+  const rows = supported.map(r => `| ${r.model} |`)
 
   const section = `## Supported models
 
-${passed}/${total} models supported. Run \`npm run test:models\` to verify against your account.
+${supported.length} supported models. Run \`npm run test:models\` to verify against your account.
 
-| Model | Status |
-|-------|--------|
+| Model |
+|-------|
 ${rows.join("\n")}`
 
   // Replace existing section or insert before "## Credential sources"
@@ -266,6 +347,13 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // Load failed models cache
+  const failedCache = loadFailedModelsCache()
+  const cachedCount = Object.keys(failedCache).length
+  if (cachedCount > 0) {
+    console.log(c.dim(`Loaded ${cachedCount} cached failure(s) from failed-models.json\n`))
+  }
+
   // Discover models from OpenCode
   let models: string[]
   try {
@@ -276,9 +364,31 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // Partition models into testable and skipped
+  const modelsToTest: string[] = []
+  const skipped: SkippedModel[] = []
+
+  for (const modelId of models) {
+    if (shouldSkipModel(modelId, failedCache)) {
+      const entry = failedCache[modelId]
+      skipped.push({
+        model: modelId,
+        reason: "Previously unsupported (never passed)",
+        lastTested: entry.lastTested,
+        lastError: entry.error,
+      })
+    } else {
+      modelsToTest.push(modelId)
+    }
+  }
+
+  if (skipped.length > 0) {
+    console.log(c.dim(`Skipping ${skipped.length} previously unsupported model(s)\n`))
+  }
+
   // Test each model sequentially
   const results: ModelResult[] = []
-  for (const modelId of models) {
+  for (const modelId of modelsToTest) {
     const result = await testModel(modelId, creds.accessToken)
     results.push(result)
     printResult(result)
@@ -286,13 +396,20 @@ async function main(): Promise<void> {
 
   // Summary
   const passed = results.filter(r => r.status === "pass").length
-  const total = results.length
+  const tested = results.length
   console.log("\n" + "=".repeat(50))
 
-  if (passed === total) {
-    console.log(c.green(c.bold(`Summary: ${passed}/${total} passed`)))
+  if (passed === tested) {
+    console.log(c.green(c.bold(`Summary: ${passed}/${tested} passed`)))
   } else {
-    console.log(c.yellow(c.bold(`Summary: ${passed}/${total} passed`)))
+    console.log(c.yellow(c.bold(`Summary: ${passed}/${tested} passed`)))
+  }
+
+  if (skipped.length > 0) {
+    console.log(c.dim(`         ${skipped.length} skipped (cached failures)`))
+    for (const s of skipped) {
+      console.log(c.dim(`           - ${s.model}: ${s.lastError}`))
+    }
   }
 
   // Read version from package.json
@@ -301,7 +418,8 @@ async function main(): Promise<void> {
     readFileSync(join(__dirname, "..", "package.json"), "utf-8")
   ) as { version: string }
 
-  writeResultsFile(results, pkg.version)
+  writeResultsFile(results, skipped, pkg.version)
+  writeFailedModelsCache(results, skipped, failedCache)
   updateReadme(results)
 }
 

@@ -1,0 +1,310 @@
+{
+  "version": "0.7.3",
+  "date": "2026-03-21T01:43:14.737Z",
+  "summary": {
+    "tested": 23,
+    "passed": 15,
+    "failed": 8,
+    "skipped": 0
+  },
+  "results": [
+    {
+      "model": "claude-opus-4-5-20251101",
+      "status": "pass",
+      "timeMs": 2567,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-3-5-haiku-latest",
+      "status": "fail",
+      "timeMs": 156,
+      "betas": [
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-5-haiku-latest"
+    },
+    {
+      "model": "claude-opus-4-1",
+      "status": "pass",
+      "timeMs": 3108,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-3-5-sonnet-20241022",
+      "status": "fail",
+      "timeMs": 190,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-5-sonnet-20241022"
+    },
+    {
+      "model": "claude-3-sonnet-20240229",
+      "status": "fail",
+      "timeMs": 107,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-sonnet-20240229"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "status": "pass",
+      "timeMs": 1665,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-1m-2025-08-07"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-sonnet-4-6",
+      "status": "pass",
+      "timeMs": 7875,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [
+        "context-1m-2025-08-07"
+      ],
+      "error": null
+    },
+    {
+      "model": "claude-sonnet-4-0",
+      "status": "pass",
+      "timeMs": 1180,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-4-20250514",
+      "status": "pass",
+      "timeMs": 2154,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-sonnet-4-5-20250929",
+      "status": "pass",
+      "timeMs": 1900,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-4-0",
+      "status": "pass",
+      "timeMs": 1613,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-3-5-haiku-20241022",
+      "status": "fail",
+      "timeMs": 105,
+      "betas": [
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-5-haiku-20241022"
+    },
+    {
+      "model": "claude-3-5-sonnet-20240620",
+      "status": "fail",
+      "timeMs": 99,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-5-sonnet-20240620"
+    },
+    {
+      "model": "claude-3-7-sonnet-latest",
+      "status": "fail",
+      "timeMs": 101,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-7-sonnet-latest"
+    },
+    {
+      "model": "claude-3-7-sonnet-20250219",
+      "status": "fail",
+      "timeMs": 121,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-7-sonnet-20250219"
+    },
+    {
+      "model": "claude-3-haiku-20240307",
+      "status": "pass",
+      "timeMs": 1134,
+      "betas": [
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "status": "pass",
+      "timeMs": 1223,
+      "betas": [
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "status": "pass",
+      "timeMs": 1004,
+      "betas": [
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-4-5",
+      "status": "pass",
+      "timeMs": 2254,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-3-opus-20240229",
+      "status": "fail",
+      "timeMs": 101,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": "model: claude-3-opus-20240229"
+    },
+    {
+      "model": "claude-sonnet-4-5",
+      "status": "pass",
+      "timeMs": 2790,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-sonnet-4-20250514",
+      "status": "pass",
+      "timeMs": 1309,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-4-1-20250805",
+      "status": "pass",
+      "timeMs": 3504,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05"
+      ],
+      "excluded": [],
+      "error": null
+    }
+  ],
+  "skipped": []
+}
