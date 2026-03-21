@@ -3,14 +3,14 @@
   "version": "0.7.3",
   "description": "OpenCode plugin that uses your Claude Code credentials — no separate login needed.",
   "preferGlobal": true,
-  "main": "dist/index.js",
-  "module": "dist/index.js",
+  "main": "opencode-claude-auth.js",
+  "module": "opencode-claude-auth.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./opencode-claude-auth.js"
     },
     "./claude-auth-plugin": {
       "types": "./dist/index.d.ts",
@@ -19,9 +19,18 @@
     "./claude-auth-plugin.js": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./opencode-claude-auth": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./opencode-claude-auth.js": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
+    "opencode-claude-auth.js",
     "dist",
     "installation.md"
   ],
