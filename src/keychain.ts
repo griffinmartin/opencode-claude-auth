@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -114,5 +114,72 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
     expiresAt: creds.expiresAt,
+  }
+}
+
+function writeCredentialsFile(creds: ClaudeCredentials): void {
+  const credPath = join(homedir(), ".claude", ".credentials.json")
+  let existing: Record<string, unknown> = {}
+  try {
+    existing = JSON.parse(readFileSync(credPath, "utf-8"))
+  } catch {
+    // Start fresh
+  }
+  existing.claudeAiOauth = {
+    ...(existing.claudeAiOauth as Record<string, unknown> ?? {}),
+    accessToken: creds.accessToken,
+    refreshToken: creds.refreshToken,
+    expiresAt: creds.expiresAt,
+  }
+  const dir = join(homedir(), ".claude")
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+  writeFileSync(credPath, JSON.stringify(existing, null, 2), "utf-8")
+}
+
+export function writeClaudeCredentials(creds: ClaudeCredentials): void {
+  if (process.platform !== "darwin") {
+    writeCredentialsFile(creds)
+    return
+  }
+
+  // Update macOS Keychain — read existing, merge, write back
+  let existing: Record<string, unknown> = {}
+  try {
+    const raw = execSync(`security find-generic-password -s "${SERVICE_NAME}" -w`, {
+      timeout: 2000,
+      encoding: "utf-8",
+    }).trim()
+    existing = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    // No existing entry or parse error — start fresh
+  }
+
+  existing.claudeAiOauth = {
+    ...(existing.claudeAiOauth as Record<string, unknown> ?? {}),
+    accessToken: creds.accessToken,
+    refreshToken: creds.refreshToken,
+    expiresAt: creds.expiresAt,
+  }
+
+  const jsonStr = JSON.stringify(existing)
+  try {
+    // Delete old entry first (security add-generic-password fails if it exists)
+    try {
+      execSync(`security delete-generic-password -s "${SERVICE_NAME}"`, {
+        timeout: 2000,
+        stdio: "ignore",
+      })
+    } catch {
+      // Entry may not exist
+    }
+    execSync(`security add-generic-password -s "${SERVICE_NAME}" -a "Claude Code" -w "${jsonStr.replace(/"/g, '\\"')}"`, {
+      timeout: 2000,
+      stdio: "ignore",
+    })
+  } catch {
+    // Fall back to file-based storage
+    writeCredentialsFile(creds)
   }
 }

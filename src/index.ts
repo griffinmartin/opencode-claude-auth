@@ -2,11 +2,11 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { readClaudeCredentials } from "./keychain.js"
 import { getExcludedBetas, addExcludedBeta, getNextBetaToExclude, isLongContextError, getModelBetas, LONG_CONTEXT_BETAS } from "./betas.js"
 import { transformBody, transformResponseStream } from "./transforms.js"
-import { getCachedCredentials, syncAuthJson, refreshIfNeeded, type ClaudeCredentials } from "./credentials.js"
+import { getCachedCredentials, getCachedCredentialsAsync, syncAuthJson, refreshIfNeeded, refreshIfNeededAsync, type ClaudeCredentials } from "./credentials.js"
 
 export { getExcludedBetas, addExcludedBeta, getNextBetaToExclude, isLongContextError, getModelBetas, LONG_CONTEXT_BETAS } from "./betas.js"
 export { transformBody, stripToolPrefix, transformResponseStream } from "./transforms.js"
-export { getCachedCredentials, syncAuthJson, refreshIfNeeded, type ClaudeCredentials } from "./credentials.js"
+export { getCachedCredentials, getCachedCredentialsAsync, syncAuthJson, refreshIfNeeded, refreshIfNeededAsync, type ClaudeCredentials } from "./credentials.js"
 
 const SYSTEM_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 const DEFAULT_CC_VERSION = "2.1.80"
@@ -124,10 +124,10 @@ const plugin: Plugin = async () => {
     )
   }
 
-  // Keep auth.json synced, refreshing via CLI if token is near expiry
-  setInterval(() => {
+  // Keep auth.json synced, refreshing via OAuth if token is near expiry
+  setInterval(async () => {
     try {
-      const fresh = refreshIfNeeded()
+      const fresh = await refreshIfNeededAsync()
       if (fresh) {
         syncAuthJson(fresh)
       }
@@ -166,7 +166,7 @@ const plugin: Plugin = async () => {
         return {
           apiKey: "",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const latest = getCachedCredentials()
+            const latest = await getCachedCredentialsAsync()
             if (!latest) {
               throw new Error(
                 "Claude Code credentials are unavailable or expired. Run `claude` to refresh them.",

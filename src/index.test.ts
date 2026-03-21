@@ -49,6 +49,10 @@ export function readClaudeCredentials() {
   return credentials
 }
 
+export function writeClaudeCredentials(creds) {
+  credentials = creds
+}
+
 export function __getReadCount() {
   return readCount
 }
@@ -75,7 +79,7 @@ describe("exported helpers", () => {
     await copySourceFiles(tempDir)
     await writeFile(
       tempKeychain,
-      'export function readClaudeCredentials() { return { accessToken: "token", refreshToken: "refresh", expiresAt: 1 } }\n',
+      'export function readClaudeCredentials() { return { accessToken: "token", refreshToken: "refresh", expiresAt: 1 } }\nexport function writeClaudeCredentials() {}\n',
       "utf8",
     )
 

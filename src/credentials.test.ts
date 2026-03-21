@@ -32,6 +32,10 @@ export function readClaudeCredentials() {
   return credentials
 }
 
+export function writeClaudeCredentials(creds) {
+  credentials = creds
+}
+
 export function __getReadCount() {
   return readCount
 }
