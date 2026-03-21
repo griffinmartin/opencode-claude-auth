@@ -49,21 +49,33 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 
 ## Supported models
 
-All Claude 4.x models work with this plugin. Legacy Claude 3.x models are not supported via OAuth.
+15/23 models supported. Run `npm run test:models` to verify against your account.
 
 | Model | Status |
 |-------|--------|
-| claude-opus-4-6 | Supported |
-| claude-sonnet-4-6 | Supported |
-| claude-opus-4-5 | Supported |
-| claude-sonnet-4-5 | Supported |
-| claude-opus-4-1 | Supported |
-| claude-sonnet-4-0 / opus-4-0 | Supported |
-| claude-haiku-4-5 | Supported |
 | claude-3-haiku-20240307 | Supported |
-| claude-3.x (sonnet, opus) | Not supported |
-
-Run `npm run test:models` to verify against your account.
+| claude-haiku-4-5 | Supported |
+| claude-haiku-4-5-20251001 | Supported |
+| claude-opus-4-0 | Supported |
+| claude-opus-4-1 | Supported |
+| claude-opus-4-1-20250805 | Supported |
+| claude-opus-4-20250514 | Supported |
+| claude-opus-4-5 | Supported |
+| claude-opus-4-5-20251101 | Supported |
+| claude-opus-4-6 | Supported |
+| claude-sonnet-4-0 | Supported |
+| claude-sonnet-4-20250514 | Supported |
+| claude-sonnet-4-5 | Supported |
+| claude-sonnet-4-5-20250929 | Supported |
+| claude-sonnet-4-6 | Supported |
+| claude-3-5-haiku-20241022 | Not supported |
+| claude-3-5-haiku-latest | Not supported |
+| claude-3-5-sonnet-20240620 | Not supported |
+| claude-3-5-sonnet-20241022 | Not supported |
+| claude-3-7-sonnet-20250219 | Not supported |
+| claude-3-7-sonnet-latest | Not supported |
+| claude-3-opus-20240229 | Not supported |
+| claude-3-sonnet-20240229 | Not supported |
 
 ## Credential sources
 
