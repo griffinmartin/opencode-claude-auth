@@ -202,6 +202,59 @@ ${rows.join("\n")}
   console.log(c.dim(`\nResults written to test-results/model-smoke-test.md`))
 }
 
+function updateReadme(results: ModelResult[]): void {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const readmePath = join(__dirname, "..", "README.md")
+
+  if (!existsSync(readmePath)) return
+
+  const readme = readFileSync(readmePath, "utf-8")
+
+  // Sort: passing models first, then failing; alphabetical within each group
+  const sorted = [...results].sort((a, b) => {
+    if (a.status !== b.status) return a.status === "pass" ? -1 : 1
+    return a.model.localeCompare(b.model)
+  })
+
+  const rows = sorted.map(r => {
+    const status = r.status === "pass" ? "Supported" : "Not supported"
+    return `| ${r.model} | ${status} |`
+  })
+
+  const passed = results.filter(r => r.status === "pass").length
+  const total = results.length
+
+  const section = `## Supported models
+
+${passed}/${total} models supported. Run \`npm run test:models\` to verify against your account.
+
+| Model | Status |
+|-------|--------|
+${rows.join("\n")}`
+
+  // Replace existing section or insert before "## Credential sources"
+  const sectionStart = readme.indexOf("## Supported models")
+  const nextSection = readme.indexOf("\n## ", sectionStart + 1)
+
+  let updated: string
+  if (sectionStart !== -1 && nextSection !== -1) {
+    updated = readme.slice(0, sectionStart) + section + "\n\n" + readme.slice(nextSection + 1)
+  } else if (sectionStart !== -1) {
+    updated = readme.slice(0, sectionStart) + section + "\n"
+  } else {
+    // Insert before "## Credential sources"
+    const insertPoint = readme.indexOf("## Credential sources")
+    if (insertPoint !== -1) {
+      updated = readme.slice(0, insertPoint) + section + "\n\n" + readme.slice(insertPoint)
+    } else {
+      return // Can't find insertion point
+    }
+  }
+
+  writeFileSync(readmePath, updated, "utf-8")
+  console.log(c.dim(`README.md updated with supported models`))
+}
+
 async function main(): Promise<void> {
   console.log(c.bold("Model Smoke Test"))
   console.log("=".repeat(50) + "\n")
@@ -249,6 +302,7 @@ async function main(): Promise<void> {
   ) as { version: string }
 
   writeResultsFile(results, pkg.version)
+  updateReadme(results)
 }
 
 main().catch((err) => {
