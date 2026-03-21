@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.3...v0.7.4) (2026-03-21)
+
+
+### Bug Fixes
+
+* restore package root shim for plugin resolution ([#61](https://github.com/griffinmartin/opencode-claude-auth/issues/61)) ([cc02950](https://github.com/griffinmartin/opencode-claude-auth/commit/cc02950d789f24bf29b99a33efc13a8dca7a535e))
+
 ## [0.7.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.2...v0.7.3) (2026-03-20)
 
 
