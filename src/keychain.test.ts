@@ -66,12 +66,13 @@ describe("credential file parsing", () => {
 
 describe("config dir resolution", () => {
   it("uses CLAUDE_CONFIG_DIR for credentials file path", async () => {
+    const dir = join(tmpdir(), "claude-custom")
     const prev = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = "/tmp/claude-custom"
+    process.env.CLAUDE_CONFIG_DIR = dir
 
     try {
       const mod = await loadKeychainModule()
-      assert.equal(mod.getCredentialsFilePath(), "/tmp/claude-custom/.credentials.json")
+      assert.equal(mod.getCredentialsFilePath(), join(dir, ".credentials.json"))
     } finally {
       resetConfigEnv(prev)
     }
@@ -90,12 +91,13 @@ describe("config dir resolution", () => {
   })
 
   it("derives a hashed keychain service name for custom CLAUDE_CONFIG_DIR", async () => {
+    const dir = join(tmpdir(), "claude-custom")
     const prev = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = "/tmp/claude-custom"
+    process.env.CLAUDE_CONFIG_DIR = dir
 
     try {
       const mod = await loadKeychainModule()
-      const hash = createHash("sha256").update("/tmp/claude-custom").digest("hex").slice(0, 8)
+      const hash = createHash("sha256").update(dir).digest("hex").slice(0, 8)
       assert.equal(mod.getClaudeCredentialServiceName(), `Claude Code-credentials-${hash}`)
     } finally {
       resetConfigEnv(prev)
