@@ -7,9 +7,22 @@
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./claude-auth-plugin": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./claude-auth-plugin.js": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
     "dist",
-    "claude-auth-plugin.js",
     "installation.md"
   ],
   "scripts": {
