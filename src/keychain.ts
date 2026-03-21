@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { execSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -9,11 +10,33 @@ export interface ClaudeCredentials {
   expiresAt: number
 }
 
-const SERVICE_NAME = "Claude Code-credentials"
+const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), ".claude")
+const DEFAULT_SERVICE_NAME = "Claude Code-credentials"
+
+function getClaudeConfigDir(): string {
+  return (process.env.CLAUDE_CONFIG_DIR ?? DEFAULT_CLAUDE_CONFIG_DIR).normalize("NFC")
+}
+
+function getCredentialsFilePath(): string {
+  return join(getClaudeConfigDir(), ".credentials.json")
+}
+
+function getClaudeCredentialServiceName(): string {
+  if (!process.env.CLAUDE_CONFIG_DIR) {
+    return DEFAULT_SERVICE_NAME
+  }
+
+  const suffix = createHash("sha256")
+    .update(getClaudeConfigDir())
+    .digest("hex")
+    .slice(0, 8)
+
+  return `${DEFAULT_SERVICE_NAME}-${suffix}`
+}
 
 function readCredentialsFile(): ClaudeCredentials | null {
   try {
-    const credPath = join(homedir(), ".claude", ".credentials.json")
+    const credPath = getCredentialsFilePath()
     const raw = readFileSync(credPath, "utf-8")
     const parsed = JSON.parse(raw) as { claudeAiOauth?: Record<string, unknown> }
     const data = parsed.claudeAiOauth ?? parsed
@@ -44,7 +67,7 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
 
   let raw: string
   try {
-    raw = execSync(`security find-generic-password -s "${SERVICE_NAME}" -w`, {
+    raw = execSync(`security find-generic-password -s "${getClaudeCredentialServiceName()}" -w`, {
       timeout: 2000,
       encoding: "utf-8",
     }).trim()
