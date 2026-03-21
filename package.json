@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc && cp src/anthropic-prompt.txt dist/",
     "test": "node --test --experimental-strip-types src/**/*.test.ts",
+    "test:models": "npm run build && node scripts/test-models.ts",
     "prepublishOnly": "npm run build && npm test"
   },
   "peerDependencies": {
