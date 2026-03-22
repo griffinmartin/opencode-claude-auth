@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.4...v1.0.0) (2026-03-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* context-1m-2025-08-07 is no longer sent by default. Claude Max users who relied on automatic 1M context must set the env var.
+
+### Bug Fixes
+
+* make context-1m beta opt-in to fix long context billing errors ([#64](https://github.com/griffinmartin/opencode-claude-auth/issues/64)) ([#65](https://github.com/griffinmartin/opencode-claude-auth/issues/65)) ([f8cb63d](https://github.com/griffinmartin/opencode-claude-auth/commit/f8cb63d69dab178dc3fe9ca4bf7d849e7d0a661a))
+
 ## [0.7.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.3...v0.7.4) (2026-03-21)
 
 
