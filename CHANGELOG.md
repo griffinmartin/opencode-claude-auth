@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.0.0...v1.1.0) (2026-03-22)
+
+
+### Features
+
+* add Homebrew formula for brew install support ([#68](https://github.com/griffinmartin/opencode-claude-auth/issues/68)) ([6beb56e](https://github.com/griffinmartin/opencode-claude-auth/commit/6beb56e7f56da35d9fa5724d9cc7d86d4b590c51))
+
 ## [1.0.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v0.7.4...v1.0.0) (2026-03-22)
 
 ### ⚠ BREAKING CHANGES
