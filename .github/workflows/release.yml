@@ -44,3 +44,24 @@ jobs:
         if: steps.release-please.outputs.releases_created == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Update Homebrew formula
+        if: steps.release-please.outputs.releases_created == 'true'
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TARBALL="https://registry.npmjs.org/opencode-claude-auth/-/opencode-claude-auth-${VERSION}.tgz"
+
+          # Wait for npm to propagate, then fetch sha256
+          sleep 10
+          SHA=$(curl -sL "$TARBALL" | shasum -a 256 | cut -d' ' -f1)
+
+          # Update formula
+          sed -i "s|url \".*\"|url \"${TARBALL}\"|" Formula/opencode-claude-auth.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/opencode-claude-auth.rb
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/opencode-claude-auth.rb
+          git diff --cached --quiet || git commit -m "chore: update Homebrew formula to v${VERSION}"
+          git push

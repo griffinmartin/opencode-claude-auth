@@ -29,6 +29,15 @@ Paste this into your AI agent (Claude Code, Cursor, Copilot, etc.):
 Fetch https://raw.githubusercontent.com/griffinmartin/opencode-claude-auth/main/installation.md and follow every step exactly as written.
 ```
 
+### Install with Homebrew (macOS)
+
+```bash
+brew tap griffinmartin/opencode-claude-auth https://github.com/griffinmartin/opencode-claude-auth.git
+brew install opencode-claude-auth
+```
+
+This installs the plugin and automatically adds it to your OpenCode config.
+
 ### Manual install
 
 ```bash
