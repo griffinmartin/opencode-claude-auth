@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
@@ -41,7 +41,10 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
   }
-  writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8")
+  writeFileSync(authPath, JSON.stringify(auth, null, 2), { encoding: "utf-8", mode: 0o600 })
+  if (process.platform !== "win32") {
+    chmodSync(authPath, 0o600)
+  }
 }
 
 export function syncAuthJson(creds: ClaudeCredentials): void {

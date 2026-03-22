@@ -1,3 +1,4 @@
+import { statSync } from "node:fs"
 import { describe, it, before } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
@@ -88,6 +89,90 @@ describe("credential caching", () => {
       assert.equal(keychainModule.__getReadCount(), 2)
     } finally {
       Date.now = originalNow
+    }
+  })
+})
+
+describe("syncAuthJson file permissions", () => {
+  it("writes auth.json with mode 0o600", async () => {
+    if (process.platform === "win32") return // Windows doesn't support Unix permissions
+
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-perms-"))
+    process.env.HOME = tempHome
+
+    try {
+      const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-sync-"))
+      const tempCredentials = join(tempDir, "credentials.ts")
+      const tempKeychain = join(tempDir, "keychain.js")
+      const sourceCredentials = await readFile(new URL("./credentials.ts", import.meta.url), "utf8")
+
+      await writeFile(tempKeychain,
+        `export function readClaudeCredentials() {
+          return { accessToken: "token", refreshToken: "refresh", expiresAt: ${Date.now() + 600_000} }
+        }`,
+        "utf8",
+      )
+      await writeFile(tempCredentials, sourceCredentials, "utf8")
+
+      const mod = await import(pathToFileURL(tempCredentials).href)
+      mod.syncAuthJson({ accessToken: "tok", refreshToken: "ref", expiresAt: Date.now() + 600_000 })
+
+      const authPath = join(tempHome, ".local", "share", "opencode", "auth.json")
+      const stats = statSync(authPath)
+      const mode = stats.mode & 0o777
+      assert.equal(mode, 0o600, `Expected file mode 0o600, got 0o${mode.toString(8)}`)
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("tightens permissions on pre-existing auth.json from 0o644 to 0o600", async () => {
+    if (process.platform === "win32") return
+
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-perms2-"))
+    process.env.HOME = tempHome
+
+    try {
+      // Create auth.json with permissive mode first
+      const authDir = join(tempHome, ".local", "share", "opencode")
+      const { mkdirSync: mkdirSyncLocal, writeFileSync: writeFileSyncLocal, chmodSync: chmodSyncLocal } = await import("node:fs")
+      mkdirSyncLocal(authDir, { recursive: true })
+      const authPath = join(authDir, "auth.json")
+      writeFileSyncLocal(authPath, "{}", { encoding: "utf-8", mode: 0o644 })
+      chmodSyncLocal(authPath, 0o644) // Ensure 0o644 regardless of umask
+
+      // Now call syncAuthJson which should tighten permissions
+      const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-sync2-"))
+      const tempCredentials = join(tempDir, "credentials.ts")
+      const tempKeychain = join(tempDir, "keychain.js")
+      const sourceCredentials = await readFile(new URL("./credentials.ts", import.meta.url), "utf8")
+
+      await writeFile(tempKeychain,
+        `export function readClaudeCredentials() {
+          return { accessToken: "token", refreshToken: "refresh", expiresAt: ${Date.now() + 600_000} }
+        }`,
+        "utf8",
+      )
+      await writeFile(tempCredentials, sourceCredentials, "utf8")
+
+      const mod = await import(pathToFileURL(tempCredentials).href)
+      mod.syncAuthJson({ accessToken: "tok", refreshToken: "ref", expiresAt: Date.now() + 600_000 })
+
+      const stats = statSync(authPath)
+      const mode = stats.mode & 0o777
+      assert.equal(mode, 0o600, `Expected tightened mode 0o600, got 0o${mode.toString(8)}`)
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
     }
   })
 })
