@@ -31,9 +31,8 @@ export async function fetchWithRetry(
     const res = await fetchImpl(input, init)
     if ((res.status === 429 || res.status === 529) && i < retries - 1) {
       const retryAfter = res.headers.get("retry-after")
-      const delay = retryAfter
-        ? parseInt(retryAfter, 10) * 1000
-        : (i + 1) * 2000
+      const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN
+      const delay = Number.isNaN(parsed) ? (i + 1) * 2000 : parsed * 1000
       await new Promise(r => setTimeout(r, delay))
       continue
     }

@@ -219,6 +219,25 @@ describe("exported helpers", () => {
     assert.ok(elapsed >= 900, `Expected at least 900ms delay, got ${elapsed}ms`)
   })
 
+  it("fetchWithRetry falls back to default delay when retry-after is non-numeric", async () => {
+    const start = Date.now()
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      if (callCount === 1) {
+        return Promise.resolve(new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "not-a-number" },
+        }))
+      }
+      return Promise.resolve(new Response("ok", { status: 200 }))
+    }) as unknown as typeof fetch
+    await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    const elapsed = Date.now() - start
+    // Default delay for first retry (i=0) is (0+1)*2000 = 2000ms
+    assert.ok(elapsed >= 1900, `Expected at least 1900ms fallback delay, got ${elapsed}ms`)
+  })
+
   it("system transform does not inject when system already contains prefix", async () => {
     const originalSetInterval = globalThis.setInterval
     const originalHome = process.env.HOME
