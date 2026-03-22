@@ -36,7 +36,13 @@ brew tap griffinmartin/opencode-claude-auth https://github.com/griffinmartin/ope
 brew install opencode-claude-auth
 ```
 
-This installs the plugin and automatically adds it to your OpenCode config.
+Then add to the `plugin` array in your `opencode.json`:
+
+```json
+{
+  "plugin": ["opencode-claude-auth"]
+}
+```
 
 ### Manual install
 
