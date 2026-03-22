@@ -4,9 +4,15 @@ import { getModelBetas, isLongContextError, supports1mContext } from "./betas.ts
 
 describe("betas", () => {
   it("getModelBetas includes standard betas for sonnet 4.6", () => {
-    const sonnetBetas = getModelBetas("claude-sonnet-4-6")
-    assert.ok(sonnetBetas.includes("claude-code-20250219"))
-    assert.ok(!sonnetBetas.includes("context-1m-2025-08-07"), "context-1m should NOT be auto-added")
+    const saved = process.env.ANTHROPIC_ENABLE_1M_CONTEXT
+    delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
+    try {
+      const sonnetBetas = getModelBetas("claude-sonnet-4-6")
+      assert.ok(sonnetBetas.includes("claude-code-20250219"))
+      assert.ok(!sonnetBetas.includes("context-1m-2025-08-07"), "context-1m should NOT be auto-added")
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_ENABLE_1M_CONTEXT = saved
+    }
   })
 
   it("getModelBetas excludes claude-code beta for haiku", () => {
@@ -15,13 +21,19 @@ describe("betas", () => {
   })
 
   it("getModelBetas does not auto-add context-1m for any model by default", () => {
-    const models = [
-      "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5-20250514",
-      "claude-opus-4-5-20250514", "claude-opus-4-20250514", "sonnet", "opus",
-    ]
-    for (const model of models) {
-      const betas = getModelBetas(model)
-      assert.ok(!betas.includes("context-1m-2025-08-07"), `${model} should not get 1M beta by default`)
+    const saved = process.env.ANTHROPIC_ENABLE_1M_CONTEXT
+    delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
+    try {
+      const models = [
+        "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5-20250514",
+        "claude-opus-4-5-20250514", "claude-opus-4-20250514", "sonnet", "opus",
+      ]
+      for (const model of models) {
+        const betas = getModelBetas(model)
+        assert.ok(!betas.includes("context-1m-2025-08-07"), `${model} should not get 1M beta by default`)
+      }
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_ENABLE_1M_CONTEXT = saved
     }
   })
 
