@@ -24,19 +24,22 @@ jobs:
         with:
           release-type: node
 
+      - uses: pnpm/action-setup@v4
+        if: steps.release-please.outputs.releases_created == 'true'
+
       - uses: actions/setup-node@v4
         if: steps.release-please.outputs.releases_created == 'true'
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
         if: steps.release-please.outputs.releases_created == 'true'
 
-      - run: npm run build
+      - run: pnpm run build
         if: steps.release-please.outputs.releases_created == 'true'
 
-      - run: npm publish --access public --provenance
+      - run: pnpm publish --access public --provenance --no-git-checks
         if: steps.release-please.outputs.releases_created == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
