@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { statSync } from "node:fs"
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -176,15 +176,10 @@ describe("syncAuthJson file permissions", () => {
     try {
       // Create auth.json with permissive mode first
       const authDir = join(tempHome, ".local", "share", "opencode")
-      const {
-        mkdirSync: mkdirSyncLocal,
-        writeFileSync: writeFileSyncLocal,
-        chmodSync: chmodSyncLocal,
-      } = await import("node:fs")
-      mkdirSyncLocal(authDir, { recursive: true })
+      mkdirSync(authDir, { recursive: true })
       const authPath = join(authDir, "auth.json")
-      writeFileSyncLocal(authPath, "{}", { encoding: "utf-8", mode: 0o644 })
-      chmodSyncLocal(authPath, 0o644) // Ensure 0o644 regardless of umask
+      writeFileSync(authPath, "{}", { encoding: "utf-8", mode: 0o644 })
+      chmodSync(authPath, 0o644) // Ensure 0o644 regardless of umask
 
       // Now call syncAuthJson which should tighten permissions
       const tempDir = await mkdtemp(

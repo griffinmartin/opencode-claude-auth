@@ -46,7 +46,7 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
   }
   const dir = dirname(authPath)
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
   writeFileSync(authPath, JSON.stringify(auth, null, 2), {
     encoding: "utf-8",
