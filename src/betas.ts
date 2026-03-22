@@ -53,23 +53,32 @@ export function getNextBetaToExclude(modelId: string): string | null {
   return null // All long-context betas already excluded
 }
 
+export function supports1mContext(modelId: string): boolean {
+  const lower = modelId.toLowerCase()
+  if (!lower.includes("opus") && !lower.includes("sonnet")) return false
+  const versionMatch = lower.match(/(opus|sonnet)-(\d+)-(\d+)/)
+  if (!versionMatch) return false
+  const major = parseInt(versionMatch[2], 10)
+  const minor = parseInt(versionMatch[3], 10)
+  // Date suffixes like 20250514 are not minor versions — treat as x.0
+  const effectiveMinor = minor > 99 ? 0 : minor
+  return major > 4 || (major === 4 && effectiveMinor >= 6)
+}
+
 export function getModelBetas(modelId: string, excluded?: Set<string>): string[] {
   const betas = [...getRequiredBetas()]
   const lower = modelId.toLowerCase()
 
-  // context-1m only for opus/sonnet 4.6+ models
-  if (lower.includes("opus") || lower.includes("sonnet")) {
-    const versionMatch = lower.match(/(opus|sonnet)-(\d+)-(\d+)/)
-    if (versionMatch) {
-      const major = parseInt(versionMatch[2], 10)
-      const minor = parseInt(versionMatch[3], 10)
-      // Date suffixes like 20250514 are not minor versions — treat as x.0
-      const effectiveMinor = minor > 99 ? 0 : minor
-      if (major > 4 || (major === 4 && effectiveMinor >= 6)) {
-        betas.push("context-1m-2025-08-07")
-      }
-    }
-    // If no version found (bare alias like "sonnet"), exclude 1M beta
+  // context-1m is OPT-IN only, matching the official Claude CLI behavior.
+  // The CLI only sends this beta when the model ID has a [1m] suffix.
+  // Without it, the API enforces a 200k context limit. Sending the beta
+  // without a subscription that covers long context billing causes
+  // "Extra usage is required for long context requests" errors.
+  //
+  // Users who want 1M context should set ANTHROPIC_ENABLE_1M_CONTEXT=true
+  // (requires a Claude Max subscription or a plan that covers extra usage).
+  if (process.env.ANTHROPIC_ENABLE_1M_CONTEXT === "true" && supports1mContext(modelId)) {
+    betas.push("context-1m-2025-08-07")
   }
 
   // haiku doesn't get claude-code-20250219

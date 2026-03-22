@@ -87,6 +87,21 @@ The plugin checks these in order:
 | Keychain access denied | Grant access when macOS prompts you |
 | Keychain read timed out | Restart Keychain Access (can happen on macOS Tahoe) |
 | "Credentials are unavailable or expired" | Run `claude` to refresh your Claude Code credentials |
+| "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below |
+
+## Long context (1M)
+
+The `context-1m-2025-08-07` beta header is not sent by default. Without it, the API caps context at 200k tokens.
+
+To enable 1M context (requires Claude Max or a plan with extra usage coverage):
+
+```bash
+export ANTHROPIC_ENABLE_1M_CONTEXT=true
+```
+
+The Claude CLI itself treats 1M context as opt-in (via a `[1m]` model suffix). Sending the beta without a plan that covers long context charges causes "Extra usage is required for long context requests" errors. Versions before 0.8.0 sent this beta automatically for 4.6+ models, which broke things for Pro users ([#64](https://github.com/griffinmartin/opencode-claude-auth/issues/64)).
+
+If a long context error still occurs (e.g. from a beta flag added via `ANTHROPIC_BETA_FLAGS`), the plugin retries without the offending flag.
 
 ## Environment variable overrides
 
@@ -97,11 +112,13 @@ All configurable parameters can be overridden via environment variables. If Anth
 | `ANTHROPIC_CLI_VERSION` | Claude CLI version for user-agent and billing headers | `2.1.80` |
 | `ANTHROPIC_USER_AGENT` | Full User-Agent string (overrides CLI version) | `claude-cli/{version} (external, cli)` |
 | `ANTHROPIC_BETA_FLAGS` | Comma-separated beta feature flags | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
+| `ANTHROPIC_ENABLE_1M_CONTEXT` | Enable 1M token context window for 4.6+ models (requires Max subscription) | `false` |
 
 Example:
 
 ```bash
 export ANTHROPIC_CLI_VERSION=2.2.0
+export ANTHROPIC_ENABLE_1M_CONTEXT=true  # requires Claude Max
 ```
 
 ## How it works (technical)
