@@ -1,6 +1,10 @@
-import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { transformBody, stripToolPrefix, transformResponseStream } from "./transforms.ts"
+import { describe, it } from "node:test"
+import {
+  stripToolPrefix,
+  transformBody,
+  transformResponseStream,
+} from "./transforms.ts"
 
 describe("transforms", () => {
   it("transformBody preserves system text and prefixes tool names", () => {
@@ -25,7 +29,12 @@ describe("transforms", () => {
 
   it("transformBody keeps opencode-claude-auth system text unchanged", () => {
     const input = JSON.stringify({
-      system: [{ type: "text", text: "Use opencode-claude-auth plugin instructions as-is." }],
+      system: [
+        {
+          type: "text",
+          text: "Use opencode-claude-auth plugin instructions as-is.",
+        },
+      ],
     })
 
     const output = transformBody(input)
@@ -34,15 +43,20 @@ describe("transforms", () => {
       system: Array<{ text: string }>
     }
 
-    assert.equal(parsed.system[0].text, "Use opencode-claude-auth plugin instructions as-is.")
+    assert.equal(
+      parsed.system[0].text,
+      "Use opencode-claude-auth plugin instructions as-is.",
+    )
   })
 
   it("transformBody keeps OpenCode and opencode URL/path text unchanged", () => {
     const input = JSON.stringify({
-      system: [{
-        type: "text",
-        text: "OpenCode docs: https://example.com/opencode/docs and path /var/opencode/bin",
-      }],
+      system: [
+        {
+          type: "text",
+          text: "OpenCode docs: https://example.com/opencode/docs and path /var/opencode/bin",
+        },
+      ],
     })
 
     const output = transformBody(input)
@@ -88,8 +102,14 @@ describe("transforms", () => {
     const transformed = transformResponseStream(response)
     const text = await transformed.text()
 
-    assert.ok(text.includes('"name": "search"'), `Expected stripped name in: ${text}`)
-    assert.ok(!text.includes("mcp_search"), `Should not contain mcp_search in: ${text}`)
+    assert.ok(
+      text.includes('"name": "search"'),
+      `Expected stripped name in: ${text}`,
+    )
+    assert.ok(
+      !text.includes("mcp_search"),
+      `Should not contain mcp_search in: ${text}`,
+    )
   })
 
   it("transformResponseStream withholds output until event boundary arrives", async () => {
@@ -100,7 +120,7 @@ describe("transforms", () => {
       start(controller) {
         controller.enqueue(encoder.encode('data: {"name":"mcp_test"}'))
         sendBoundary = () => {
-          controller.enqueue(encoder.encode('\n\n'))
+          controller.enqueue(encoder.encode("\n\n"))
           controller.close()
         }
       },
@@ -111,10 +131,16 @@ describe("transforms", () => {
     const reader = transformed.body!.getReader()
 
     const pending = reader.read()
-    const raceTimeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50))
+    const raceTimeout = new Promise<"timeout">((resolve) =>
+      setTimeout(() => resolve("timeout"), 50),
+    )
 
     const first = await Promise.race([pending, raceTimeout])
-    assert.equal(first, "timeout", "Expected no output before boundary, but got a chunk")
+    assert.equal(
+      first,
+      "timeout",
+      "Expected no output before boundary, but got a chunk",
+    )
 
     sendBoundary!()
 
@@ -122,8 +148,14 @@ describe("transforms", () => {
     assert.equal(done, false)
     const decoder = new TextDecoder()
     const text = decoder.decode(value)
-    assert.ok(text.includes('"name": "test"'), `Expected stripped name: ${text}`)
-    assert.ok(!text.includes("mcp_test"), `Should not contain mcp_test: ${text}`)
+    assert.ok(
+      text.includes('"name": "test"'),
+      `Expected stripped name: ${text}`,
+    )
+    assert.ok(
+      !text.includes("mcp_test"),
+      `Should not contain mcp_test: ${text}`,
+    )
 
     const final = await reader.read()
     assert.equal(final.done, true)
@@ -146,9 +178,21 @@ describe("transforms", () => {
     const transformed = transformResponseStream(response)
     const text = await transformed.text()
 
-    assert.ok(text.includes('"name": "alpha"'), `Expected alpha stripped in: ${text}`)
-    assert.ok(text.includes('"name": "beta"'), `Expected beta stripped in: ${text}`)
-    assert.ok(!text.includes("mcp_alpha"), `Should not contain mcp_alpha in: ${text}`)
-    assert.ok(!text.includes("mcp_beta"), `Should not contain mcp_beta in: ${text}`)
+    assert.ok(
+      text.includes('"name": "alpha"'),
+      `Expected alpha stripped in: ${text}`,
+    )
+    assert.ok(
+      text.includes('"name": "beta"'),
+      `Expected beta stripped in: ${text}`,
+    )
+    assert.ok(
+      !text.includes("mcp_alpha"),
+      `Should not contain mcp_alpha in: ${text}`,
+    )
+    assert.ok(
+      !text.includes("mcp_beta"),
+      `Should not contain mcp_beta in: ${text}`,
+    )
   })
 })

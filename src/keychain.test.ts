@@ -1,8 +1,5 @@
-import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs"
-import { join } from "node:path"
-import { tmpdir } from "node:os"
+import { describe, it } from "node:test"
 
 // We test readCredentialsFile indirectly by manipulating the file it reads.
 // Since readClaudeCredentials on non-darwin falls back to file reading,

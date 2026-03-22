@@ -1,6 +1,8 @@
 const TOOL_PREFIX = "mcp_"
 
-export function transformBody(body: BodyInit | null | undefined): BodyInit | null | undefined {
+export function transformBody(
+  body: BodyInit | null | undefined,
+): BodyInit | null | undefined {
   if (typeof body !== "string") {
     return body
   }

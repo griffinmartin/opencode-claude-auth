@@ -38,12 +38,16 @@
     "build": "tsc && cp src/anthropic-prompt.txt dist/",
     "test": "node --test --experimental-strip-types src/**/*.test.ts",
     "test:models": "npm run build && node scripts/test-models.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --fix .",
+    "format": "biome format --write .",
     "prepublishOnly": "npm run build && npm test"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.8",
     "@opencode-ai/plugin": "latest",
     "@types/node": "^25.5.0",
     "typescript": "^5.0.0"
