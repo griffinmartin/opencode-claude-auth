@@ -51,23 +51,23 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 
 15 supported models. Run `npm run test:models` to verify against your account.
 
-| Model |
-|-------|
-| claude-3-haiku-20240307 |
-| claude-haiku-4-5 |
-| claude-haiku-4-5-20251001 |
-| claude-opus-4-0 |
-| claude-opus-4-1 |
-| claude-opus-4-1-20250805 |
-| claude-opus-4-20250514 |
-| claude-opus-4-5 |
-| claude-opus-4-5-20251101 |
-| claude-opus-4-6 |
-| claude-sonnet-4-0 |
-| claude-sonnet-4-20250514 |
-| claude-sonnet-4-5 |
+| Model                      |
+| -------------------------- |
+| claude-3-haiku-20240307    |
+| claude-haiku-4-5           |
+| claude-haiku-4-5-20251001  |
+| claude-opus-4-0            |
+| claude-opus-4-1            |
+| claude-opus-4-1-20250805   |
+| claude-opus-4-20250514     |
+| claude-opus-4-5            |
+| claude-opus-4-5-20251101   |
+| claude-opus-4-6            |
+| claude-sonnet-4-0          |
+| claude-sonnet-4-20250514   |
+| claude-sonnet-4-5          |
 | claude-sonnet-4-5-20250929 |
-| claude-sonnet-4-6 |
+| claude-sonnet-4-6          |
 
 ## Credential sources
 
@@ -78,16 +78,16 @@ The plugin checks these in order:
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| "Credentials not found" | Run `claude` to authenticate with Claude Code first |
-| "Keychain is locked" | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db` |
-| "Token expired and refresh failed" | The plugin runs `claude` CLI to refresh automatically. If this fails, re-authenticate manually by running `claude` |
-| Not working on Linux/Windows | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it |
-| Keychain access denied | Grant access when macOS prompts you |
-| Keychain read timed out | Restart Keychain Access (can happen on macOS Tahoe) |
-| "Credentials are unavailable or expired" | Run `claude` to refresh your Claude Code credentials |
-| "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below |
+| Problem                                             | Solution                                                                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| "Credentials not found"                             | Run `claude` to authenticate with Claude Code first                                                                |
+| "Keychain is locked"                                | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`                                               |
+| "Token expired and refresh failed"                  | The plugin runs `claude` CLI to refresh automatically. If this fails, re-authenticate manually by running `claude` |
+| Not working on Linux/Windows                        | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                             |
+| Keychain access denied                              | Grant access when macOS prompts you                                                                                |
+| Keychain read timed out                             | Restart Keychain Access (can happen on macOS Tahoe)                                                                |
+| "Credentials are unavailable or expired"            | Run `claude` to refresh your Claude Code credentials                                                               |
+| "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below                            |
 
 ## Long context (1M)
 
@@ -107,12 +107,12 @@ If a long context error still occurs (e.g. from a beta flag added via `ANTHROPIC
 
 All configurable parameters can be overridden via environment variables. If Anthropic changes something before we publish an update, set an env var and keep working:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ANTHROPIC_CLI_VERSION` | Claude CLI version for user-agent and billing headers | `2.1.80` |
-| `ANTHROPIC_USER_AGENT` | Full User-Agent string (overrides CLI version) | `claude-cli/{version} (external, cli)` |
-| `ANTHROPIC_BETA_FLAGS` | Comma-separated beta feature flags | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
-| `ANTHROPIC_ENABLE_1M_CONTEXT` | Enable 1M token context window for 4.6+ models (requires Max subscription) | `false` |
+| Variable                      | Description                                                                | Default                                                                                                 |
+| ----------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_CLI_VERSION`       | Claude CLI version for user-agent and billing headers                      | `2.1.80`                                                                                                |
+| `ANTHROPIC_USER_AGENT`        | Full User-Agent string (overrides CLI version)                             | `claude-cli/{version} (external, cli)`                                                                  |
+| `ANTHROPIC_BETA_FLAGS`        | Comma-separated beta feature flags                                         | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
+| `ANTHROPIC_ENABLE_1M_CONTEXT` | Enable 1M token context window for 4.6+ models (requires Max subscription) | `false`                                                                                                 |
 
 Example:
 

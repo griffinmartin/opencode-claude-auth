@@ -60,6 +60,7 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
     if (error.killed || error.code === "ETIMEDOUT") {
       throw new Error(
         "Keychain read timed out. This can happen on macOS Tahoe. Try restarting Keychain Access.",
+        { cause: err },
       )
     }
 
@@ -70,17 +71,20 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
     if (error.status === 36) {
       throw new Error(
         "macOS Keychain is locked. Please unlock it or run: security unlock-keychain ~/Library/Keychains/login.keychain-db",
+        { cause: err },
       )
     }
 
     if (error.status === 128) {
       throw new Error(
         "Keychain access was denied. Please grant access when prompted by macOS.",
+        { cause: err },
       )
     }
 
     throw new Error(
       `Failed to read Claude Code credentials from Keychain (exit ${error.status ?? "unknown"}). Try re-authenticating with Claude Code.`,
+      { cause: err },
     )
   }
 
