@@ -50,7 +50,7 @@
     "test": "node --test --experimental-strip-types src/**/*.test.ts",
     "test:models": "pnpm run build && node scripts/test-models.ts",
     "lint": "oxlint && oxfmt --check .",
-    "lint:fix": "oxlint --fix .",
+    "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
     "prepublishOnly": "pnpm run build && pnpm test"
   },
