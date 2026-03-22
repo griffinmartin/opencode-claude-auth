@@ -243,7 +243,7 @@ describe("exported helpers", () => {
     const originalHome = process.env.HOME
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
-    globalThis.setInterval = (() => 0 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
 
     try {
       const plugin = await helpers.default({} as never)
@@ -275,7 +275,7 @@ describe("exported helpers", () => {
     const originalHome = process.env.HOME
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
-    globalThis.setInterval = (() => 0 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
 
     try {
       const plugin = await helpers.default({} as never)
@@ -313,6 +313,31 @@ describe("exported helpers", () => {
     }
   })
 
+  it("plugin calls unref on the sync interval timer", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+
+    let unrefCalled = false
+    const fakeTimer = {
+      unref() { unrefCalled = true },
+    }
+    globalThis.setInterval = (() => fakeTimer) as unknown as typeof setInterval
+
+    try {
+      await helpers.default({} as never)
+      assert.ok(unrefCalled, "Expected .unref() to be called on the interval timer")
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
   it("auth fetch forwards original input URL unchanged", async () => {
     const originalNow = Date.now
     const originalSetInterval = globalThis.setInterval
@@ -321,7 +346,7 @@ describe("exported helpers", () => {
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
     Date.now = () => 1_700_000_000_000
-    globalThis.setInterval = (() => 0 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
 
     let forwardedInput: RequestInfo | URL | undefined
 

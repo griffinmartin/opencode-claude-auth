@@ -124,7 +124,7 @@ const plugin: Plugin = async () => {
   }
 
   // Keep auth.json synced, refreshing via CLI if token is near expiry
-  setInterval(() => {
+  const syncTimer = setInterval(() => {
     try {
       const fresh = refreshIfNeeded()
       if (fresh) {
@@ -134,6 +134,7 @@ const plugin: Plugin = async () => {
       // Non-fatal
     }
   }, SYNC_INTERVAL)
+  syncTimer.unref()
 
   return {
     "experimental.chat.system.transform": async (input, output) => {
