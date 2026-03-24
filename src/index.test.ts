@@ -828,12 +828,13 @@ function loadPersistedAccountSourceFrom(stateFile: string): string | null {
 }
 
 function resolveStartupAccount(
-  accounts: Account[],
+  candidateAccounts: Account[],
   persistedSource: string | null,
 ): Account {
   return (
-    (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
-    accounts[0]
+    (persistedSource &&
+      candidateAccounts.find((a) => a.source === persistedSource)) ||
+    candidateAccounts[0]
   )
 }
 
