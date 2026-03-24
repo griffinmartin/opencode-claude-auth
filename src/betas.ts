@@ -80,7 +80,6 @@ export function getModelBetas(
   excluded?: Set<string>,
 ): string[] {
   const betas = [...getRequiredBetas()]
-  const lower = modelId.toLowerCase()
 
   // context-1m is OPT-IN only, matching the official Claude CLI behavior.
   // The CLI only sends this beta when the model ID has a [1m] suffix.
