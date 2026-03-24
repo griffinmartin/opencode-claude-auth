@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.1.1...v1.2.0) (2026-03-24)
+
+
+### Features
+
+* macOS support multiple Claude Code accounts from keychain ([#63](https://github.com/griffinmartin/opencode-claude-auth/issues/63)) ([4594b36](https://github.com/griffinmartin/opencode-claude-auth/commit/4594b36f2c732d6a27ccd798112019ea4bc748b8))
+
 ## [1.1.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.1.0...v1.1.1) (2026-03-23)
 
 
