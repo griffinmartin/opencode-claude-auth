@@ -42,15 +42,9 @@ This will prompt you to log in and store credentials in Keychain (macOS) or `~/.
 
 ## Installation
 
-### Step 1: Install the package
+### Add to OpenCode configuration
 
-```bash
-npm install -g opencode-claude-auth
-```
-
-### Step 2: Add to OpenCode configuration
-
-Run this command to automatically add the plugin to your `opencode.json`:
+Run this command to add the plugin to your `opencode.json`:
 
 ```bash
 node -e "
@@ -69,6 +63,8 @@ This command:
 - Adds `opencode-claude-auth` to the `plugin` array
 - Deduplicates plugins using a Set
 - Writes the updated config back
+
+No manual `npm install` is needed — OpenCode [automatically installs npm plugins using Bun at startup](https://opencode.ai/docs/plugins/#how-plugins-are-installed).
 
 ## Verification
 

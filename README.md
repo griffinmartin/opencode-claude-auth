@@ -1,7 +1,6 @@
 # opencode-claude-auth
 
 [![npm](https://img.shields.io/npm/v/opencode-claude-auth)](https://www.npmjs.com/package/opencode-claude-auth)
-[![Homebrew](https://img.shields.io/badge/homebrew-available-blue?logo=homebrew)](https://github.com/griffinmartin/opencode-claude-auth#install-with-homebrew-macos)
 [![CI](https://github.com/griffinmartin/opencode-claude-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/griffinmartin/opencode-claude-auth/actions/workflows/ci.yml)
 [![Socket Badge](https://socket.dev/api/badge/npm/package/opencode-claude-auth)](https://socket.dev/npm/package/opencode-claude-auth)
 
@@ -30,28 +29,9 @@ Paste this into your AI agent (Claude Code, Cursor, Copilot, etc.):
 Fetch https://raw.githubusercontent.com/griffinmartin/opencode-claude-auth/main/installation.md and follow every step exactly as written.
 ```
 
-### Install with Homebrew (macOS)
-
-```bash
-brew tap griffinmartin/opencode-claude-auth https://github.com/griffinmartin/opencode-claude-auth.git
-brew install opencode-claude-auth
-```
-
-Then add to the `plugin` array in your `opencode.json`:
-
-```json
-{
-  "plugin": ["opencode-claude-auth"]
-}
-```
-
 ### Manual install
 
-```bash
-npm install -g opencode-claude-auth
-```
-
-Then add to the `plugin` array in your `opencode.json`:
+Add `opencode-claude-auth` to the `plugin` array in your `opencode.json`:
 
 ```json
 {
