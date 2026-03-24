@@ -42,9 +42,19 @@ This will prompt you to log in and store credentials in Keychain (macOS) or `~/.
 
 ## Installation
 
-### Add to OpenCode configuration
+### Step 1: Add to OpenCode configuration
 
-Run this command to add the plugin to your `opencode.json`:
+Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`.
+
+Add `opencode-claude-auth` to the `plugin` array:
+
+```json
+{
+  "plugin": ["opencode-claude-auth"]
+}
+```
+
+Or run this command to do it automatically:
 
 ```bash
 node -e "
@@ -57,16 +67,9 @@ console.log('Added opencode-claude-auth to', p);
 "
 ```
 
-This command:
-
-- Reads your existing `opencode.json` (or creates a new one)
-- Adds `opencode-claude-auth` to the `plugin` array
-- Deduplicates plugins using a Set
-- Writes the updated config back
-
 No manual `npm install` is needed — OpenCode [automatically installs npm plugins using Bun at startup](https://opencode.ai/docs/plugins/#how-plugins-are-installed).
 
-## Verification
+### Step 2: Verification
 
 Verify the plugin was added:
 
@@ -74,13 +77,7 @@ Verify the plugin was added:
 cat ~/.config/opencode/opencode.json
 ```
 
-You should see `opencode-claude-auth` in the `plugin` array:
-
-```json
-{
-  "plugin": ["opencode-claude-auth"]
-}
-```
+You should see `opencode-claude-auth` in the `plugin` array.
 
 ## Done
 

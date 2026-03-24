@@ -21,23 +21,33 @@ macOS is preferred (uses Keychain). Linux and Windows work via the credentials f
 
 ## Installation
 
-### Install with AI
+**For Humans**
 
-Paste this into your AI agent (Claude Code, Cursor, Copilot, etc.):
+**Option A: Let an LLM do it**
+
+Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
 ```
-Fetch https://raw.githubusercontent.com/griffinmartin/opencode-claude-auth/main/installation.md and follow every step exactly as written.
+Install the opencode-claude-auth plugin and configure it by following: https://raw.githubusercontent.com/griffinmartin/opencode-claude-auth/main/installation.md
 ```
 
-### Manual install
+**Option B: Manual setup**
 
-Add `opencode-claude-auth` to the `plugin` array in your `opencode.json`:
+1. **Add the plugin** to `~/.config/opencode/opencode.json`:
 
-```json
-{
-  "plugin": ["opencode-claude-auth"]
-}
-```
+   ```json
+   {
+     "plugin": ["opencode-claude-auth"]
+   }
+   ```
+
+   > No manual `npm install` is needed — OpenCode [automatically installs npm plugins using Bun at startup](https://opencode.ai/docs/plugins/#how-plugins-are-installed).
+
+2. **Use it** — just run OpenCode. The plugin handles auth automatically using your Claude Code credentials.
+
+**For LLM Agents**
+
+See [installation.md](installation.md) for step-by-step agent instructions.
 
 ## Usage
 
