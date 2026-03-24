@@ -488,9 +488,11 @@ async function main(): Promise<void> {
   updateReadme(results)
 }
 
-main().catch((err) => {
-  console.error(
-    c.red(`Fatal error: ${err instanceof Error ? err.message : err}`),
-  )
-  process.exit(1)
-})
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(
+      c.red(`Fatal error: ${err instanceof Error ? err.message : err}`),
+    )
+    process.exit(1)
+  })
