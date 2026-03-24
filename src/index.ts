@@ -20,6 +20,10 @@ import {
   refreshAccountsList,
   type ClaudeCredentials,
 } from "./credentials.js"
+import {
+  fetchRemoteCredentials,
+  clearRemoteCache,
+} from "./remote-credentials.js"
 
 export {
   addExcludedBeta,
@@ -41,6 +45,10 @@ export {
   refreshAccountsList,
   type ClaudeCredentials,
 } from "./credentials.js"
+export {
+  fetchRemoteCredentials,
+  clearRemoteCache,
+} from "./remote-credentials.js"
 
 const SYSTEM_IDENTITY_PREFIX =
   "You are Claude Code, Anthropic's official CLI for Claude."
@@ -140,7 +148,18 @@ export function getBillingHeader(modelId: string): string {
 
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 
+function getRemoteConfig(): { serverUrl: string; apiKey: string } | null {
+  const serverUrl = process.env.OPENAUTH_SERVER_URL
+  const apiKey = process.env.OPENAUTH_API_KEY
+  if (serverUrl && apiKey) {
+    return { serverUrl, apiKey }
+  }
+  return null
+}
+
 const plugin: Plugin = async () => {
+  const remoteConfig = getRemoteConfig()
+
   let accounts: ClaudeAccount[] = []
   try {
     accounts = readAllClaudeAccounts()
@@ -149,10 +168,13 @@ const plugin: Plugin = async () => {
       "opencode-claude-auth: Failed to read Claude Code credentials:",
       err instanceof Error ? err.message : err,
     )
-    return {}
+    // In remote mode, continue even without local accounts
+    if (!remoteConfig) {
+      return {}
+    }
   }
 
-  if (accounts.length === 0) {
+  if (accounts.length === 0 && !remoteConfig) {
     console.warn(
       "opencode-claude-auth: No Claude Code credentials found. " +
         "Plugin disabled. Run `claude` to authenticate.",
@@ -160,34 +182,44 @@ const plugin: Plugin = async () => {
     return {}
   }
 
-  initAccounts(accounts)
-
-  const persistedSource = loadPersistedAccountSource()
-  const defaultAccount =
-    (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
-    accounts[0]
-
-  setActiveAccountSource(defaultAccount.source)
-
-  const initialCreds = getCachedCredentials()
-  if (initialCreds) {
-    syncAuthJson(initialCreds)
-  } else {
-    console.warn(
-      "opencode-claude-auth: Claude credentials are expired and could not be refreshed via Claude CLI.",
+  if (remoteConfig) {
+    console.log(
+      `opencode-claude-auth: Remote mode enabled. Server: ${remoteConfig.serverUrl}`,
     )
   }
 
-  // Keep auth.json synced, refreshing via CLI if token is near expiry
-  const syncTimer = setInterval(() => {
-    try {
-      const fresh = getCachedCredentials()
-      if (fresh) syncAuthJson(fresh)
-    } catch {
-      // Non-fatal
+  // Initialize local accounts if available (for fallback in remote mode, or primary in local mode)
+  let defaultAccount: ClaudeAccount | undefined
+  if (accounts.length > 0) {
+    initAccounts(accounts)
+    const persistedSource = loadPersistedAccountSource()
+    defaultAccount =
+      (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
+      accounts[0]
+    setActiveAccountSource(defaultAccount.source)
+  }
+
+  // Only sync auth.json and set up timer in local mode
+  if (!remoteConfig) {
+    const initialCreds = getCachedCredentials()
+    if (initialCreds) {
+      syncAuthJson(initialCreds)
+    } else {
+      console.warn(
+        "opencode-claude-auth: Claude credentials are expired and could not be refreshed via Claude CLI.",
+      )
     }
-  }, SYNC_INTERVAL)
-  syncTimer.unref()
+
+    const syncTimer = setInterval(() => {
+      try {
+        const fresh = getCachedCredentials()
+        if (fresh) syncAuthJson(fresh)
+      } catch {
+        // Non-fatal
+      }
+    }, SYNC_INTERVAL)
+    syncTimer.unref()
+  }
 
   return {
     "experimental.chat.system.transform": async (input, output) => {
@@ -221,10 +253,35 @@ const plugin: Plugin = async () => {
         return {
           apiKey: "",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const latest = getCachedCredentials()
+            const currentRemoteConfig = getRemoteConfig()
+            let latest: { accessToken: string; expiresAt: number } | null = null
+
+            if (currentRemoteConfig) {
+              // Try remote first
+              latest = await fetchRemoteCredentials(
+                currentRemoteConfig.serverUrl,
+                currentRemoteConfig.apiKey,
+              )
+              // Fallback to local if remote failed and local credentials exist
+              if (!latest) {
+                const localCreds = getCachedCredentials()
+                if (localCreds) {
+                  console.warn(
+                    "opencode-claude-auth: Remote server unavailable, using local credentials as fallback",
+                  )
+                  latest = localCreds
+                }
+              }
+            } else {
+              // Local mode (existing behavior)
+              latest = getCachedCredentials()
+            }
+
             if (!latest) {
               throw new Error(
-                "Claude Code credentials are unavailable or expired. Run `claude` to refresh them.",
+                currentRemoteConfig
+                  ? "Claude Code credentials are unavailable from both remote server and local sources."
+                  : "Claude Code credentials are unavailable or expired. Run `claude` to refresh them.",
               )
             }
 
@@ -312,7 +369,7 @@ const plugin: Plugin = async () => {
           get prompts() {
             const currentAccounts = refreshAccountsList()
             const currentSource =
-              loadPersistedAccountSource() ?? defaultAccount.source
+              loadPersistedAccountSource() ?? defaultAccount?.source
             if (currentAccounts.length <= 1) return []
             return [
               {
@@ -335,12 +392,20 @@ const plugin: Plugin = async () => {
             const latestAccounts = refreshAccountsList()
 
             const source =
-              inputs?.account ?? latestAccounts[0]?.source ?? accounts[0].source
+              inputs?.account ??
+              latestAccounts[0]?.source ??
+              accounts[0]?.source
             const chosen =
               latestAccounts.find((a) => a.source === source) ??
               accounts.find((a) => a.source === source) ??
               latestAccounts[0] ??
               accounts[0]
+
+            if (!chosen) {
+              throw new Error(
+                "No Claude Code accounts available for switching. Run `claude` to authenticate.",
+              )
+            }
 
             setActiveAccountSource(chosen.source)
             const creds = getCachedCredentials() ?? chosen.credentials
