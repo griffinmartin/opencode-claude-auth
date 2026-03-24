@@ -50,6 +50,8 @@
     "test": "node --test --experimental-strip-types src/**/*.test.ts",
     "test:models": "pnpm run build && node scripts/test-models.ts",
     "intercept": "pnpm run build && node --experimental-strip-types scripts/intercept-claude.ts",
+    "intercept:all": "pnpm run build && node --experimental-strip-types scripts/intercept-claude.ts --all",
+    "intercept:update": "pnpm run build && node --experimental-strip-types scripts/intercept-claude.ts --all --update",
     "lint": "oxlint && oxfmt --check .",
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
