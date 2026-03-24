@@ -104,6 +104,22 @@ describe("config dir resolution", () => {
     }
   })
 
+  it("normalizes CLAUDE_CONFIG_DIR before hashing the keychain service name", async () => {
+    const decomposedDir = join(tmpdir(), "cafe\u0301")
+    const normalizedDir = decomposedDir.normalize("NFC")
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = decomposedDir
+
+    try {
+      const mod = await loadKeychainModule()
+      const hash = createHash("sha256").update(normalizedDir).digest("hex").slice(0, 8)
+      assert.notEqual(decomposedDir, normalizedDir)
+      assert.equal(mod.getClaudeCredentialServiceName(), `Claude Code-credentials-${hash}`)
+    } finally {
+      resetConfigEnv(prev)
+    }
+  })
+
   it("treats empty CLAUDE_CONFIG_DIR as unset for keychain service name", async () => {
     const prev = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = ""
