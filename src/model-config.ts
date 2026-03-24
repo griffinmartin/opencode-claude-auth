@@ -17,14 +17,15 @@ export const config: ModelConfig = {
     "oauth-2025-04-20",
     "interleaved-thinking-2025-05-14",
     "prompt-caching-scope-2026-01-05",
+    "context-management-2025-06-27",
   ],
   longContextBetas: [
     "context-1m-2025-08-07",
     "interleaved-thinking-2025-05-14",
   ],
   modelOverrides: {
-    haiku: {
-      exclude: ["claude-code-20250219"],
+    "4-6": {
+      add: ["effort-2025-11-24"],
     },
   },
 }

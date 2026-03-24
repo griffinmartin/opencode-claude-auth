@@ -5,14 +5,30 @@ import {
   isLongContextError,
   supports1mContext,
 } from "./betas.ts"
+import { config, getModelOverride } from "./model-config.ts"
 
 describe("betas", () => {
-  it("getModelBetas includes standard betas for sonnet 4.6", () => {
+  it("getModelBetas includes all baseBetas from config for sonnet 4.6", () => {
     const saved = process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     try {
       const sonnetBetas = getModelBetas("claude-sonnet-4-6")
-      assert.ok(sonnetBetas.includes("claude-code-20250219"))
+      for (const beta of config.baseBetas) {
+        assert.ok(
+          sonnetBetas.includes(beta),
+          `sonnet 4.6 should include base beta: ${beta}`,
+        )
+      }
+      // Model-specific overrides should also be applied
+      const override = getModelOverride("claude-sonnet-4-6")
+      if (override?.add) {
+        for (const beta of override.add) {
+          assert.ok(
+            sonnetBetas.includes(beta),
+            `sonnet 4.6 should include override beta: ${beta}`,
+          )
+        }
+      }
       assert.ok(
         !sonnetBetas.includes("context-1m-2025-08-07"),
         "context-1m should NOT be auto-added",
@@ -22,9 +38,34 @@ describe("betas", () => {
     }
   })
 
-  it("getModelBetas excludes claude-code beta for haiku", () => {
+  it("getModelBetas includes all baseBetas for haiku", () => {
     const haikuBetas = getModelBetas("claude-haiku-4-5")
-    assert.ok(!haikuBetas.includes("claude-code-20250219"))
+    for (const beta of config.baseBetas) {
+      const override = getModelOverride("claude-haiku-4-5")
+      if (override?.exclude?.includes(beta)) continue
+      assert.ok(
+        haikuBetas.includes(beta),
+        `haiku should include base beta: ${beta}`,
+      )
+    }
+  })
+
+  it("getModelBetas applies model overrides from config", () => {
+    for (const [pattern, override] of Object.entries(config.modelOverrides)) {
+      // Use a realistic model ID that matches the pattern
+      const modelId = `claude-${pattern}-test`
+      const betas = getModelBetas(modelId)
+      if (override.exclude) {
+        for (const ex of override.exclude) {
+          assert.ok(!betas.includes(ex), `${modelId} should exclude: ${ex}`)
+        }
+      }
+      if (override.add) {
+        for (const add of override.add) {
+          assert.ok(betas.includes(add), `${modelId} should include: ${add}`)
+        }
+      }
+    }
   })
 
   it("getModelBetas does not auto-add context-1m for any model by default", () => {
@@ -115,39 +156,36 @@ describe("betas", () => {
   })
 
   it("getModelBetas filters out excluded betas when provided", () => {
-    const excluded = new Set(["interleaved-thinking-2025-05-14"])
+    const betaToExclude = config.baseBetas[config.baseBetas.length - 1]
+    const betaToKeep = config.baseBetas[0]
+    const excluded = new Set([betaToExclude])
     const betas = getModelBetas("claude-sonnet-4-6", excluded)
 
     assert.ok(
-      !betas.includes("interleaved-thinking-2025-05-14"),
-      "excluded beta should be filtered out",
+      !betas.includes(betaToExclude),
+      `excluded beta ${betaToExclude} should be filtered out`,
     )
     assert.ok(
-      betas.includes("claude-code-20250219"),
-      "non-excluded beta should remain",
+      betas.includes(betaToKeep),
+      `non-excluded beta ${betaToKeep} should remain`,
     )
   })
 
   it("getModelBetas filters out multiple excluded betas", () => {
     process.env.ANTHROPIC_ENABLE_1M_CONTEXT = "true"
     try {
-      const excluded = new Set([
-        "interleaved-thinking-2025-05-14",
-        "context-1m-2025-08-07",
-      ])
+      const excluded = new Set(config.longContextBetas)
       const betas = getModelBetas("claude-sonnet-4-6", excluded)
 
+      for (const ex of config.longContextBetas) {
+        assert.ok(
+          !betas.includes(ex),
+          `excluded beta ${ex} should be filtered out`,
+        )
+      }
       assert.ok(
-        !betas.includes("interleaved-thinking-2025-05-14"),
-        "excluded beta should be filtered out",
-      )
-      assert.ok(
-        !betas.includes("context-1m-2025-08-07"),
-        "excluded beta should be filtered out",
-      )
-      assert.ok(
-        betas.includes("claude-code-20250219"),
-        "non-excluded beta should remain",
+        betas.includes(config.baseBetas[0]),
+        `non-excluded beta ${config.baseBetas[0]} should remain`,
       )
     } finally {
       delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
