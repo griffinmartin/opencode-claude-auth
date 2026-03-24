@@ -93,7 +93,7 @@ export function getModelBetas(
     process.env.ANTHROPIC_ENABLE_1M_CONTEXT === "true" &&
     supports1mContext(modelId)
   ) {
-    betas.push("context-1m-2025-08-07")
+    betas.push(config.longContextBetas[0])
   }
 
   // Apply per-model overrides (e.g. haiku excludes claude-code-20250219)

@@ -4,10 +4,13 @@
  * optionally updates src/model-config.ts with any changes found.
  *
  * Usage:
- *   pnpm run intercept                          # default: claude-sonnet-4-6
- *   pnpm run intercept -- claude-opus-4-6       # single model
- *   pnpm run intercept -- --all                 # all supported models
- *   pnpm run intercept -- --all --update        # capture and auto-update
+ *   pnpm run intercept                  # default: claude-sonnet-4-6
+ *   pnpm run intercept:all              # all supported models
+ *   pnpm run intercept:update           # all models + write changes to model-config.ts
+ *
+ * Security: This starts a local HTTP proxy that forwards real OAuth tokens
+ * to api.anthropic.com over HTTPS. The local leg is plaintext on localhost.
+ * Only use in trusted dev environments.
  */
 
 import {
@@ -296,12 +299,15 @@ function printCapture(capture: CapturedRequest): {
 // ---------------------------------------------------------------------------
 // --update: rewrite src/model-config.ts
 // ---------------------------------------------------------------------------
-function updateModelConfig(updates: {
-  newBaseBetas?: string[]
-  newCcVersion?: string
-  modelBetaDiffs?: Map<string, { added: string[]; removed: string[] }>
-}): void {
-  let src = readFileSync(MODEL_CONFIG_PATH, "utf-8")
+export function updateModelConfig(
+  updates: {
+    newBaseBetas?: string[]
+    newCcVersion?: string
+    modelBetaDiffs?: Map<string, { added: string[]; removed: string[] }>
+  },
+  configPath: string = MODEL_CONFIG_PATH,
+): void {
+  let src = readFileSync(configPath, "utf-8")
 
   // Update baseBetas array
   if (updates.newBaseBetas) {
@@ -389,7 +395,7 @@ function updateModelConfig(updates: {
     }
   }
 
-  writeFileSync(MODEL_CONFIG_PATH, src, "utf-8")
+  writeFileSync(configPath, src, "utf-8")
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +519,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(c.red(`Fatal: ${err instanceof Error ? err.message : err}`))
-  process.exit(1)
-})
+// Only run main when executed directly, not when imported for testing
+const isDirectRun =
+  process.argv[1] &&
+  import.meta.url.endsWith(process.argv[1].replace(/.*\//, ""))
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(c.red(`Fatal: ${err instanceof Error ? err.message : err}`))
+    process.exit(1)
+  })
+}

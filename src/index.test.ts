@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { before, describe, it } from "node:test"
 import { pathToFileURL } from "node:url"
+import { config as modelConfig } from "./model-config.ts"
 
 interface ClaudeCredentials {
   accessToken: string
@@ -279,7 +280,9 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
   it("getBillingHeader includes version and model", () => {
     const header = helpers.getBillingHeader("claude-opus-4-1")
-    assert.ok(header.includes("cc_version=2.1.80.claude-opus-4-1"))
+    assert.ok(
+      header.includes(`cc_version=${modelConfig.ccVersion}.claude-opus-4-1`),
+    )
     assert.ok(header.includes("cc_entrypoint=cli"))
   })
 

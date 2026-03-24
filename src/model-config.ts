@@ -33,6 +33,10 @@ export const config: ModelConfig = {
 /**
  * Find the override entry matching a model ID.
  * Keys are matched via includes() against the lowercased model ID.
+ *
+ * First-match-wins: if multiple keys match, only the first (by insertion
+ * order) is returned. List more specific keys before broader ones
+ * (e.g. "opus-4-6" before "opus") so they take priority.
  */
 export function getModelOverride(modelId: string): ModelOverride | null {
   const lower = modelId.toLowerCase()
