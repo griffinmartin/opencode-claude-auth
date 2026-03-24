@@ -9,7 +9,7 @@ Self-contained Anthropic auth provider for OpenCode using your Claude Code crede
 
 ## How it works
 
-The plugin registers its own auth provider with a custom fetch handler that intercepts all Anthropic API requests. It reads OAuth tokens from the macOS Keychain (or `~/.claude/.credentials.json` on other platforms), caches them in memory with a 30-second TTL, and handles the full request lifecycle — no builtin Anthropic auth plugin required.
+The plugin registers its own auth provider with a custom fetch handler that intercepts all Anthropic API requests. It reads OAuth tokens from the macOS Keychain (or `~/.claude/.credentials.json` on other platforms), caches them in memory with a 30-second TTL, and handles the full request lifecycle — no builtin Anthropic auth plugin required. On macOS, multiple Claude Code accounts are detected automatically and can be switched via `opencode auth login`.
 
 It also syncs credentials to OpenCode's `auth.json` as a fallback (on Windows, it writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json` to cover all installation methods). If a token is near expiry, it runs the Claude CLI to trigger a refresh. Background re-sync runs every 5 minutes.
 
@@ -89,8 +89,22 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 
 The plugin checks these in order:
 
-1. macOS Keychain ("Claude Code-credentials" entry)
+1. macOS Keychain (all `Claude Code-credentials*` entries — multiple accounts are detected automatically)
 2. `~/.claude/.credentials.json` (fallback, works on all platforms)
+
+## Multiple accounts (macOS)
+
+If you have [multiple Claude Code accounts](https://gist.github.com/KMJ-007/0979814968722051620461ab2aa01bf2) authenticated on macOS, the plugin detects all of them from the Keychain automatically. Each account is labeled by its subscription tier (Claude Pro, Claude Max, etc.).
+
+To switch accounts:
+
+```bash
+opencode auth login
+```
+
+Select "Switch Claude Code account" and pick the account you want to use. Your selection is persisted across sessions.
+
+If only one account is found, the switcher is hidden and the plugin uses it directly.
 
 ## Troubleshooting
 
@@ -145,6 +159,8 @@ export ANTHROPIC_ENABLE_1M_CONTEXT=true  # requires Claude Max
 - Buffers SSE response streams at event boundaries for reliable tool name translation
 - Injects Claude Code identity into system prompts via `experimental.chat.system.transform`
 - Sets required API headers (beta flags, billing, user-agent) with model-aware selection
+- On macOS, enumerates all `Claude Code-credentials*` Keychain entries and labels them by subscription tier
+- Provides an account switcher via `opencode auth login` when multiple accounts are found; persists selection to `~/.local/share/opencode/claude-account-source.txt`
 - Syncs credentials to `auth.json` on startup and every 5 minutes as a fallback
 - On Windows, writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json`
 - Retries API requests on 429 (rate limit) and 529 (overloaded) with exponential backoff, respecting `retry-after` headers
