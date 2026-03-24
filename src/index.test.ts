@@ -121,6 +121,7 @@ function buildAuthorizeResult(account: Account) {
 const SOURCE_FILES = [
   "index.ts",
   "betas.ts",
+  "model-config.ts",
   "transforms.ts",
   "credentials.ts",
 ] as const
@@ -129,7 +130,7 @@ async function copySourceFiles(tempDir: string): Promise<void> {
   await Promise.all(
     SOURCE_FILES.map(async (file) => {
       let source = await readFile(new URL(`./${file}`, import.meta.url), "utf8")
-      source = source.replace(/from\s+["']\.\/(\w+)\.js["']/g, 'from "./$1.ts"')
+      source = source.replace(/from\s+["']\.\/([\w-]+)\.js["']/g, 'from "./$1.ts"')
       await writeFile(join(tempDir, file), source, "utf8")
     }),
   )
