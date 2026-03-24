@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.2.0...v1.3.0) (2026-03-24)
+
+
+### Features
+
+* model config refactor and Claude CLI intercept script ([#78](https://github.com/griffinmartin/opencode-claude-auth/issues/78)) ([89f23fe](https://github.com/griffinmartin/opencode-claude-auth/commit/89f23fec38810e4839cfb576d94f21da1330886d))
+
 ## [1.2.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.1.1...v1.2.0) (2026-03-24)
 
 
