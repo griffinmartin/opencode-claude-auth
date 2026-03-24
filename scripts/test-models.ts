@@ -1,9 +1,13 @@
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs"
-import { join, dirname } from "node:path"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import {
+  getModelBetas,
+  isLongContextError,
+  LONG_CONTEXT_BETAS,
+} from "../dist/betas.js"
 import { getCachedCredentials } from "../dist/credentials.js"
 import { buildRequestHeaders, fetchWithRetry } from "../dist/index.js"
-import { getModelBetas, isLongContextError, LONG_CONTEXT_BETAS } from "../dist/betas.js"
 
 // ANSI color helpers
 const c = {
@@ -16,7 +20,8 @@ const c = {
 }
 
 const API_URL = "https://api.anthropic.com/v1/messages"
-const SYSTEM_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+const SYSTEM_IDENTITY_PREFIX =
+  "You are Claude Code, Anthropic's official CLI for Claude."
 
 interface ModelResult {
   model: string
@@ -58,7 +63,9 @@ async function discoverModels(): Promise<string[]> {
       throw new Error("No data returned from provider.list()")
     }
 
-    const anthropic = res.data.all.find((p: { id: string }) => p.id === "anthropic")
+    const anthropic = res.data.all.find(
+      (p: { id: string }) => p.id === "anthropic",
+    )
     if (!anthropic) {
       throw new Error("Anthropic provider not found")
     }
@@ -95,9 +102,11 @@ function shouldSkipModel(model: string, cache: FailedModelsCache): boolean {
   return entry.lastPassedAt === null
 }
 
-async function testModel(modelId: string, accessToken: string): Promise<ModelResult> {
+async function testModel(
+  modelId: string,
+  accessToken: string,
+): Promise<ModelResult> {
   const startTime = Date.now()
-  const initialBetas = getModelBetas(modelId)
   const excluded: string[] = []
 
   const body = JSON.stringify({
@@ -170,7 +179,13 @@ async function testModel(modelId: string, accessToken: string): Promise<ModelRes
   const usedBetas = getModelBetas(modelId, localExcluded)
 
   if (response.ok) {
-    return { model: modelId, status: "pass", betas: usedBetas, excluded, timeMs }
+    return {
+      model: modelId,
+      status: "pass",
+      betas: usedBetas,
+      excluded,
+      timeMs,
+    }
   }
 
   // Read error message
@@ -185,7 +200,14 @@ async function testModel(modelId: string, accessToken: string): Promise<ModelRes
     // Use HTTP status as error
   }
 
-  return { model: modelId, status: "fail", betas: usedBetas, excluded, error, timeMs }
+  return {
+    model: modelId,
+    status: "fail",
+    betas: usedBetas,
+    excluded,
+    error,
+    timeMs,
+  }
 }
 
 function printResult(result: ModelResult): void {
@@ -207,7 +229,11 @@ function printResult(result: ModelResult): void {
   console.log(line)
 }
 
-function writeResultsFile(results: ModelResult[], skipped: SkippedModel[], version: string): void {
+function writeResultsFile(
+  results: ModelResult[],
+  skipped: SkippedModel[],
+  version: string,
+): void {
   const __dirname = dirname(fileURLToPath(import.meta.url))
   const outPath = join(__dirname, "..", "test-results", "model-smoke-test.json")
 
@@ -216,8 +242,8 @@ function writeResultsFile(results: ModelResult[], skipped: SkippedModel[], versi
     mkdirSync(dir, { recursive: true })
   }
 
-  const passed = results.filter(r => r.status === "pass").length
-  const failed = results.filter(r => r.status === "fail").length
+  const passed = results.filter((r) => r.status === "pass").length
+  const failed = results.filter((r) => r.status === "fail").length
 
   const output = {
     version,
@@ -228,7 +254,7 @@ function writeResultsFile(results: ModelResult[], skipped: SkippedModel[], versi
       failed,
       skipped: skipped.length,
     },
-    results: results.map(r => ({
+    results: results.map((r) => ({
       model: r.model,
       status: r.status,
       timeMs: r.timeMs,
@@ -236,7 +262,7 @@ function writeResultsFile(results: ModelResult[], skipped: SkippedModel[], versi
       excluded: r.excluded,
       error: r.error ?? null,
     })),
-    skipped: skipped.map(s => ({
+    skipped: skipped.map((s) => ({
       model: s.model,
       reason: s.reason,
       lastTested: s.lastTested,
@@ -244,7 +270,7 @@ function writeResultsFile(results: ModelResult[], skipped: SkippedModel[], versi
     })),
   }
 
-  writeFileSync(outPath, JSON.stringify(output, null, 2) + "\n", "utf-8")
+  writeFileSync(outPath, `${JSON.stringify(output, null, 2)}\n`, "utf-8")
   console.log(c.dim(`\nResults written to test-results/model-smoke-test.json`))
 }
 
@@ -286,8 +312,10 @@ function writeFailedModelsCache(
     mkdirSync(dir, { recursive: true })
   }
 
-  writeFileSync(cachePath, JSON.stringify(updated, null, 2) + "\n", "utf-8")
-  console.log(c.dim(`Failed models cache written to test-results/failed-models.json`))
+  writeFileSync(cachePath, `${JSON.stringify(updated, null, 2)}\n`, "utf-8")
+  console.log(
+    c.dim(`Failed models cache written to test-results/failed-models.json`),
+  )
 }
 
 function updateReadme(results: ModelResult[]): void {
@@ -300,14 +328,14 @@ function updateReadme(results: ModelResult[]): void {
 
   // Only include passing models, sorted alphabetically
   const supported = results
-    .filter(r => r.status === "pass")
+    .filter((r) => r.status === "pass")
     .sort((a, b) => a.model.localeCompare(b.model))
 
-  const rows = supported.map(r => `| ${r.model} |`)
+  const rows = supported.map((r) => `| ${r.model} |`)
 
   const section = `## Supported models
 
-${supported.length} supported models. Run \`npm run test:models\` to verify against your account.
+${supported.length} supported models. Run \`pnpm run test:models\` to verify against your account.
 
 | Model |
 |-------|
@@ -319,14 +347,22 @@ ${rows.join("\n")}`
 
   let updated: string
   if (sectionStart !== -1 && nextSection !== -1) {
-    updated = readme.slice(0, sectionStart) + section + "\n\n" + readme.slice(nextSection + 1)
+    updated =
+      readme.slice(0, sectionStart) +
+      section +
+      "\n\n" +
+      readme.slice(nextSection + 1)
   } else if (sectionStart !== -1) {
-    updated = readme.slice(0, sectionStart) + section + "\n"
+    updated = `${readme.slice(0, sectionStart) + section}\n`
   } else {
     // Insert before "## Credential sources"
     const insertPoint = readme.indexOf("## Credential sources")
     if (insertPoint !== -1) {
-      updated = readme.slice(0, insertPoint) + section + "\n\n" + readme.slice(insertPoint)
+      updated =
+        readme.slice(0, insertPoint) +
+        section +
+        "\n\n" +
+        readme.slice(insertPoint)
     } else {
       return // Can't find insertion point
     }
@@ -338,12 +374,14 @@ ${rows.join("\n")}`
 
 async function main(): Promise<void> {
   console.log(c.bold("Model Smoke Test"))
-  console.log("=".repeat(50) + "\n")
+  console.log(`${"=".repeat(50)}\n`)
 
   // Get credentials
   const creds = getCachedCredentials()
   if (!creds) {
-    console.error(c.red("No Claude Code credentials found. Run `claude` to authenticate."))
+    console.error(
+      c.red("No Claude Code credentials found. Run `claude` to authenticate."),
+    )
     process.exit(1)
   }
 
@@ -351,7 +389,11 @@ async function main(): Promise<void> {
   const failedCache = loadFailedModelsCache()
   const cachedCount = Object.keys(failedCache).length
   if (cachedCount > 0) {
-    console.log(c.dim(`Loaded ${cachedCount} cached failure(s) from failed-models.json\n`))
+    console.log(
+      c.dim(
+        `Loaded ${cachedCount} cached failure(s) from failed-models.json\n`,
+      ),
+    )
   }
 
   // Discover models from OpenCode
@@ -359,8 +401,16 @@ async function main(): Promise<void> {
   try {
     models = await discoverModels()
   } catch (err) {
-    console.error(c.red(`Failed to discover models: ${err instanceof Error ? err.message : err}`))
-    console.error(c.yellow("Is OpenCode installed? The script uses `opencode serve` to discover models."))
+    console.error(
+      c.red(
+        `Failed to discover models: ${err instanceof Error ? err.message : err}`,
+      ),
+    )
+    console.error(
+      c.yellow(
+        "Is OpenCode installed? The script uses `opencode serve` to discover models.",
+      ),
+    )
     process.exit(1)
   }
 
@@ -383,7 +433,9 @@ async function main(): Promise<void> {
   }
 
   if (skipped.length > 0) {
-    console.log(c.dim(`Skipping ${skipped.length} previously unsupported model(s)\n`))
+    console.log(
+      c.dim(`Skipping ${skipped.length} previously unsupported model(s)\n`),
+    )
   }
 
   // Test each model sequentially
@@ -395,9 +447,9 @@ async function main(): Promise<void> {
   }
 
   // Summary
-  const passed = results.filter(r => r.status === "pass").length
+  const passed = results.filter((r) => r.status === "pass").length
   const tested = results.length
-  console.log("\n" + "=".repeat(50))
+  console.log(`\n${"=".repeat(50)}`)
 
   if (passed === tested) {
     console.log(c.green(c.bold(`Summary: ${passed}/${tested} passed`)))
@@ -415,7 +467,7 @@ async function main(): Promise<void> {
   // Read version from package.json
   const __dirname = dirname(fileURLToPath(import.meta.url))
   const pkg = JSON.parse(
-    readFileSync(join(__dirname, "..", "package.json"), "utf-8")
+    readFileSync(join(__dirname, "..", "package.json"), "utf-8"),
   ) as { version: string }
 
   writeResultsFile(results, skipped, pkg.version)
@@ -424,6 +476,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(c.red(`Fatal error: ${err instanceof Error ? err.message : err}`))
+  console.error(
+    c.red(`Fatal error: ${err instanceof Error ? err.message : err}`),
+  )
   process.exit(1)
 })

@@ -1,8 +1,14 @@
 import { execSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
-import { readClaudeCredentials, type ClaudeCredentials } from "./keychain.js"
+import { dirname, join } from "node:path"
+import { type ClaudeCredentials, readClaudeCredentials } from "./keychain.js"
 
 const CREDENTIAL_CACHE_TTL_MS = 30_000
 
@@ -12,7 +18,8 @@ let cachedCredentialsAt = 0
 function getAuthJsonPaths(): string[] {
   const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
   if (process.platform === "win32") {
-    const appData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
+    const appData =
+      process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
     const localAppDataPath = join(appData, "opencode", "auth.json")
     return [xdgPath, localAppDataPath]
   }
@@ -39,9 +46,15 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
   }
   const dir = dirname(authPath)
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
-  writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8")
+  writeFileSync(authPath, JSON.stringify(auth, null, 2), {
+    encoding: "utf-8",
+    mode: 0o600,
+  })
+  if (process.platform !== "win32") {
+    chmodSync(authPath, 0o600)
+  }
 }
 
 export function syncAuthJson(creds: ClaudeCredentials): void {

@@ -1,14 +1,43 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import {
+  addExcludedBeta,
+  getExcludedBetas,
+  getModelBetas,
+  getNextBetaToExclude,
+  isLongContextError,
+  LONG_CONTEXT_BETAS,
+} from "./betas.js"
+import {
+  type ClaudeCredentials,
+  getCachedCredentials,
+  refreshIfNeeded,
+  syncAuthJson,
+} from "./credentials.js"
 import { readClaudeCredentials } from "./keychain.js"
-import { getExcludedBetas, addExcludedBeta, getNextBetaToExclude, isLongContextError, getModelBetas, LONG_CONTEXT_BETAS } from "./betas.js"
 import { transformBody, transformResponseStream } from "./transforms.js"
-import { getCachedCredentials, syncAuthJson, refreshIfNeeded, type ClaudeCredentials } from "./credentials.js"
 
-export { getExcludedBetas, addExcludedBeta, getNextBetaToExclude, isLongContextError, getModelBetas, LONG_CONTEXT_BETAS } from "./betas.js"
-export { transformBody, stripToolPrefix, transformResponseStream } from "./transforms.js"
-export { getCachedCredentials, syncAuthJson, refreshIfNeeded, type ClaudeCredentials } from "./credentials.js"
+export {
+  addExcludedBeta,
+  getExcludedBetas,
+  getModelBetas,
+  getNextBetaToExclude,
+  isLongContextError,
+  LONG_CONTEXT_BETAS,
+} from "./betas.js"
+export {
+  type ClaudeCredentials,
+  getCachedCredentials,
+  refreshIfNeeded,
+  syncAuthJson,
+} from "./credentials.js"
+export {
+  stripToolPrefix,
+  transformBody,
+  transformResponseStream,
+} from "./transforms.js"
 
-const SYSTEM_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+const SYSTEM_IDENTITY_PREFIX =
+  "You are Claude Code, Anthropic's official CLI for Claude."
 const DEFAULT_CC_VERSION = "2.1.80"
 
 function getCliVersion(): string {
@@ -16,7 +45,10 @@ function getCliVersion(): string {
 }
 
 function getUserAgent(): string {
-  return process.env.ANTHROPIC_USER_AGENT ?? `claude-cli/${getCliVersion()} (external, cli)`
+  return (
+    process.env.ANTHROPIC_USER_AGENT ??
+    `claude-cli/${getCliVersion()} (external, cli)`
+  )
 }
 
 type FetchFn = typeof fetch
@@ -31,10 +63,9 @@ export async function fetchWithRetry(
     const res = await fetchImpl(input, init)
     if ((res.status === 429 || res.status === 529) && i < retries - 1) {
       const retryAfter = res.headers.get("retry-after")
-      const delay = retryAfter
-        ? parseInt(retryAfter, 10) * 1000
-        : (i + 1) * 2000
-      await new Promise(r => setTimeout(r, delay))
+      const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN
+      const delay = Number.isNaN(parsed) ? (i + 1) * 2000 : parsed * 1000
+      await new Promise((r) => setTimeout(r, delay))
       continue
     }
     return res
@@ -77,7 +108,15 @@ export function buildRequestHeaders(
 
   const modelBetas = getModelBetas(modelId, excludedBetas)
   const incomingBeta = headers.get("anthropic-beta") ?? ""
-  const mergedBetas = [...new Set([...modelBetas, ...incomingBeta.split(",").map((item) => item.trim()).filter(Boolean)])]
+  const mergedBetas = [
+    ...new Set([
+      ...modelBetas,
+      ...incomingBeta
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ]),
+  ]
 
   headers.set("authorization", `Bearer ${accessToken}`)
   headers.set("anthropic-beta", mergedBetas.join(","))
@@ -125,7 +164,7 @@ const plugin: Plugin = async () => {
   }
 
   // Keep auth.json synced, refreshing via CLI if token is near expiry
-  setInterval(() => {
+  const syncTimer = setInterval(() => {
     try {
       const fresh = refreshIfNeeded()
       if (fresh) {
@@ -135,6 +174,7 @@ const plugin: Plugin = async () => {
       // Non-fatal
     }
   }, SYNC_INTERVAL)
+  syncTimer.unref()
 
   return {
     "experimental.chat.system.transform": async (input, output) => {
@@ -142,7 +182,9 @@ const plugin: Plugin = async () => {
         return
       }
 
-      const hasIdentityPrefix = output.system.some((entry) => entry.includes(SYSTEM_IDENTITY_PREFIX))
+      const hasIdentityPrefix = output.system.some((entry) =>
+        entry.includes(SYSTEM_IDENTITY_PREFIX),
+      )
       if (!hasIdentityPrefix) {
         output.system.unshift(SYSTEM_IDENTITY_PREFIX)
       }
@@ -174,15 +216,27 @@ const plugin: Plugin = async () => {
             }
 
             const requestInit = init ?? {}
-            const bodyStr = typeof requestInit.body === "string" ? requestInit.body : undefined
+            const bodyStr =
+              typeof requestInit.body === "string"
+                ? requestInit.body
+                : undefined
             let modelId = "unknown"
             if (bodyStr) {
-              try { modelId = (JSON.parse(bodyStr) as { model?: string }).model ?? "unknown" } catch {}
+              try {
+                modelId =
+                  (JSON.parse(bodyStr) as { model?: string }).model ?? "unknown"
+              } catch {}
             }
 
             // Get excluded betas for this model (from previous failed requests)
             const excluded = getExcludedBetas(modelId)
-            const headers = buildRequestHeaders(input, requestInit, latest.accessToken, modelId, excluded)
+            const headers = buildRequestHeaders(
+              input,
+              requestInit,
+              latest.accessToken,
+              modelId,
+              excluded,
+            )
             const body = transformBody(requestInit.body)
 
             let response = await fetchWithRetry(input, {
@@ -193,7 +247,11 @@ const plugin: Plugin = async () => {
 
             // Check for long-context beta errors and retry with betas excluded
             // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
-            for (let attempt = 0; attempt < LONG_CONTEXT_BETAS.length; attempt++) {
+            for (
+              let attempt = 0;
+              attempt < LONG_CONTEXT_BETAS.length;
+              attempt++
+            ) {
               if (response.status !== 400 && response.status !== 429) {
                 break
               }
@@ -214,7 +272,13 @@ const plugin: Plugin = async () => {
 
               // Rebuild headers without the excluded beta and retry
               const newExcluded = getExcludedBetas(modelId)
-              const newHeaders = buildRequestHeaders(input, requestInit, latest.accessToken, modelId, newExcluded)
+              const newHeaders = buildRequestHeaders(
+                input,
+                requestInit,
+                latest.accessToken,
+                modelId,
+                newExcluded,
+              )
 
               response = await fetchWithRetry(input, {
                 ...requestInit,

@@ -64,6 +64,7 @@ console.log('Added opencode-claude-auth to', p);
 ```
 
 This command:
+
 - Reads your existing `opencode.json` (or creates a new one)
 - Adds `opencode-claude-auth` to the `plugin` array
 - Deduplicates plugins using a Set

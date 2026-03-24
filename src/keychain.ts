@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto"
 import { execSync } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
 import { homedir } from "node:os"
+import { join } from "node:path"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -42,9 +42,15 @@ function readCredentialsFile(): ClaudeCredentials | null {
   try {
     const credPath = getCredentialsFilePath()
     const raw = readFileSync(credPath, "utf-8")
-    const parsed = JSON.parse(raw) as { claudeAiOauth?: Record<string, unknown> }
+    const parsed = JSON.parse(raw) as {
+      claudeAiOauth?: Record<string, unknown>
+    }
     const data = parsed.claudeAiOauth ?? parsed
-    const creds = data as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown }
+    const creds = data as {
+      accessToken?: unknown
+      refreshToken?: unknown
+      expiresAt?: unknown
+    }
 
     if (
       typeof creds.accessToken !== "string" ||
@@ -80,7 +86,8 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
 
     if (error.killed || error.code === "ETIMEDOUT") {
       throw new Error(
-        "Keychain read timed out. This can happen on macOS Tahoe. Try restarting Keychain Access."
+        "Keychain read timed out. This can happen on macOS Tahoe. Try restarting Keychain Access.",
+        { cause: err },
       )
     }
 
@@ -90,18 +97,21 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
 
     if (error.status === 36) {
       throw new Error(
-        "macOS Keychain is locked. Please unlock it or run: security unlock-keychain ~/Library/Keychains/login.keychain-db"
+        "macOS Keychain is locked. Please unlock it or run: security unlock-keychain ~/Library/Keychains/login.keychain-db",
+        { cause: err },
       )
     }
 
     if (error.status === 128) {
       throw new Error(
-        "Keychain access was denied. Please grant access when prompted by macOS."
+        "Keychain access was denied. Please grant access when prompted by macOS.",
+        { cause: err },
       )
     }
 
     throw new Error(
-      `Failed to read Claude Code credentials from Keychain (exit ${error.status ?? "unknown"}). Try re-authenticating with Claude Code.`
+      `Failed to read Claude Code credentials from Keychain (exit ${error.status ?? "unknown"}). Try re-authenticating with Claude Code.`,
+      { cause: err },
     )
   }
 
@@ -110,7 +120,7 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
     parsed = JSON.parse(raw)
   } catch {
     throw new Error(
-      "Claude Code credentials exist but contain invalid JSON. Try re-authenticating with Claude Code."
+      "Claude Code credentials exist but contain invalid JSON. Try re-authenticating with Claude Code.",
     )
   }
 
@@ -123,17 +133,17 @@ export function readClaudeCredentials(): ClaudeCredentials | null {
 
   if (typeof creds.accessToken !== "string") {
     throw new Error(
-      "Claude Code credentials are incomplete (missing accessToken). Try re-authenticating with Claude Code."
+      "Claude Code credentials are incomplete (missing accessToken). Try re-authenticating with Claude Code.",
     )
   }
   if (typeof creds.refreshToken !== "string") {
     throw new Error(
-      "Claude Code credentials are incomplete (missing refreshToken). Try re-authenticating with Claude Code."
+      "Claude Code credentials are incomplete (missing refreshToken). Try re-authenticating with Claude Code.",
     )
   }
   if (typeof creds.expiresAt !== "number") {
     throw new Error(
-      "Claude Code credentials are incomplete (missing expiresAt). Try re-authenticating with Claude Code."
+      "Claude Code credentials are incomplete (missing expiresAt). Try re-authenticating with Claude Code.",
     )
   }
 

@@ -1,9 +1,9 @@
-import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { join } from "node:path"
 import { homedir, tmpdir } from "node:os"
+import { join } from "node:path"
+import { describe, it } from "node:test"
 import { pathToFileURL } from "node:url"
 
 // We test readCredentialsFile indirectly by manipulating the file it reads.

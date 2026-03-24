@@ -1,18 +1,30 @@
-import { before, describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { before, describe, it } from "node:test"
 import { pathToFileURL } from "node:url"
 
 let helpers: typeof import("./index.ts")
 
 type TestAuthLoader = (
-  getAuth: () => Promise<{ type: "oauth"; refresh: string; access: string; expires: number }>,
+  getAuth: () => Promise<{
+    type: "oauth"
+    refresh: string
+    access: string
+    expires: number
+  }>,
   provider: { models: Record<string, { cost?: unknown }> },
-) => Promise<{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> }>
+) => Promise<{
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+}>
 
-const SOURCE_FILES = ["index.ts", "betas.ts", "transforms.ts", "credentials.ts"] as const
+const SOURCE_FILES = [
+  "index.ts",
+  "betas.ts",
+  "transforms.ts",
+  "credentials.ts",
+] as const
 
 async function copySourceFiles(tempDir: string): Promise<void> {
   await Promise.all(
@@ -25,7 +37,9 @@ async function copySourceFiles(tempDir: string): Promise<void> {
   )
 }
 
-async function loadHelpersWithCountingKeychain(initialExpiresAt: number): Promise<{
+async function loadHelpersWithCountingKeychain(
+  initialExpiresAt: number,
+): Promise<{
   helpersModule: typeof import("./index.ts")
   keychainModule: {
     __getReadCount: () => number
@@ -100,7 +114,9 @@ describe("exported helpers", () => {
     assert.equal(headers.get("x-api-key"), null)
     assert.equal(headers.get("x-custom"), "keep-me")
     assert.ok(headers.get("anthropic-beta")?.includes("custom-beta"))
-    assert.ok(headers.get("x-anthropic-billing-header")?.includes("claude-sonnet-4-6"))
+    assert.ok(
+      headers.get("x-anthropic-billing-header")?.includes("claude-sonnet-4-6"),
+    )
   })
 
   it("getBillingHeader includes version and model", () => {
@@ -159,10 +175,16 @@ describe("exported helpers", () => {
     let callCount = 0
     const mockFetch = (() => {
       callCount++
-      if (callCount === 1) return Promise.resolve(new Response("rate limited", { status: 429 }))
+      if (callCount === 1)
+        return Promise.resolve(new Response("rate limited", { status: 429 }))
       return Promise.resolve(new Response("ok", { status: 200 }))
     }) as unknown as typeof fetch
-    const res = await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      {},
+      3,
+      mockFetch,
+    )
     assert.equal(res.status, 200)
     assert.equal(callCount, 2)
   })
@@ -171,10 +193,16 @@ describe("exported helpers", () => {
     let callCount = 0
     const mockFetch = (() => {
       callCount++
-      if (callCount === 1) return Promise.resolve(new Response("overloaded", { status: 529 }))
+      if (callCount === 1)
+        return Promise.resolve(new Response("overloaded", { status: 529 }))
       return Promise.resolve(new Response("ok", { status: 200 }))
     }) as unknown as typeof fetch
-    const res = await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      {},
+      3,
+      mockFetch,
+    )
     assert.equal(res.status, 200)
     assert.equal(callCount, 2)
   })
@@ -185,7 +213,12 @@ describe("exported helpers", () => {
       callCount++
       return Promise.resolve(new Response("bad request", { status: 400 }))
     }) as unknown as typeof fetch
-    const res = await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      {},
+      3,
+      mockFetch,
+    )
     assert.equal(res.status, 400)
     assert.equal(callCount, 1)
   })
@@ -196,7 +229,12 @@ describe("exported helpers", () => {
       callCount++
       return Promise.resolve(new Response("rate limited", { status: 429 }))
     }) as unknown as typeof fetch
-    const res = await helpers.fetchWithRetry("https://example.com", {}, 2, mockFetch)
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      {},
+      2,
+      mockFetch,
+    )
     assert.equal(res.status, 429)
     assert.equal(callCount, 2)
   })
@@ -207,10 +245,12 @@ describe("exported helpers", () => {
     const mockFetch = (() => {
       callCount++
       if (callCount === 1) {
-        return Promise.resolve(new Response("rate limited", {
-          status: 429,
-          headers: { "retry-after": "1" },
-        }))
+        return Promise.resolve(
+          new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "1" },
+          }),
+        )
       }
       return Promise.resolve(new Response("ok", { status: 200 }))
     }) as unknown as typeof fetch
@@ -219,23 +259,53 @@ describe("exported helpers", () => {
     assert.ok(elapsed >= 900, `Expected at least 900ms delay, got ${elapsed}ms`)
   })
 
+  it("fetchWithRetry falls back to default delay when retry-after is non-numeric", async () => {
+    const start = Date.now()
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      if (callCount === 1) {
+        return Promise.resolve(
+          new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "not-a-number" },
+          }),
+        )
+      }
+      return Promise.resolve(new Response("ok", { status: 200 }))
+    }) as unknown as typeof fetch
+    await helpers.fetchWithRetry("https://example.com", {}, 3, mockFetch)
+    const elapsed = Date.now() - start
+    // Default delay for first retry (i=0) is (0+1)*2000 = 2000ms
+    assert.ok(
+      elapsed >= 1900,
+      `Expected at least 1900ms fallback delay, got ${elapsed}ms`,
+    )
+  })
+
   it("system transform does not inject when system already contains prefix", async () => {
     const originalSetInterval = globalThis.setInterval
     const originalHome = process.env.HOME
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
-    globalThis.setInterval = (() => 0 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
 
     try {
       const plugin = await helpers.default({} as never)
-      assert.equal(typeof plugin["experimental.chat.system.transform"], "function")
+      assert.equal(
+        typeof plugin["experimental.chat.system.transform"],
+        "function",
+      )
 
       const transform = plugin["experimental.chat.system.transform"] as (
         input: { model?: { providerID?: string } },
         output: { system: string[] },
       ) => Promise<void>
 
-      const prefixed = "You are Claude Code, Anthropic's official CLI for Claude.\n\nExisting"
+      const prefixed =
+        "You are Claude Code, Anthropic's official CLI for Claude.\n\nExisting"
       const output = { system: [prefixed] }
 
       await transform({ model: { providerID: "anthropic" } }, output)
@@ -256,11 +326,16 @@ describe("exported helpers", () => {
     const originalHome = process.env.HOME
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
-    globalThis.setInterval = (() => 0 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
 
     try {
       const plugin = await helpers.default({} as never)
-      assert.equal(typeof plugin["experimental.chat.system.transform"], "function")
+      assert.equal(
+        typeof plugin["experimental.chat.system.transform"],
+        "function",
+      )
 
       const transform = plugin["experimental.chat.system.transform"] as (
         input: { model?: { providerID?: string } },
@@ -294,6 +369,36 @@ describe("exported helpers", () => {
     }
   })
 
+  it("plugin calls unref on the sync interval timer", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+
+    let unrefCalled = false
+    const fakeTimer = {
+      unref() {
+        unrefCalled = true
+      },
+    }
+    globalThis.setInterval = (() => fakeTimer) as unknown as typeof setInterval
+
+    try {
+      await helpers.default({} as never)
+      assert.ok(
+        unrefCalled,
+        "Expected .unref() to be called on the interval timer",
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
   it("auth fetch forwards original input URL unchanged", async () => {
     const originalNow = Date.now
     const originalSetInterval = globalThis.setInterval
@@ -302,12 +407,16 @@ describe("exported helpers", () => {
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
     Date.now = () => 1_700_000_000_000
-    globalThis.setInterval = (() => 0 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
 
     let forwardedInput: RequestInfo | URL | undefined
 
     try {
-      const { helpersModule } = await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
       globalThis.fetch = (async (input: RequestInfo | URL) => {
         forwardedInput = input
         return new Response("ok")
@@ -317,7 +426,12 @@ describe("exported helpers", () => {
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       assert.equal(typeof typedPlugin.auth?.loader, "function")
       const authConfig = await typedPlugin.auth!.loader!(
-        async () => ({ type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000 }),
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
         { models: {} },
       )
 
