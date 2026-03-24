@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { config } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.js"
 import {
   addExcludedBeta,
@@ -43,10 +44,9 @@ export {
 
 const SYSTEM_IDENTITY_PREFIX =
   "You are Claude Code, Anthropic's official CLI for Claude."
-const DEFAULT_CC_VERSION = "2.1.80"
 
 function getCliVersion(): string {
-  return process.env.ANTHROPIC_CLI_VERSION ?? DEFAULT_CC_VERSION
+  return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
 }
 
 function getUserAgent(): string {
