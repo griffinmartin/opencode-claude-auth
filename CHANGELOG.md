@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.0...v1.3.1) (2026-03-25)
+
+
+### Bug Fixes
+
+* add debug logger for auth flow diagnostics ([#84](https://github.com/griffinmartin/opencode-claude-auth/issues/84)) ([#85](https://github.com/griffinmartin/opencode-claude-auth/issues/85)) ([0fc246a](https://github.com/griffinmartin/opencode-claude-auth/commit/0fc246a4362f642c5f0be59b31d3b9430c0d1869))
+
 ## [1.3.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.2.0...v1.3.0) (2026-03-24)
 
 
