@@ -5,3 +5,4 @@ dist/
 *.env.local
 .sisyphus/
 .opencode/
+docs/

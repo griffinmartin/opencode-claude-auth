@@ -24,6 +24,7 @@ async function loadCredentialsWithCountingKeychain(
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-creds-"))
   const tempKeychain = join(tempDir, "keychain.ts")
   const tempBetas = join(tempDir, "betas.ts")
+  const tempLogger = join(tempDir, "logger.ts")
   const tempCredentials = join(tempDir, "credentials.ts")
   const sourceCredentials = await readFile(
     new URL("./credentials.ts", import.meta.url),
@@ -32,6 +33,12 @@ async function loadCredentialsWithCountingKeychain(
   const rewritten = sourceCredentials.replace(
     /from\s+["']\.\/(\w+)\.js["']/g,
     'from "./$1.ts"',
+  )
+
+  await writeFile(
+    tempLogger,
+    `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+    "utf8",
   )
 
   await writeFile(
@@ -178,6 +185,7 @@ describe("syncAuthJson file permissions", () => {
       const tempCredentials = join(tempDir, "credentials.ts")
       const tempKeychain = join(tempDir, "keychain.ts")
       const tempBetas = join(tempDir, "betas.ts")
+      const tempLogger = join(tempDir, "logger.ts")
       const sourceCredentials = await readFile(
         new URL("./credentials.ts", import.meta.url),
         "utf8",
@@ -197,6 +205,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       await writeFile(
         tempBetas,
         `export function resetExcludedBetas() {}\n`,
+        "utf8",
+      )
+      await writeFile(
+        tempLogger,
+        `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
         "utf8",
       )
       await writeFile(tempCredentials, rewritten, "utf8")
@@ -255,6 +268,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       const tempCredentials = join(tempDir, "credentials.ts")
       const tempKeychain = join(tempDir, "keychain.ts")
       const tempBetas = join(tempDir, "betas.ts")
+      const tempLogger = join(tempDir, "logger.ts")
       const sourceCredentials = await readFile(
         new URL("./credentials.ts", import.meta.url),
         "utf8",
@@ -274,6 +288,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       await writeFile(
         tempBetas,
         `export function resetExcludedBetas() {}\n`,
+        "utf8",
+      )
+      await writeFile(
+        tempLogger,
+        `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
         "utf8",
       )
       await writeFile(tempCredentials, rewritten, "utf8")

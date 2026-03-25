@@ -2,6 +2,7 @@ import { execSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { log } from "./logger.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -45,8 +46,21 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
     typeof creds.refreshToken !== "string" ||
     typeof creds.expiresAt !== "number"
   ) {
+    log("credentials_parsed", {
+      hasAccessToken: typeof creds.accessToken === "string",
+      hasRefreshToken: typeof creds.refreshToken === "string",
+      hasExpiry: typeof creds.expiresAt === "number",
+      isMcpOnly: false,
+    })
     return null
   }
+
+  log("credentials_parsed", {
+    hasAccessToken: true,
+    hasRefreshToken: true,
+    hasExpiry: true,
+    isMcpOnly: false,
+  })
 
   return {
     accessToken: creds.accessToken,
@@ -61,34 +75,59 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
 
 function readKeychainService(serviceName: string): string | null {
   try {
-    return execSync(`security find-generic-password -s "${serviceName}" -w`, {
-      timeout: 2000,
-      encoding: "utf-8",
-    }).trim()
+    const result = execSync(
+      `security find-generic-password -s "${serviceName}" -w`,
+      {
+        timeout: 2000,
+        encoding: "utf-8",
+      },
+    ).trim()
+    log("keychain_read", { service: serviceName, success: true })
+    return result
   } catch (err: unknown) {
     const error = err as { status?: number; code?: string; killed?: boolean }
 
     if (error.killed || error.code === "ETIMEDOUT") {
+      log("keychain_read_error", {
+        service: serviceName,
+        errorType: "timeout",
+      })
       throw new Error(
         "Keychain read timed out. This can happen on macOS Tahoe. Try restarting Keychain Access.",
         { cause: err },
       )
     }
     if (error.status === 36) {
+      log("keychain_read_error", {
+        service: serviceName,
+        errorType: "locked",
+      })
       throw new Error(
         "macOS Keychain is locked. Please unlock it or run: security unlock-keychain ~/Library/Keychains/login.keychain-db",
         { cause: err },
       )
     }
     if (error.status === 128) {
+      log("keychain_read_error", {
+        service: serviceName,
+        errorType: "denied",
+      })
       throw new Error(
         "Keychain access was denied. Please grant access when prompted by macOS.",
         { cause: err },
       )
     }
     if (error.status === 44) {
+      log("keychain_read_error", {
+        service: serviceName,
+        errorType: "not_found",
+      })
       return null // item not found
     }
+    log("keychain_read_error", {
+      service: serviceName,
+      errorType: `exit_${error.status ?? "unknown"}`,
+    })
     throw new Error(
       `Failed to read Keychain entry "${serviceName}" (exit ${error.status ?? "unknown"}). Try re-authenticating with Claude Code.`,
       { cause: err },
@@ -122,6 +161,7 @@ function listClaudeKeychainServices(): string[] {
     for (const svc of services) {
       if (svc !== PRIMARY_SERVICE) ordered.push(svc)
     }
+    log("keychain_list", { servicesFound: ordered })
     return ordered
   } catch {
     return [PRIMARY_SERVICE]
@@ -132,8 +172,11 @@ function readCredentialsFile(): ClaudeCredentials | null {
   try {
     const credPath = join(homedir(), ".claude", ".credentials.json")
     const raw = readFileSync(credPath, "utf-8")
-    return parseCredentials(raw)
+    const creds = parseCredentials(raw)
+    log("credentials_file_read", { success: creds !== null })
+    return creds
   } catch {
+    log("credentials_file_read", { success: false })
     return null
   }
 }

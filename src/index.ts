@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { config } from "./model-config.ts"
-import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.js"
+import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
+import { initLogger, log } from "./logger.ts"
 import {
   addExcludedBeta,
   getExcludedBetas,
@@ -8,8 +9,8 @@ import {
   getNextBetaToExclude,
   isLongContextError,
   LONG_CONTEXT_BETAS,
-} from "./betas.js"
-import { transformBody, transformResponseStream } from "./transforms.js"
+} from "./betas.ts"
+import { transformBody, transformResponseStream } from "./transforms.ts"
 import {
   getCachedCredentials,
   syncAuthJson,
@@ -19,7 +20,7 @@ import {
   saveAccountSource,
   refreshAccountsList,
   type ClaudeCredentials,
-} from "./credentials.js"
+} from "./credentials.ts"
 
 export {
   addExcludedBeta,
@@ -28,19 +29,19 @@ export {
   getNextBetaToExclude,
   isLongContextError,
   LONG_CONTEXT_BETAS,
-} from "./betas.js"
-export { resetExcludedBetas } from "./betas.js"
+} from "./betas.ts"
+export { resetExcludedBetas } from "./betas.ts"
 export {
   stripToolPrefix,
   transformBody,
   transformResponseStream,
-} from "./transforms.js"
+} from "./transforms.ts"
 export {
   getCachedCredentials,
   syncAuthJson,
   refreshAccountsList,
   type ClaudeCredentials,
-} from "./credentials.js"
+} from "./credentials.ts"
 
 const SYSTEM_IDENTITY_PREFIX =
   "You are Claude Code, Anthropic's official CLI for Claude."
@@ -141,18 +142,23 @@ export function getBillingHeader(modelId: string): string {
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 
 const plugin: Plugin = async () => {
+  initLogger()
+
   let accounts: ClaudeAccount[] = []
   try {
     accounts = readAllClaudeAccounts()
   } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    log("plugin_init_error", { error })
     console.warn(
       "opencode-claude-auth: Failed to read Claude Code credentials:",
-      err instanceof Error ? err.message : err,
+      error,
     )
     return {}
   }
 
   if (accounts.length === 0) {
+    log("plugin_init_no_accounts", { reason: "no credentials found" })
     console.warn(
       "opencode-claude-auth: No Claude Code credentials found. " +
         "Plugin disabled. Run `claude` to authenticate.",
@@ -168,6 +174,12 @@ const plugin: Plugin = async () => {
     accounts[0]
 
   setActiveAccountSource(defaultAccount.source)
+
+  log("plugin_init", {
+    accountCount: accounts.length,
+    sources: accounts.map((a) => a.source),
+    activeSource: defaultAccount.source,
+  })
 
   const initialCreds = getCachedCredentials()
   if (initialCreds) {
@@ -206,7 +218,12 @@ const plugin: Plugin = async () => {
       provider: "anthropic",
       async loader(getAuth, provider) {
         const auth = await getAuth()
+        log("auth_loader_called", { authType: auth.type })
         if (auth.type !== "oauth") {
+          log("auth_loader_skipped", {
+            authType: auth.type,
+            reason: "auth type is not oauth",
+          })
           return {}
         }
 
@@ -218,11 +235,16 @@ const plugin: Plugin = async () => {
           }
         }
 
+        log("auth_loader_ready", {
+          modelCount: Object.keys(provider.models).length,
+        })
+
         return {
           apiKey: "",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             const latest = getCachedCredentials()
             if (!latest) {
+              log("fetch_no_credentials", { modelId: "unknown" })
               throw new Error(
                 "Claude Code credentials are unavailable or expired. Run `claude` to refresh them.",
               )
@@ -241,6 +263,12 @@ const plugin: Plugin = async () => {
               } catch {}
             }
 
+            log("fetch_credentials", {
+              modelId,
+              accessToken: latest.accessToken,
+              expiresAt: latest.expiresAt,
+            })
+
             // Get excluded betas for this model (from previous failed requests)
             const excluded = getExcludedBetas(modelId)
             const headers = buildRequestHeaders(
@@ -252,10 +280,23 @@ const plugin: Plugin = async () => {
             )
             const body = transformBody(requestInit.body)
 
+            const headerKeys: string[] = []
+            headers.forEach((_, key) => headerKeys.push(key))
+            const betas = (headers.get("anthropic-beta") ?? "")
+              .split(",")
+              .filter(Boolean)
+            log("fetch_headers_built", { headerKeys, betas, modelId })
+
             let response = await fetchWithRetry(input, {
               ...requestInit,
               body,
               headers,
+            })
+
+            log("fetch_response", {
+              status: response.status,
+              modelId,
+              retryAttempt: 0,
             })
 
             // Check for long-context beta errors and retry with betas excluded
@@ -282,6 +323,10 @@ const plugin: Plugin = async () => {
               }
 
               addExcludedBeta(modelId, betaToExclude)
+              log("fetch_beta_excluded", {
+                modelId,
+                excludedBeta: betaToExclude,
+              })
 
               // Rebuild headers without the excluded beta and retry
               const newExcluded = getExcludedBetas(modelId)

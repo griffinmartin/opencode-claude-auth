@@ -125,6 +125,7 @@ const SOURCE_FILES = [
   "model-config.ts",
   "transforms.ts",
   "credentials.ts",
+  "logger.ts",
 ] as const
 
 async function copySourceFiles(tempDir: string): Promise<void> {

@@ -13,11 +13,12 @@ import {
   refreshAccount,
   type ClaudeCredentials,
   type ClaudeAccount,
-} from "./keychain.js"
-import { resetExcludedBetas } from "./betas.js"
+} from "./keychain.ts"
+import { resetExcludedBetas } from "./betas.ts"
+import { log } from "./logger.ts"
 
-export type { ClaudeCredentials } from "./keychain.js"
-export type { ClaudeAccount } from "./keychain.js"
+export type { ClaudeCredentials } from "./keychain.ts"
+export type { ClaudeAccount } from "./keychain.ts"
 
 const CREDENTIAL_CACHE_TTL_MS = 30_000
 
@@ -37,9 +38,13 @@ export function getAccounts(): ClaudeAccount[] {
 }
 
 export function setActiveAccountSource(source: string): void {
+  const previous = activeAccountSource
   activeAccountSource = source
   accountCacheMap.delete(source)
   resetExcludedBetas()
+  if (previous && previous !== source) {
+    log("account_switch", { newSource: source, previousSource: previous })
+  }
 }
 
 export function refreshAccountsList(): ClaudeAccount[] {
@@ -133,13 +138,24 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
 
 export function syncAuthJson(creds: ClaudeCredentials): void {
   for (const authPath of getAuthJsonPaths()) {
-    syncToPath(authPath, creds)
+    try {
+      syncToPath(authPath, creds)
+      log("sync_auth_json", { path: authPath, success: true })
+    } catch (err) {
+      log("sync_auth_json", {
+        path: authPath,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
   }
 }
 
 function refreshViaCli(): void {
   const maxAttempts = 2
   for (let i = 0; i < maxAttempts; i++) {
+    log("refresh_started", { source: "cli", attempt: i + 1 })
     try {
       execSync("claude -p . --model haiku", {
         timeout: 60_000,
@@ -147,8 +163,14 @@ function refreshViaCli(): void {
         env: { ...process.env, TERM: "dumb" },
         stdio: "ignore",
       })
+      log("refresh_success", { source: "cli" })
       return
-    } catch {
+    } catch (err) {
+      log("refresh_failed", {
+        source: "cli",
+        attempt: i + 1,
+        error: err instanceof Error ? err.message : String(err),
+      })
       // Non-fatal: retry once, then give up
     }
   }
@@ -180,8 +202,17 @@ export function getCachedCredentials(): ClaudeCredentials | null {
     now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
     cached.creds.expiresAt > now + 60_000
   ) {
+    log("cache_hit", {
+      source: account.source,
+      ttlRemaining: CREDENTIAL_CACHE_TTL_MS - (now - cached.cachedAt),
+    })
     return cached.creds
   }
+
+  log("cache_miss", {
+    source: account.source,
+    reason: cached ? "stale or expiring" : "empty",
+  })
 
   const fresh = refreshIfNeeded(account)
   if (!fresh) {

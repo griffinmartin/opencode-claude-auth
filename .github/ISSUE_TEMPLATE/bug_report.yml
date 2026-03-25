@@ -1,0 +1,66 @@
+name: Bug Report
+description: Report a problem with opencode-claude-auth
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Start OpenCode with ...
+        2. Select model ...
+        3. Send a message ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: "Run: npm list opencode-claude-auth"
+      placeholder: "1.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode version
+      placeholder: "0.1.0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: debug-logs
+    attributes:
+      label: Debug logs
+      description: |
+        To generate debug logs:
+        1. Set `CLAUDE_AUTH_DEBUG=1` in your environment
+        2. Restart OpenCode and reproduce the issue
+        3. Paste the contents of `~/.local/share/opencode/claude-auth-debug.log` below
+
+        Secrets (tokens, API keys) are automatically redacted before being written to the log file.
+      render: json
+    validations:
+      required: false
