@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.1...v1.3.2) (2026-03-26)
+
+
+### Bug Fixes
+
+* add logging to refresh failure path for diagnostics ([#94](https://github.com/griffinmartin/opencode-claude-auth/issues/94)) ([5d80a59](https://github.com/griffinmartin/opencode-claude-auth/commit/5d80a59be04fb385941f7c20349746b69b7a2393))
+
 ## [1.3.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.0...v1.3.1) (2026-03-25)
 
 
