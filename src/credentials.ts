@@ -185,9 +185,21 @@ export function refreshIfNeeded(
   const creds = target.credentials
   if (creds.expiresAt > Date.now() + 60_000) return creds
 
+  log("refresh_needed", {
+    source: target.source,
+    expiresAt: creds.expiresAt,
+    expiresIn: creds.expiresAt - Date.now(),
+  })
+
   refreshViaCli()
   const refreshed = refreshAccount(target.source)
   if (refreshed && refreshed.expiresAt > Date.now() + 60_000) return refreshed
+
+  log("refresh_exhausted", {
+    source: target.source,
+    hadCredentials: !!refreshed,
+    expiresAt: refreshed?.expiresAt,
+  })
   return null
 }
 
@@ -216,6 +228,7 @@ export function getCachedCredentials(): ClaudeCredentials | null {
 
   const fresh = refreshIfNeeded(account)
   if (!fresh) {
+    log("credentials_unavailable", { source: account.source })
     accountCacheMap.delete(account.source)
     return null
   }
