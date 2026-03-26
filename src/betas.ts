@@ -1,4 +1,5 @@
 import { config, getModelOverride } from "./model-config.ts"
+import { isEnable1mContext } from "./plugin-config.ts"
 
 // Beta flags to try removing in order when "long context" errors occur
 export const LONG_CONTEXT_BETAS = config.longContextBetas
@@ -89,10 +90,7 @@ export function getModelBetas(
   //
   // Users who want 1M context should set ANTHROPIC_ENABLE_1M_CONTEXT=true
   // (requires a Claude Max subscription or a plan that covers extra usage).
-  if (
-    process.env.ANTHROPIC_ENABLE_1M_CONTEXT === "true" &&
-    supports1mContext(modelId)
-  ) {
+  if (isEnable1mContext() && supports1mContext(modelId)) {
     betas.push(config.longContextBetas[0])
   }
 

@@ -123,6 +123,7 @@ const SOURCE_FILES = [
   "index.ts",
   "betas.ts",
   "model-config.ts",
+  "plugin-config.ts",
   "transforms.ts",
   "credentials.ts",
   "logger.ts",
