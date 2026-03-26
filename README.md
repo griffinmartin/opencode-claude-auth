@@ -135,11 +135,30 @@ unset CLAUDE_AUTH_DEBUG
 
 The `context-1m-2025-08-07` beta header is not sent by default. Without it, the API caps context at 200k tokens.
 
-To enable 1M context (requires Claude Max or a plan with extra usage coverage):
+To enable 1M context (requires Claude Max or a plan with extra usage coverage), use **either** of these methods:
+
+**Option A: Config file** (recommended — no environment setup needed)
+
+Add `enable1mContext` to any agent in your `opencode.json` (project-level or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "plugin": ["opencode-claude-auth"],
+  "agent": {
+    "build": {
+      "enable1mContext": true
+    }
+  }
+}
+```
+
+**Option B: Environment variable**
 
 ```bash
 export ANTHROPIC_ENABLE_1M_CONTEXT=true
 ```
+
+If both are set, the environment variable takes priority.
 
 The Claude CLI itself treats 1M context as opt-in (via a `[1m]` model suffix). Sending the beta without a plan that covers long context charges causes "Extra usage is required for long context requests" errors. Versions before 0.8.0 sent this beta automatically for 4.6+ models, which broke things for Pro users ([#64](https://github.com/griffinmartin/opencode-claude-auth/issues/64)).
 
