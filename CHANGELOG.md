@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.2...v1.3.3) (2026-03-27)
+
+
+### Bug Fixes
+
+* run CLI token refresh in tmpdir instead of inheriting cwd ([#96](https://github.com/griffinmartin/opencode-claude-auth/issues/96)) ([7db98a1](https://github.com/griffinmartin/opencode-claude-auth/commit/7db98a1e36fd8ffd775e14c2bd6c4f76c7a141b8))
+
 ## [1.3.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.1...v1.3.2) (2026-03-26)
 
 
