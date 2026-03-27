@@ -139,7 +139,7 @@ To enable 1M context (requires Claude Max or a plan with extra usage coverage), 
 
 **Option A: Config file** (recommended — no environment setup needed)
 
-Add `enable1mContext` to any agent in your `opencode.json` (project-level or `~/.config/opencode/opencode.json`):
+Add `enable1mContext` to any agent in your `opencode.json` (project-level or `~/.config/opencode/opencode.json`). Setting it in any one agent enables 1M context globally for all supported models — you don't need to set it for each agent:
 
 ```json
 {

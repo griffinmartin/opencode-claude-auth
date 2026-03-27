@@ -32,7 +32,11 @@ let settings: PluginSettings = {}
  * keys placed in agent configs are preserved through OpenCode's
  * config parser and passed to the plugin via the `config` hook.
  *
- * The first truthy value found (in any agent) wins.
+ * NOTE: OpenCode's Zod schema may relocate unknown top-level agent keys
+ * into `agent.options`. We check both locations defensively so this
+ * survives future config parser changes.
+ *
+ * The first boolean value found (in any agent) wins — even if `false`.
  */
 export function applyOpencodeConfig(config: unknown): void {
   if (!config || typeof config !== "object") return
@@ -46,12 +50,22 @@ export function applyOpencodeConfig(config: unknown): void {
     if (!agentConfig || typeof agentConfig !== "object") continue
     const agent = agentConfig as Record<string, unknown>
 
-    if (typeof agent.enable1mContext === "boolean") {
-      settings.enable1mContext = agent.enable1mContext
-      log("config_loaded", { enable1mContext: agent.enable1mContext })
+    // Check top-level first, then fall back to options (where OpenCode's
+    // Zod transform may relocate unknown keys)
+    const val =
+      agent.enable1mContext ??
+      (agent.options as Record<string, unknown> | undefined)?.enable1mContext
+
+    if (typeof val === "boolean") {
+      settings.enable1mContext = val
+      log("config_loaded", { enable1mContext: val })
       return
     }
   }
+
+  log("config_no_plugin_keys", {
+    agentCount: Object.keys(agents).length,
+  })
 }
 
 /**

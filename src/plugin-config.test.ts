@@ -99,7 +99,7 @@ describe("plugin-config", () => {
       assert.equal(getPluginSettings().enable1mContext, undefined)
     })
 
-    it("takes first truthy value when multiple agents set it", () => {
+    it("takes first boolean value found in iteration order", () => {
       applyOpencodeConfig({
         agent: {
           build: { enable1mContext: true },

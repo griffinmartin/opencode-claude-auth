@@ -46,8 +46,6 @@ export {
 export {
   applyOpencodeConfig,
   isEnable1mContext,
-  resetPluginSettings,
-  getPluginSettings,
   type PluginSettings,
 } from "./plugin-config.ts"
 
