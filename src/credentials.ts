@@ -6,7 +6,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs"
-import { homedir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
   readAllClaudeAccounts,
@@ -162,6 +162,7 @@ function refreshViaCli(): void {
         encoding: "utf-8",
         env: { ...process.env, TERM: "dumb" },
         stdio: "ignore",
+        cwd: tmpdir(),
       })
       log("refresh_success", { source: "cli" })
       return
