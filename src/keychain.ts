@@ -17,7 +17,7 @@ export interface ClaudeAccount {
   credentials: ClaudeCredentials
 }
 
-const PRIMARY_SERVICE = "Claude Code-credentials"
+export const PRIMARY_SERVICE = "Claude Code-credentials"
 
 export function parseCredentials(raw: string): ClaudeCredentials | null {
   let parsed: unknown

@@ -190,6 +190,8 @@ let credentials = {
   expiresAt: ${initialExpiresAt}
 }
 
+export const PRIMARY_SERVICE = "Claude Code-credentials"
+
 export function readAllClaudeAccounts() {
   readCount += 1
   return [{ label: "Account 1", source: "Claude Code-credentials", credentials }]
@@ -285,7 +287,8 @@ describe("exported helpers", () => {
     await copySourceFiles(tempDir)
     await writeFile(
       tempKeychain,
-      `export function readAllClaudeAccounts() { return [{ label: "Account 1", source: "Claude Code-credentials", credentials: { accessToken: "token", refreshToken: "refresh", expiresAt: 1 } }] }
+      `export const PRIMARY_SERVICE = "Claude Code-credentials"
+export function readAllClaudeAccounts() { return [{ label: "Account 1", source: "Claude Code-credentials", credentials: { accessToken: "token", refreshToken: "refresh", expiresAt: 1 } }] }
 export function refreshAccount() { return null }
 export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }

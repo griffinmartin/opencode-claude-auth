@@ -12,6 +12,7 @@ import {
   readAllClaudeAccounts,
   refreshAccount,
   writeBackCredentials,
+  PRIMARY_SERVICE,
   type ClaudeCredentials,
   type ClaudeAccount,
 } from "./keychain.ts"
@@ -308,7 +309,18 @@ export function refreshIfNeeded(
   // Fall back to CLI-based refresh (consumes Haiku tokens)
   log("refresh_fallback_cli", { source: target.source })
   refreshViaCli()
-  const refreshed = refreshAccount(target.source)
+  let refreshed = refreshAccount(target.source)
+
+  if (
+    (!refreshed || refreshed.expiresAt <= Date.now() + 60_000) &&
+    target.source.startsWith(PRIMARY_SERVICE + "-")
+  ) {
+    const primaryRefreshed = refreshAccount(PRIMARY_SERVICE)
+    if (primaryRefreshed && primaryRefreshed.expiresAt > Date.now() + 60_000) {
+      refreshed = primaryRefreshed
+    }
+  }
+
   if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
     target.credentials = refreshed
     return refreshed
