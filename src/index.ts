@@ -524,8 +524,8 @@ const plugin: Plugin = async () => {
 
             const sourceDescription =
               chosen.source === "file"
-                ? "credentials file (~/.claude/.credentials.json)"
-                : "macOS Keychain"
+                ? `credentials file (${chosen.configDir ?? "~/.claude"}/.credentials.json)`
+                : `macOS Keychain (${chosen.source})`
 
             return {
               url: "",

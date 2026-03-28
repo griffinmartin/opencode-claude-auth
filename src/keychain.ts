@@ -1,5 +1,12 @@
 import { execFileSync, execSync } from "node:child_process"
-import { chmodSync, readFileSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import {
+  chmodSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
@@ -14,6 +21,7 @@ export interface ClaudeCredentials {
 export interface ClaudeAccount {
   label: string
   source: string
+  configDir?: string
   credentials: ClaudeCredentials
 }
 
@@ -36,7 +44,6 @@ export function parseCredentials(raw: string): ClaudeCredentials | null {
     mcpOAuth?: unknown
   }
 
-  // Entries that only contain mcpOAuth are MCP server credentials, not user accounts
   if ((parsed as { mcpOAuth?: unknown }).mcpOAuth && !creds.accessToken) {
     return null
   }
@@ -122,7 +129,7 @@ function readKeychainService(serviceName: string): string | null {
         service: serviceName,
         errorType: "not_found",
       })
-      return null // item not found
+      return null
     }
     log("keychain_read_error", {
       service: serviceName,
@@ -146,7 +153,7 @@ function listClaudeKeychainServices(): string[] {
     const services: string[] = []
     const seen = new Set<string>()
 
-    const re = /"Claude Code-credentials(?:-[0-9a-f]+)?"/g
+    const re = /"Claude Code-credentials(?:-[0-9a-f]{8})?"/g
     let m = re.exec(dump)
     while (m !== null) {
       const svc = m[0].slice(1, -1)
@@ -173,20 +180,85 @@ function listClaudeKeychainServices(): string[] {
   }
 }
 
-function readCredentialsFile(): ClaudeCredentials | null {
+function readEmailFromConfigDir(configDir: string): string | null {
+  const primaryConfigDir = join(homedir(), ".claude")
+  const candidates = [
+    join(configDir, ".claude.json"),
+    ...(configDir === primaryConfigDir ? [join(homedir(), ".claude.json")] : []),
+  ]
+
+  for (const path of candidates) {
+    try {
+      const raw = readFileSync(path, "utf-8")
+      const data = JSON.parse(raw) as {
+        oauthAccount?: { emailAddress?: string }
+      }
+      const email = data.oauthAccount?.emailAddress
+      if (email) return email
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return null
+}
+
+export function readCredentialsFile(
+  configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+): ClaudeCredentials | null {
   try {
-    const credPath = join(homedir(), ".claude", ".credentials.json")
+    const credPath = join(configDir, ".credentials.json")
     const raw = readFileSync(credPath, "utf-8")
     const creds = parseCredentials(raw)
-    log("credentials_file_read", { success: creds !== null })
+    log("credentials_file_read", { success: creds !== null, configDir })
     return creds
   } catch {
-    log("credentials_file_read", { success: false })
+    log("credentials_file_read", { success: false, configDir })
     return null
   }
 }
 
-export function buildAccountLabels(credsList: ClaudeCredentials[]): string[] {
+export function keychainSuffixForDir(dir: string): string {
+  return createHash("sha256").update(dir).digest("hex").slice(0, 8)
+}
+
+function discoverConfigDirsForKeychain(
+  keychainSuffixes: Set<string>,
+): Map<string, string> {
+  const result = new Map<string, string>()
+
+  const tryDir = (dir: string) => {
+    if (result.size === keychainSuffixes.size) return
+    const suffix = keychainSuffixForDir(dir)
+    if (keychainSuffixes.has(suffix) && !result.has(suffix)) {
+      result.set(suffix, dir)
+    }
+  }
+
+  if (process.env.CLAUDE_CONFIG_DIR) {
+    tryDir(process.env.CLAUDE_CONFIG_DIR)
+  }
+
+  const home = homedir()
+  try {
+    const entries = readdirSync(home, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(".")) continue
+      const dir = join(home, entry.name)
+      if (!existsSync(join(dir, ".claude.json"))) continue
+      tryDir(dir)
+    }
+  } catch {
+    // Non-fatal: if $HOME can't be read, only CLAUDE_CONFIG_DIR can be used.
+  }
+
+  return result
+}
+
+export function buildAccountLabels(
+  credsList: ClaudeCredentials[],
+  emails?: (string | null)[],
+): string[] {
   const baseLabels = credsList.map((c) => {
     if (c.subscriptionType) {
       const tier =
@@ -200,45 +272,97 @@ export function buildAccountLabels(credsList: ClaudeCredentials[]): string[] {
   for (const l of baseLabels) counts.set(l, (counts.get(l) ?? 0) + 1)
 
   const seen = new Map<string, number>()
-  return baseLabels.map((base) => {
-    if ((counts.get(base) ?? 0) <= 1) return base
-    const n = (seen.get(base) ?? 0) + 1
-    seen.set(base, n)
-    return `${base} ${n}`
+  return baseLabels.map((base, i) => {
+    let label: string
+    if ((counts.get(base) ?? 0) <= 1) {
+      label = base
+    } else {
+      const n = (seen.get(base) ?? 0) + 1
+      seen.set(base, n)
+      label = `${base} ${n}`
+    }
+    const email = emails?.[i]
+    return email ? `${label}: ${email}` : label
   })
 }
 
 export function readAllClaudeAccounts(): ClaudeAccount[] {
   if (process.platform !== "darwin") {
-    const creds = readCredentialsFile()
+    const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+    const creds = readCredentialsFile(configDir)
     if (!creds) return []
-    const [label] = buildAccountLabels([creds])
-    return [{ label, source: "file", credentials: creds }]
+    const email = readEmailFromConfigDir(configDir)
+    const [label] = buildAccountLabels([creds], [email])
+    return [{ label, source: "file", configDir, credentials: creds }]
   }
 
   const services = listClaudeKeychainServices()
-  const rawAccounts: Array<{ source: string; credentials: ClaudeCredentials }> =
-    []
+  const keychainAccounts: Array<{
+    source: string
+    suffix: string | null
+    credentials: ClaudeCredentials
+  }> = []
 
   for (const svc of services) {
     const raw = readKeychainService(svc)
     if (!raw) continue
     const creds = parseCredentials(raw)
     if (!creds) continue
-    rawAccounts.push({ source: svc, credentials: creds })
+    const suffixMatch = svc.match(/-([0-9a-f]{8})$/)
+    keychainAccounts.push({
+      source: svc,
+      suffix: suffixMatch ? suffixMatch[1] : null,
+      credentials: creds,
+    })
   }
 
-  if (rawAccounts.length === 0) {
-    const creds = readCredentialsFile()
-    if (creds) rawAccounts.push({ source: "file", credentials: creds })
+  if (keychainAccounts.length === 0) {
+    const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+    const creds = readCredentialsFile(configDir)
+    if (!creds) return []
+    const email = readEmailFromConfigDir(configDir)
+    const [label] = buildAccountLabels([creds], [email])
+    return [{ label, source: "file", configDir, credentials: creds }]
   }
 
-  const labels = buildAccountLabels(rawAccounts.map((a) => a.credentials))
-  return rawAccounts.map((a, i) => ({
-    label: labels[i],
-    source: a.source,
-    credentials: a.credentials,
-  }))
+  const suffixToDir = discoverConfigDirsForKeychain(
+    new Set(
+      keychainAccounts
+        .map((a) => a.suffix)
+        .filter((s): s is string => s !== null),
+    ),
+  )
+
+  const resolved = keychainAccounts.map((a) => {
+    const configDir =
+      a.suffix === null ? join(homedir(), ".claude") : suffixToDir.get(a.suffix)
+    const email = configDir ? readEmailFromConfigDir(configDir) : null
+    log("account_config_dir", {
+      source: a.source,
+      configDir: configDir ?? null,
+    })
+    return {
+      source: a.source,
+      credentials: a.credentials,
+      configDir,
+      email,
+    }
+  })
+
+  const labels = buildAccountLabels(
+    resolved.map((a) => a.credentials),
+    resolved.map((a) => a.email),
+  )
+
+  return resolved.map((a, i) => {
+    const account: ClaudeAccount = {
+      label: labels[i],
+      source: a.source,
+      credentials: a.credentials,
+    }
+    if (a.configDir) account.configDir = a.configDir
+    return account
+  })
 }
 
 export function updateCredentialBlob(
@@ -286,6 +410,7 @@ function getKeychainAccountName(serviceName: string): string | null {
 export function writeBackCredentials(
   source: string,
   creds: ClaudeCredentials,
+  configDir?: string,
 ): boolean {
   const newCreds = {
     accessToken: creds.accessToken,
@@ -295,7 +420,8 @@ export function writeBackCredentials(
 
   if (source === "file") {
     try {
-      const credPath = join(homedir(), ".claude", ".credentials.json")
+      const dir = configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+      const credPath = join(dir, ".credentials.json")
       const raw = readFileSync(credPath, "utf-8")
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
@@ -303,10 +429,10 @@ export function writeBackCredentials(
       if (process.platform !== "win32") {
         chmodSync(credPath, 0o600)
       }
-      log("writeback_success", { source })
+      log("writeback_success", { source, configDir: dir })
       return true
     } catch {
-      log("writeback_failed", { source })
+      log("writeback_failed", { source, configDir: configDir ?? null })
       return false
     }
   }
@@ -317,9 +443,6 @@ export function writeBackCredentials(
       if (!raw) return false
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
-      // Discover the actual account name from the existing Keychain entry.
-      // Claude CLI uses the macOS username (e.g. "gmartin"), not the service name.
-      // Using the wrong account name creates a duplicate entry instead of updating.
       const accountName = getKeychainAccountName(source) ?? source
       execFileSync(
         "/usr/bin/security",
@@ -346,9 +469,12 @@ export function writeBackCredentials(
   return false
 }
 
-export function refreshAccount(source: string): ClaudeCredentials | null {
+export function refreshAccount(
+  source: string,
+  configDir?: string,
+): ClaudeCredentials | null {
   if (source === "file") {
-    return readCredentialsFile()
+    return readCredentialsFile(configDir)
   }
   const raw = readKeychainService(source)
   if (!raw) return null
