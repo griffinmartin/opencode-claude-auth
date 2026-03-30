@@ -16,6 +16,11 @@ async function loadCredentialsWithCountingKeychain(
       refreshToken: string
       expiresAt: number
     } | null
+    getCredentialsForSync: () => {
+      accessToken: string
+      refreshToken: string
+      expiresAt: number
+    } | null
     initAccounts: (accounts: unknown[]) => void
   }
   keychainModule: {
@@ -85,6 +90,11 @@ export function __getReadCount() {
   return {
     credentialsModule: credentialsModule as {
       getCachedCredentials: () => {
+        accessToken: string
+        refreshToken: string
+        expiresAt: number
+      } | null
+      getCredentialsForSync: () => {
         accessToken: string
         refreshToken: string
         expiresAt: number
@@ -205,6 +215,47 @@ describe("credential caching", () => {
       Date.now() + 10 * 60_000,
     )
     assert.equal(credentialsModule.getCachedCredentials(), null)
+  })
+
+  it("getCredentialsForSync returns cached credentials without triggering refresh", async () => {
+    const originalNow = Date.now
+    let now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "token",
+            refreshToken: "refresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+
+      // Prime the cache
+      credentialsModule.getCachedCredentials()
+
+      // Advance time past cache TTL
+      now += 31_000
+
+      // getCredentialsForSync should return the account's current credentials
+      // without triggering a keychain read (refresh)
+      const readCountBefore = keychainModule.__getReadCount()
+      const syncCreds = credentialsModule.getCredentialsForSync()
+      const readCountAfter = keychainModule.__getReadCount()
+
+      assert.ok(syncCreds)
+      assert.equal(syncCreds.accessToken, "token")
+      assert.equal(readCountAfter, readCountBefore, "should not trigger keychain read")
+    } finally {
+      Date.now = originalNow
+    }
   })
 })
 

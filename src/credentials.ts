@@ -286,6 +286,25 @@ export function refreshIfNeeded(
   return null
 }
 
+/**
+ * Returns the active account's credentials for auth.json sync purposes.
+ * Unlike getCachedCredentials(), this does NOT trigger a refresh.
+ * It returns the account's current in-memory credentials if they're still valid.
+ * Returns null if no account or credentials are expired.
+ */
+export function getCredentialsForSync(): ClaudeCredentials | null {
+  const account = getActiveAccount()
+  if (!account) return null
+
+  const creds = account.credentials
+  if (creds.expiresAt > Date.now() + 60_000) {
+    return creds
+  }
+
+  // Credentials are near expiry -- don't refresh here, let the per-request path handle it
+  return null
+}
+
 export function getCachedCredentials(): ClaudeCredentials | null {
   const account = getActiveAccount()
   if (!account) return null
