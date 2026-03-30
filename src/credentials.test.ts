@@ -1,5 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
+import { refreshViaOAuth } from "./credentials.ts"
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -59,6 +60,8 @@ export function refreshAccount(source) {
   readCount += 1
   return credentials
 }
+
+export function writeBackCredentials() { return true }
 
 export function __getReadCount() {
   return readCount
@@ -236,17 +239,13 @@ describe("syncAuthJson file permissions", () => {
         tempKeychain,
         `export function readAllClaudeAccounts() { return [] }
 export function refreshAccount() { return null }
+export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }`,
         "utf8",
       )
       await writeFile(
         tempBetas,
         `export function resetExcludedBetas() {}\n`,
-        "utf8",
-      )
-      await writeFile(
-        tempLogger,
-        `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
         "utf8",
       )
       await writeFile(tempCredentials, rewritten, "utf8")
@@ -319,6 +318,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         tempKeychain,
         `export function readAllClaudeAccounts() { return [] }
 export function refreshAccount() { return null }
+export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }`,
         "utf8",
       )
@@ -355,5 +355,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         delete process.env.HOME
       }
     }
+  })
+})
+
+describe("refreshViaOAuth", () => {
+  it("is exported as a function", () => {
+    assert.equal(typeof refreshViaOAuth, "function")
   })
 })

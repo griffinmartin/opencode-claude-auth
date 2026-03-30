@@ -170,6 +170,8 @@ export function refreshAccount(source) {
   return credentials
 }
 
+export function writeBackCredentials() { return true }
+
 export function buildAccountLabels(creds) {
   return creds.map((_, i) => \`Account \${i + 1}\`)
 }
@@ -248,6 +250,7 @@ describe("exported helpers", () => {
       tempKeychain,
       `export function readAllClaudeAccounts() { return [{ label: "Account 1", source: "Claude Code-credentials", credentials: { accessToken: "token", refreshToken: "refresh", expiresAt: 1 } }] }
 export function refreshAccount() { return null }
+export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }
 `,
       "utf8",

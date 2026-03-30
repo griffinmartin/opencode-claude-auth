@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process"
+import { execFileSync, execSync } from "node:child_process"
 import {
   chmodSync,
   existsSync,
@@ -11,6 +11,7 @@ import { dirname, join } from "node:path"
 import {
   readAllClaudeAccounts,
   refreshAccount,
+  writeBackCredentials,
   type ClaudeCredentials,
   type ClaudeAccount,
 } from "./keychain.ts"
@@ -152,6 +153,72 @@ export function syncAuthJson(creds: ClaudeCredentials): void {
   }
 }
 
+const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+export function refreshViaOAuth(
+  refreshToken: string,
+): ClaudeCredentials | null {
+  // Use a Node subprocess to perform the HTTP request synchronously.
+  // The refresh token is passed via stdin to avoid exposure in process args.
+  const script = `
+    process.stdin.resume();
+    let input = '';
+    process.stdin.on('data', c => input += c);
+    process.stdin.on('end', () => {
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: '${OAUTH_CLIENT_ID}',
+        refresh_token: input.trim()
+      });
+      fetch('${OAUTH_TOKEN_URL}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+      .then(d => { process.stdout.write(JSON.stringify(d)); })
+      .catch(() => { process.exit(1); });
+    });
+  `
+
+  try {
+    log("refresh_started", { source: "oauth" })
+    const result = execFileSync(process.execPath, ["-e", script], {
+      input: refreshToken,
+      timeout: 15_000,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "ignore"],
+    })
+
+    const data = JSON.parse(result) as {
+      access_token?: string
+      refresh_token?: string
+      expires_in?: number
+    }
+    if (!data.access_token) {
+      log("refresh_failed", {
+        source: "oauth",
+        error: "no access_token in response",
+      })
+      return null
+    }
+
+    log("refresh_success", { source: "oauth" })
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+      expiresAt: Date.now() + (data.expires_in ?? 36_000) * 1000,
+    }
+  } catch (err) {
+    log("refresh_failed", {
+      source: "oauth",
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return null
+  }
+}
+
 function refreshViaCli(): void {
   const maxAttempts = 2
   for (let i = 0; i < maxAttempts; i++) {
@@ -192,6 +259,18 @@ export function refreshIfNeeded(
     expiresIn: creds.expiresAt - Date.now(),
   })
 
+  // Try direct OAuth refresh first (zero LLM tokens consumed)
+  if (creds.refreshToken) {
+    const oauthCreds = refreshViaOAuth(creds.refreshToken)
+    if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
+      target.credentials = oauthCreds
+      writeBackCredentials(target.source, oauthCreds)
+      return oauthCreds
+    }
+  }
+
+  // Fall back to CLI-based refresh (consumes Haiku tokens)
+  log("refresh_fallback_cli", { source: target.source })
   refreshViaCli()
   const refreshed = refreshAccount(target.source)
   if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
