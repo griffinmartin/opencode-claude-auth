@@ -4,7 +4,7 @@ import { writeFileSync, mkdirSync, rmSync } from "node:fs"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { buildAccountLabels } from "./keychain.ts"
+import { buildAccountLabels, updateCredentialBlob } from "./keychain.ts"
 
 // Mirrors the parseCredentials logic from keychain.ts for unit testing
 function parseCredentials(raw: string): {
@@ -417,5 +417,77 @@ describe("credentials file fallback", () => {
     )
     assert.equal(readCredentialsFile(credPath), null)
     rmSync(tmpDir, { recursive: true, force: true })
+  })
+})
+
+describe("updateCredentialBlob", () => {
+  it("updates tokens in claudeAiOauth wrapper format", () => {
+    const existing = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "old-at",
+        refreshToken: "old-rt",
+        expiresAt: 1000,
+        scopes: ["user:inference"],
+        subscriptionType: "pro",
+      },
+    })
+    const newCreds = {
+      accessToken: "new-at",
+      refreshToken: "new-rt",
+      expiresAt: 2000,
+    }
+    const result = JSON.parse(updateCredentialBlob(existing, newCreds)!)
+    assert.equal(result.claudeAiOauth.accessToken, "new-at")
+    assert.equal(result.claudeAiOauth.refreshToken, "new-rt")
+    assert.equal(result.claudeAiOauth.expiresAt, 2000)
+    assert.deepEqual(result.claudeAiOauth.scopes, ["user:inference"])
+    assert.equal(result.claudeAiOauth.subscriptionType, "pro")
+  })
+
+  it("updates tokens in root-level format", () => {
+    const existing = JSON.stringify({
+      accessToken: "old-at",
+      refreshToken: "old-rt",
+      expiresAt: 1000,
+    })
+    const newCreds = {
+      accessToken: "new-at",
+      refreshToken: "new-rt",
+      expiresAt: 2000,
+    }
+    const result = JSON.parse(updateCredentialBlob(existing, newCreds)!)
+    assert.equal(result.accessToken, "new-at")
+    assert.equal(result.refreshToken, "new-rt")
+    assert.equal(result.expiresAt, 2000)
+  })
+
+  it("preserves mcpOAuth and other unrelated fields", () => {
+    const existing = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "old-at",
+        refreshToken: "old-rt",
+        expiresAt: 1000,
+      },
+      mcpOAuth: { "neon|abc": { serverName: "neon" } },
+    })
+    const newCreds = {
+      accessToken: "new-at",
+      refreshToken: "new-rt",
+      expiresAt: 2000,
+    }
+    const result = JSON.parse(updateCredentialBlob(existing, newCreds)!)
+    assert.ok(result.mcpOAuth)
+    assert.equal(result.mcpOAuth["neon|abc"].serverName, "neon")
+  })
+
+  it("returns null for invalid JSON input", () => {
+    assert.equal(
+      updateCredentialBlob("not json", {
+        accessToken: "a",
+        refreshToken: "r",
+        expiresAt: 1,
+      }),
+      null,
+    )
   })
 })

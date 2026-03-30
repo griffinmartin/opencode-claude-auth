@@ -1,5 +1,5 @@
-import { execSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { execFileSync, execSync } from "node:child_process"
+import { readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
@@ -234,6 +234,83 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     source: a.source,
     credentials: a.credentials,
   }))
+}
+
+export function updateCredentialBlob(
+  existingJson: string,
+  newCreds: { accessToken: string; refreshToken: string; expiresAt: number },
+): string | null {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(existingJson)
+  } catch {
+    return null
+  }
+
+  const wrapper = parsed.claudeAiOauth as Record<string, unknown> | undefined
+  const target = wrapper ?? parsed
+
+  target.accessToken = newCreds.accessToken
+  target.refreshToken = newCreds.refreshToken
+  target.expiresAt = newCreds.expiresAt
+
+  return JSON.stringify(parsed)
+}
+
+export function writeBackCredentials(
+  source: string,
+  creds: ClaudeCredentials,
+): boolean {
+  const newCreds = {
+    accessToken: creds.accessToken,
+    refreshToken: creds.refreshToken,
+    expiresAt: creds.expiresAt,
+  }
+
+  if (source === "file") {
+    try {
+      const credPath = join(homedir(), ".claude", ".credentials.json")
+      const raw = readFileSync(credPath, "utf-8")
+      const updated = updateCredentialBlob(raw, newCreds)
+      if (!updated) return false
+      writeFileSync(credPath, updated, "utf-8")
+      log("writeback_success", { source })
+      return true
+    } catch {
+      log("writeback_failed", { source })
+      return false
+    }
+  }
+
+  if (process.platform === "darwin") {
+    try {
+      const raw = readKeychainService(source)
+      if (!raw) return false
+      const updated = updateCredentialBlob(raw, newCreds)
+      if (!updated) return false
+      execFileSync(
+        "/usr/bin/security",
+        [
+          "add-generic-password",
+          "-s",
+          source,
+          "-a",
+          source,
+          "-w",
+          updated,
+          "-U",
+        ],
+        { timeout: 2000, stdio: "ignore" },
+      )
+      log("writeback_success", { source })
+      return true
+    } catch {
+      log("writeback_failed", { source })
+      return false
+    }
+  }
+
+  return false
 }
 
 export function refreshAccount(source: string): ClaudeCredentials | null {
