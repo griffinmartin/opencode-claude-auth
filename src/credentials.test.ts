@@ -160,6 +160,43 @@ describe("credential caching", () => {
     }
   })
 
+  it("refreshIfNeeded updates account credentials in-place after refresh", async () => {
+    const originalNow = Date.now
+    let now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      // Keychain returns fresh creds with 10min expiry
+      const { credentialsModule } = await loadCredentialsWithCountingKeychain(
+        now + 10 * 60_000,
+      )
+
+      const account = {
+        label: "Account 1",
+        source: "keychain",
+        credentials: {
+          accessToken: "old-token",
+          refreshToken: "old-refresh",
+          expiresAt: now + 30_000, // expires in 30s, below 60s threshold
+        },
+      }
+
+      credentialsModule.initAccounts([account])
+
+      // First call should trigger refresh (token expiring within 60s)
+      const result = credentialsModule.getCachedCredentials()
+      assert.ok(result)
+
+      // The account object's credentials should now be updated in-place
+      assert.ok(
+        account.credentials.expiresAt > now + 60_000,
+        "account.credentials.expiresAt should be updated after refresh",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("getCachedCredentials returns null when no accounts are initialised", async () => {
     const { credentialsModule } = await loadCredentialsWithCountingKeychain(
       Date.now() + 10 * 60_000,

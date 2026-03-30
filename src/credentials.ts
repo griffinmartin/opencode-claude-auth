@@ -194,7 +194,10 @@ export function refreshIfNeeded(
 
   refreshViaCli()
   const refreshed = refreshAccount(target.source)
-  if (refreshed && refreshed.expiresAt > Date.now() + 60_000) return refreshed
+  if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
+    target.credentials = refreshed
+    return refreshed
+  }
 
   log("refresh_exhausted", {
     source: target.source,
