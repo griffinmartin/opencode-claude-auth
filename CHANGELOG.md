@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.3...v1.3.4) (2026-03-30)
+
+
+### Bug Fixes
+
+* add exports["./server"] for opencode 1.3.8 plugin loader compatibility ([#102](https://github.com/griffinmartin/opencode-claude-auth/issues/102)) ([efecefd](https://github.com/griffinmartin/opencode-claude-auth/commit/efecefda9fd7d63b8c42466a6277fc03b0057faa))
+
 ## [1.3.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.2...v1.3.3) (2026-03-27)
 
 
