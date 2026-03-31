@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.0...v1.4.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* register transform hook even when no OAuth accounts exist ([#111](https://github.com/griffinmartin/opencode-claude-auth/issues/111)) ([ac8b780](https://github.com/griffinmartin/opencode-claude-auth/commit/ac8b7808183561b6c7b9fde8bcdb1b930b9993bb))
+
 ## [1.4.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.5...v1.4.0) (2026-03-31)
 
 
