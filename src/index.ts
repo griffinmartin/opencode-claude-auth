@@ -55,7 +55,10 @@ function getCliVersion(): string {
 }
 
 function getUserAgent(): string {
-  return process.env.ANTHROPIC_USER_AGENT ?? `claude-code/${getCliVersion()}`
+  return (
+    process.env.ANTHROPIC_USER_AGENT ??
+    `claude-cli/${getCliVersion()} (external, cli)`
+  )
 }
 
 // Stable per-process session ID, matching Claude Code's X-Claude-Code-Session-Id
