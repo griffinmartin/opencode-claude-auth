@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.5...v1.4.0) (2026-03-31)
+
+
+### Features
+
+* config file alternative for 1M context setting ([#90](https://github.com/griffinmartin/opencode-claude-auth/issues/90)) ([d27382f](https://github.com/griffinmartin/opencode-claude-auth/commit/d27382f59b17b172b6c33831e585a25e21ab943f))
+
 ## [1.3.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.4...v1.3.5) (2026-03-31)
 
 
