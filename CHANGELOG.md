@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.4...v1.3.5) (2026-03-31)
+
+
+### Bug Fixes
+
+* eliminate idle token consumption via direct OAuth refresh ([#104](https://github.com/griffinmartin/opencode-claude-auth/issues/104)) ([e7483d7](https://github.com/griffinmartin/opencode-claude-auth/commit/e7483d7108d1d00f4bccc11d540fb375d7361d5f))
+
 ## [1.3.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.3.3...v1.3.4) (2026-03-30)
 
 
