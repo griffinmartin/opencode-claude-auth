@@ -187,7 +187,7 @@ const plugin: Plugin = async () => {
     syncAuthJson(initialCreds)
   } else {
     console.warn(
-      "opencode-claude-auth: Claude credentials are expired and could not be refreshed via Claude CLI.",
+      "opencode-claude-auth: Claude credentials are expired and could not be refreshed. Run `claude` to re-authenticate.",
     )
   }
 
