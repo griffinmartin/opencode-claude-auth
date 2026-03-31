@@ -10,7 +10,7 @@ Self-contained Anthropic auth provider for OpenCode using your Claude Code crede
 
 The plugin registers its own auth provider with a custom fetch handler that intercepts all Anthropic API requests. It reads OAuth tokens from the macOS Keychain (or `~/.claude/.credentials.json` on other platforms), caches them in memory with a 30-second TTL, and handles the full request lifecycle — no builtin Anthropic auth plugin required. On macOS, multiple Claude Code accounts are detected automatically and can be switched via `opencode auth login`.
 
-It also syncs credentials to OpenCode's `auth.json` as a fallback (on Windows, it writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json` to cover all installation methods). If a token is near expiry, it runs the Claude CLI to trigger a refresh. Background re-sync runs every 5 minutes.
+It also syncs credentials to OpenCode's `auth.json` as a fallback (on Windows, it writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json` to cover all installation methods). If a token is near expiry, it refreshes directly via Anthropic's OAuth endpoint (zero LLM tokens consumed), falling back to the Claude CLI if the direct refresh fails. Background re-sync runs every 5 minutes.
 
 ## Prerequisites
 
@@ -145,6 +145,17 @@ The Claude CLI itself treats 1M context as opt-in (via a `[1m]` model suffix). S
 
 If a long context error still occurs (e.g. from a beta flag added via `ANTHROPIC_BETA_FLAGS`), the plugin retries without the offending flag.
 
+## Validating OAuth refresh
+
+To verify the direct OAuth token refresh works with your credentials:
+
+```bash
+pnpm run validate:oauth           # refresh + write-back (safe, keeps credentials valid)
+pnpm run validate:oauth -- --dry-run  # show what would be sent without making the request
+```
+
+This reads your stored credentials, calls Anthropic's OAuth token endpoint, and writes the new tokens back to storage. Refresh tokens rotate on each use, so write-back is enabled by default to keep your stored credentials valid.
+
 ## Environment variable overrides
 
 All configurable parameters can be overridden via environment variables. If Anthropic changes something before we publish an update, set an env var and keep working:
@@ -167,17 +178,17 @@ export ANTHROPIC_ENABLE_1M_CONTEXT=true  # requires Claude Max
 ## How it works (technical)
 
 - Registers an `auth.loader` with a custom `fetch` that intercepts all Anthropic API requests
-- Sets `Authorization: Bearer` with fresh OAuth tokens (cached in memory, 30s TTL)
+- Sets `Authorization: Bearer` with fresh OAuth tokens (cached in memory, 30s TTL, updated in-place after refresh)
 - Translates tool names between OpenCode and Anthropic API formats (adds/strips `mcp_` prefix)
 - Buffers SSE response streams at event boundaries for reliable tool name translation
 - Injects Claude Code identity into system prompts via `experimental.chat.system.transform`
 - Sets required API headers (beta flags, billing, user-agent) with model-aware selection
 - On macOS, enumerates all `Claude Code-credentials*` Keychain entries and labels them by subscription tier
 - Provides an account switcher via `opencode auth login` when multiple accounts are found; persists selection to `~/.local/share/opencode/claude-account-source.txt`
-- Syncs credentials to `auth.json` on startup and every 5 minutes as a fallback
+- Syncs credentials to `auth.json` on startup and every 5 minutes as a fallback (sync never triggers refresh; refresh is lazy, only on API requests)
 - On Windows, writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json`
 - Retries API requests on 429 (rate limit) and 529 (overloaded) with exponential backoff, respecting `retry-after` headers
-- When a token is within 60 seconds of expiry, runs `claude` CLI to trigger a refresh (with one automatic retry)
+- When a token is within 60 seconds of expiry, refreshes directly via `POST https://claude.ai/v1/oauth/token` (no LLM tokens consumed). Falls back to `claude` CLI if the direct refresh fails. New tokens are written back to Keychain (macOS) or credentials file (Linux/Windows) to keep stored credentials in sync with rotated refresh tokens
 - If credentials aren't OAuth-based, the auth loader returns `{}` and falls through to API key auth
 - If credentials are unavailable or unreadable, the plugin disables itself and OpenCode continues without Claude auth
 
