@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import crypto from "node:crypto"
 import { config } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
@@ -54,11 +55,11 @@ function getCliVersion(): string {
 }
 
 function getUserAgent(): string {
-  return (
-    process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, cli)`
-  )
+  return process.env.ANTHROPIC_USER_AGENT ?? `claude-code/${getCliVersion()}`
 }
+
+// Stable per-process session ID, matching Claude Code's X-Claude-Code-Session-Id
+const sessionId = crypto.randomUUID()
 
 type FetchFn = typeof fetch
 
@@ -128,9 +129,12 @@ export function buildRequestHeaders(
   ]
 
   headers.set("authorization", `Bearer ${accessToken}`)
+  headers.set("anthropic-version", "2023-06-01")
   headers.set("anthropic-beta", mergedBetas.join(","))
   headers.set("x-app", "cli")
   headers.set("user-agent", getUserAgent())
+  headers.set("x-client-request-id", crypto.randomUUID())
+  headers.set("X-Claude-Code-Session-Id", sessionId)
   headers.set("x-anthropic-billing-header", getBillingHeader(modelId))
   headers.delete("x-api-key")
 

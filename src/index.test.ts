@@ -275,11 +275,70 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     )
 
     assert.equal(headers.get("authorization"), "Bearer access-token")
+    assert.equal(headers.get("anthropic-version"), "2023-06-01")
     assert.equal(headers.get("x-api-key"), null)
     assert.equal(headers.get("x-custom"), "keep-me")
     assert.ok(headers.get("anthropic-beta")?.includes("custom-beta"))
     assert.ok(
       headers.get("x-anthropic-billing-header")?.includes("claude-sonnet-4-6"),
+    )
+    assert.ok(
+      headers.get("x-client-request-id"),
+      "Expected x-client-request-id to be set",
+    )
+    assert.match(
+      headers.get("x-client-request-id")!,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      "x-client-request-id should be a UUID",
+    )
+    assert.ok(
+      headers.get("x-claude-code-session-id"),
+      "Expected X-Claude-Code-Session-Id to be set",
+    )
+    assert.match(
+      headers.get("x-claude-code-session-id")!,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      "X-Claude-Code-Session-Id should be a UUID",
+    )
+  })
+
+  it("x-client-request-id is unique per call", () => {
+    const h1 = helpers.buildRequestHeaders(
+      "https://api.anthropic.com/v1/messages",
+      { headers: {} },
+      "token",
+      "claude-sonnet-4-6",
+    )
+    const h2 = helpers.buildRequestHeaders(
+      "https://api.anthropic.com/v1/messages",
+      { headers: {} },
+      "token",
+      "claude-sonnet-4-6",
+    )
+    assert.notEqual(
+      h1.get("x-client-request-id"),
+      h2.get("x-client-request-id"),
+      "Each call should produce a unique x-client-request-id",
+    )
+  })
+
+  it("X-Claude-Code-Session-Id is stable across calls", () => {
+    const h1 = helpers.buildRequestHeaders(
+      "https://api.anthropic.com/v1/messages",
+      { headers: {} },
+      "token",
+      "claude-sonnet-4-6",
+    )
+    const h2 = helpers.buildRequestHeaders(
+      "https://api.anthropic.com/v1/messages",
+      { headers: {} },
+      "token",
+      "claude-sonnet-4-6",
+    )
+    assert.equal(
+      h1.get("x-claude-code-session-id"),
+      h2.get("x-claude-code-session-id"),
+      "Session ID should be stable within the same process",
     )
   })
 
