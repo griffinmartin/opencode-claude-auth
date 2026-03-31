@@ -160,49 +160,49 @@ const plugin: Plugin = async () => {
     return {}
   }
 
-  if (accounts.length === 0) {
-    log("plugin_init_no_accounts", { reason: "no credentials found" })
-    console.warn(
-      "opencode-claude-auth: No Claude Code credentials found. " +
-        "Plugin disabled. Run `claude` to authenticate.",
-    )
-    return {}
-  }
-
   initAccounts(accounts)
 
-  const persistedSource = loadPersistedAccountSource()
-  const defaultAccount =
-    (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
-    accounts[0]
+  const defaultAccountSource = accounts[0]?.source ?? null
 
-  setActiveAccountSource(defaultAccount.source)
+  if (accounts.length > 0) {
+    const persistedSource = loadPersistedAccountSource()
+    const defaultAccount =
+      (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
+      accounts[0]
 
-  log("plugin_init", {
-    accountCount: accounts.length,
-    sources: accounts.map((a) => a.source),
-    activeSource: defaultAccount.source,
-  })
+    setActiveAccountSource(defaultAccount.source)
 
-  const initialCreds = getCachedCredentials()
-  if (initialCreds) {
-    syncAuthJson(initialCreds)
+    log("plugin_init", {
+      accountCount: accounts.length,
+      sources: accounts.map((a) => a.source),
+      activeSource: defaultAccount.source,
+    })
+
+    const initialCreds = getCachedCredentials()
+    if (initialCreds) {
+      syncAuthJson(initialCreds)
+    } else {
+      console.warn(
+        "opencode-claude-auth: Claude credentials are expired and could not be refreshed. Run `claude` to re-authenticate.",
+      )
+    }
+
+    // Keep auth.json synced with current credentials (no refresh triggered)
+    const syncTimer = setInterval(() => {
+      try {
+        const creds = getCredentialsForSync()
+        if (creds) syncAuthJson(creds)
+      } catch {
+        // Non-fatal
+      }
+    }, SYNC_INTERVAL)
+    syncTimer.unref()
   } else {
+    log("plugin_init_no_accounts", { reason: "no credentials found" })
     console.warn(
-      "opencode-claude-auth: Claude credentials are expired and could not be refreshed. Run `claude` to re-authenticate.",
+      "opencode-claude-auth: No Claude Code credentials found. Running in API key mode with transform hook enabled.",
     )
   }
-
-  // Keep auth.json synced with current credentials (no refresh triggered)
-  const syncTimer = setInterval(() => {
-    try {
-      const creds = getCredentialsForSync()
-      if (creds) syncAuthJson(creds)
-    } catch {
-      // Non-fatal
-    }
-  }, SYNC_INTERVAL)
-  syncTimer.unref()
 
   return {
     config: async (opencodeConfig) => {
@@ -363,7 +363,7 @@ const plugin: Plugin = async () => {
           get prompts() {
             const currentAccounts = refreshAccountsList()
             const currentSource =
-              loadPersistedAccountSource() ?? defaultAccount.source
+              loadPersistedAccountSource() ?? defaultAccountSource
             if (currentAccounts.length <= 1) return []
             return [
               {
