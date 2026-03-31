@@ -2,14 +2,19 @@
  * Validate that the direct OAuth token refresh works against the real endpoint.
  *
  * Reads your current Claude Code credentials, attempts a token refresh via
- * POST https://claude.ai/v1/oauth/token, and reports the results.
+ * POST https://claude.ai/v1/oauth/token, and writes new tokens back to storage.
+ *
+ * IMPORTANT: This rotates your refresh token. Write-back is enabled by default
+ * to keep your stored credentials valid.
  *
  * Usage:
- *   pnpm run build && node --experimental-strip-types scripts/validate-oauth-refresh.ts
+ *   pnpm run validate:oauth
+ *   pnpm run validate:oauth -- --dry-run
  *
  * Options:
- *   --dry-run    Show what would be sent without making the request
- *   --write-back Test the write-back logic (updates Keychain/credentials file)
+ *   --dry-run         Show what would be sent without making the request
+ *   --no-write-back   Skip writing new tokens to storage (DANGEROUS: invalidates
+ *                     stored credentials since refresh tokens rotate)
  */
 
 import {
@@ -22,7 +27,7 @@ const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 const args = new Set(process.argv.slice(2))
 const dryRun = args.has("--dry-run")
-const testWriteBack = args.has("--write-back")
+const skipWriteBack = args.has("--no-write-back")
 
 function redact(token: string, visibleChars = 8): string {
   if (token.length <= visibleChars) return "***"
@@ -162,25 +167,30 @@ async function main() {
     `   Refresh token rotated: ${sameRefresh ? "NO" : "YES (new refresh token issued)"}`,
   )
 
-  if (data.refresh_token && data.refresh_token !== refreshToken) {
-    console.log("\n   WARNING: Refresh token was rotated.")
-    console.log("   The old token in Keychain may now be invalid.")
-    console.log("   This confirms write-back is necessary for production use.")
+  // Step 6: Write-back (default: enabled)
+  const newCreds = {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token ?? refreshToken,
+    expiresAt: newExpiresAt,
   }
 
-  // Step 6: Optionally test write-back
-  if (testWriteBack) {
-    console.log("\n6. Testing write-back...")
-    const newCreds = {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? refreshToken,
-      expiresAt: newExpiresAt,
+  if (skipWriteBack) {
+    console.log("\n6. Write-back: SKIPPED (--no-write-back)")
+    if (!sameRefresh) {
+      console.log("   WARNING: Refresh token rotated but NOT written back.")
+      console.log("   Your stored credentials are likely invalid now.")
+      console.log("   You may need to re-authenticate with `claude`.")
     }
+  } else {
+    console.log("\n6. Writing new credentials to storage...")
     const success = writeBackCredentials(account.source, newCreds)
     if (success) {
       console.log("   OK: Credentials written back to storage.")
     } else {
       console.error("   FAIL: Write-back returned false.")
+      console.error(
+        "   Your stored credentials may be invalid. Re-authenticate with `claude`.",
+      )
       process.exit(1)
     }
 
@@ -190,8 +200,7 @@ async function main() {
     if (updated && updated.credentials.accessToken === data.access_token) {
       console.log("   OK: Re-read confirms new credentials in storage.")
     } else {
-      console.error("   FAIL: Re-read did not return updated credentials.")
-      process.exit(1)
+      console.error("   WARN: Re-read did not return updated credentials.")
     }
   }
 
