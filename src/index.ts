@@ -44,11 +44,7 @@ export {
   refreshAccountsList,
   type ClaudeCredentials,
 } from "./credentials.ts"
-export {
-  applyOpencodeConfig,
-  isEnable1mContext,
-  type PluginSettings,
-} from "./plugin-config.ts"
+export { isEnable1mContext, type PluginSettings } from "./plugin-config.ts"
 
 const SYSTEM_IDENTITY_PREFIX =
   "You are Claude Code, Anthropic's official CLI for Claude."

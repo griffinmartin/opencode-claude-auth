@@ -61,6 +61,14 @@ export function applyOpencodeConfig(config: unknown): void {
       log("config_loaded", { enable1mContext: val })
       return
     }
+
+    if (val !== undefined) {
+      log("config_invalid_type", {
+        key: "enable1mContext",
+        expectedType: "boolean",
+        actualType: typeof val,
+      })
+    }
   }
 
   log("config_no_plugin_keys", {
