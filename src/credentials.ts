@@ -118,12 +118,18 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
       }
     }
   }
-  auth.anthropic = {
-    type: "oauth",
-    access: creds.accessToken,
-    refresh: creds.refreshToken,
-    expires: creds.expiresAt,
-  }
+  auth.anthropic =
+    creds.authType === "api"
+      ? {
+          type: "api",
+          key: creds.accessToken,
+        }
+      : {
+          type: "oauth",
+          access: creds.accessToken,
+          refresh: creds.refreshToken,
+          expires: creds.expiresAt,
+        }
   const dir = dirname(authPath)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -181,6 +187,7 @@ export function parseOAuthResponse(
   if (!data.access_token) return null
 
   return {
+    authType: "oauth",
     accessToken: data.access_token,
     refreshToken: data.refresh_token ?? currentRefreshToken,
     expiresAt: now + (data.expires_in ?? 36_000) * 1000,
@@ -274,6 +281,7 @@ export function refreshIfNeeded(
   if (!target) return null
 
   const creds = target.credentials
+  if (creds.authType === "api") return creds
   if (creds.expiresAt > Date.now() + 60_000) return creds
 
   log("refresh_needed", {

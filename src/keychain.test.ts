@@ -14,11 +14,21 @@ import { mkdtemp } from "node:fs/promises"
 
 // Mirrors the parseCredentials logic from keychain.ts for unit testing
 function parseCredentials(raw: string): {
+  authType?: "api" | "oauth"
   accessToken: string
   refreshToken: string
   expiresAt: number
   subscriptionType?: string
 } | null {
+  if (raw.startsWith("sk-ant-")) {
+    return {
+      authType: "api",
+      accessToken: raw,
+      refreshToken: "",
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    }
+  }
+
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -48,6 +58,7 @@ function parseCredentials(raw: string): {
   }
 
   return {
+    authType: "oauth",
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
     expiresAt: creds.expiresAt,
@@ -60,25 +71,30 @@ function parseCredentials(raw: string): {
 
 // Mirrors listClaudeKeychainServices regex logic for unit testing
 function extractServicesFromDump(output: string): string[] {
-  const PRIMARY = "Claude Code-credentials"
+  const PRIMARY = ["Claude Code", "Claude Code-credentials"]
+  const primarySet = new Set(PRIMARY)
   const services: string[] = []
   const seen = new Set<string>()
 
-  const re = /"Claude Code-credentials(?:-[0-9a-f]+)?"/g
-  let m = re.exec(output)
-  while (m !== null) {
-    const svc = m[0].slice(1, -1)
-    if (!seen.has(svc)) {
-      seen.add(svc)
-      services.push(svc)
+  const patterns = [/"Claude Code"/g, /"Claude Code-credentials(?:-[0-9a-f]+)?"/g]
+  for (const pattern of patterns) {
+    let m = pattern.exec(output)
+    while (m !== null) {
+      const svc = m[0].slice(1, -1)
+      if (!seen.has(svc)) {
+        seen.add(svc)
+        services.push(svc)
+      }
+      m = pattern.exec(output)
     }
-    m = re.exec(output)
   }
 
   const ordered: string[] = []
-  if (seen.has(PRIMARY)) ordered.push(PRIMARY)
+  for (const primary of PRIMARY) {
+    if (seen.has(primary)) ordered.push(primary)
+  }
   for (const svc of services) {
-    if (svc !== PRIMARY) ordered.push(svc)
+    if (!primarySet.has(svc)) ordered.push(svc)
   }
   return ordered
 }
@@ -110,6 +126,7 @@ describe("parseCredentials", () => {
     })
     const result = parseCredentials(raw)
     assert.ok(result)
+    assert.equal(result.authType, "oauth")
     assert.equal(result.accessToken, "at-123")
     assert.equal(result.refreshToken, "rt-456")
     assert.equal(result.expiresAt, 1700000000000)
@@ -124,6 +141,7 @@ describe("parseCredentials", () => {
     })
     const result = parseCredentials(raw)
     assert.ok(result)
+    assert.equal(result.authType, "oauth")
     assert.equal(result.accessToken, "at-789")
     assert.equal(result.refreshToken, "rt-012")
     assert.equal(result.expiresAt, 1700000000000)
@@ -137,7 +155,18 @@ describe("parseCredentials", () => {
     })
     const result = parseCredentials(raw)
     assert.ok(result)
+    assert.equal(result.authType, "oauth")
     assert.equal(result.subscriptionType, undefined)
+  })
+
+  it("parses managed api keys from the current Claude Code entry", () => {
+    const result = parseCredentials("sk-ant-api03-example")
+    assert.deepEqual(result, {
+      authType: "api",
+      accessToken: "sk-ant-api03-example",
+      refreshToken: "",
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    })
   })
 
   it("returns null for MCP-only entries", () => {
@@ -216,27 +245,34 @@ keychain: "/Users/test/Library/Keychains/login.keychain-db"
 version: 512
 class: "genp"
 attributes:
+    0x00000007 <blob>="Claude Code"
+    "svce"<blob>="Claude Code"
+keychain: "/Users/test/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
     0x00000007 <blob>="Claude Code-credentials"
     "svce"<blob>="Claude Code-credentials"
   `
 
-  it("discovers all Claude Code-credentials* services", () => {
+  it("discovers both current and legacy Claude Code services", () => {
     const services = extractServicesFromDump(SAMPLE_DUMP)
+    assert.ok(services.includes("Claude Code"))
     assert.ok(services.includes("Claude Code-credentials"))
     assert.ok(services.includes("Claude Code-credentials-e8dc196c"))
     assert.ok(services.includes("Claude Code-credentials-b28bbb7c"))
-    assert.equal(services.length, 3)
+    assert.equal(services.length, 4)
   })
 
-  it("puts the primary service first", () => {
-    assert.equal(
-      extractServicesFromDump(SAMPLE_DUMP)[0],
-      "Claude Code-credentials",
-    )
+  it("puts the current and legacy primary services first", () => {
+    const services = extractServicesFromDump(SAMPLE_DUMP)
+    assert.equal(services[0], "Claude Code")
+    assert.equal(services[1], "Claude Code-credentials")
   })
 
   it("deduplicates entries that appear twice (svce and blob line)", () => {
     const services = extractServicesFromDump(SAMPLE_DUMP)
+    assert.equal(services.filter((s) => s === "Claude Code").length, 1)
     assert.equal(
       services.filter((s) => s === "Claude Code-credentials").length,
       1,
@@ -251,9 +287,10 @@ attributes:
     const dump = `
     0x00000007 <blob>="Some Other Service"
     "svce"<blob>="Some Other Service"
+    0x00000007 <blob>="Claude Code"
     0x00000007 <blob>="Claude Code-credentials"
     `
-    assert.deepEqual(extractServicesFromDump(dump), ["Claude Code-credentials"])
+    assert.deepEqual(extractServicesFromDump(dump), ["Claude Code", "Claude Code-credentials"])
   })
 
   it("returns empty array for a dump with no Claude Code entries", () => {
@@ -281,11 +318,13 @@ attributes:
   it("handles a dump where primary service appears after suffixed ones", () => {
     const dump = `
     "svce"<blob>="Claude Code-credentials-b28bbb7c"
+    "svce"<blob>="Claude Code"
     "svce"<blob>="Claude Code-credentials"
     `
     const services = extractServicesFromDump(dump)
-    assert.equal(services[0], "Claude Code-credentials")
-    assert.equal(services[1], "Claude Code-credentials-b28bbb7c")
+    assert.equal(services[0], "Claude Code")
+    assert.equal(services[1], "Claude Code-credentials")
+    assert.equal(services[2], "Claude Code-credentials-b28bbb7c")
   })
 
   it("handles all five real-world suffixes from a populated keychain", () => {
@@ -391,6 +430,7 @@ describe("credentials file fallback", () => {
     )
     const result = readCredentialsFile(credPath)
     assert.deepEqual(result, {
+      authType: "oauth",
       accessToken: "file-at",
       refreshToken: "file-rt",
       expiresAt: 1700000000000,
