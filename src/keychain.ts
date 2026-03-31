@@ -257,6 +257,26 @@ export function updateCredentialBlob(
   return JSON.stringify(parsed)
 }
 
+function getKeychainAccountName(serviceName: string): string | null {
+  try {
+    const output = execSync(
+      `security find-generic-password -s "${serviceName}" 2>&1`,
+      { timeout: 2000, encoding: "utf-8" },
+    )
+    const match = /"acct"<blob>="([^"]*)"/.exec(output)
+    if (match) {
+      log("keychain_account_name", {
+        service: serviceName,
+        account: match[1],
+      })
+      return match[1]
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export function writeBackCredentials(
   source: string,
   creds: ClaudeCredentials,
@@ -288,6 +308,10 @@ export function writeBackCredentials(
       if (!raw) return false
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
+      // Discover the actual account name from the existing Keychain entry.
+      // Claude CLI uses the macOS username (e.g. "gmartin"), not the service name.
+      // Using the wrong account name creates a duplicate entry instead of updating.
+      const accountName = getKeychainAccountName(source) ?? source
       execFileSync(
         "/usr/bin/security",
         [
@@ -295,14 +319,14 @@ export function writeBackCredentials(
           "-s",
           source,
           "-a",
-          source,
+          accountName,
           "-w",
           updated,
           "-U",
         ],
         { timeout: 2000, stdio: "ignore" },
       )
-      log("writeback_success", { source })
+      log("writeback_success", { source, accountName })
       return true
     } catch {
       log("writeback_failed", { source })
