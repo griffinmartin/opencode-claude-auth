@@ -252,7 +252,11 @@ describe("credential caching", () => {
 
       assert.ok(syncCreds)
       assert.equal(syncCreds.accessToken, "token")
-      assert.equal(readCountAfter, readCountBefore, "should not trigger keychain read")
+      assert.equal(
+        readCountAfter,
+        readCountBefore,
+        "should not trigger keychain read",
+      )
     } finally {
       Date.now = originalNow
     }
@@ -297,6 +301,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       await writeFile(
         tempBetas,
         `export function resetExcludedBetas() {}\n`,
+        "utf8",
+      )
+      await writeFile(
+        tempLogger,
+        `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
         "utf8",
       )
       await writeFile(tempCredentials, rewritten, "utf8")
