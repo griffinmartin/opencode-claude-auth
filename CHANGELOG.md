@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.1...v1.4.2) (2026-03-31)
+
+
+### Bug Fixes
+
+* add missing API request headers for parity with Claude Code ([#109](https://github.com/griffinmartin/opencode-claude-auth/issues/109)) ([5d6455d](https://github.com/griffinmartin/opencode-claude-auth/commit/5d6455da3c41e40f16c65e7378eb31d500da27b7))
+
 ## [1.4.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.0...v1.4.1) (2026-03-31)
 
 
