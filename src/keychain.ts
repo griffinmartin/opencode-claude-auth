@@ -1,5 +1,5 @@
 import { execFileSync, execSync } from "node:child_process"
-import { readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
@@ -259,9 +259,10 @@ export function updateCredentialBlob(
 
 function getKeychainAccountName(serviceName: string): string | null {
   try {
-    const output = execSync(
-      `security find-generic-password -s "${serviceName}" 2>&1`,
-      { timeout: 2000, encoding: "utf-8" },
+    const output = execFileSync(
+      "/usr/bin/security",
+      ["find-generic-password", "-s", serviceName],
+      { timeout: 2000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     )
     const match = /"acct"<blob>="([^"]*)"/.exec(output)
     if (match) {
@@ -293,7 +294,10 @@ export function writeBackCredentials(
       const raw = readFileSync(credPath, "utf-8")
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
-      writeFileSync(credPath, updated, "utf-8")
+      writeFileSync(credPath, updated, { encoding: "utf-8", mode: 0o600 })
+      if (process.platform !== "win32") {
+        chmodSync(credPath, 0o600)
+      }
       log("writeback_success", { source })
       return true
     } catch {

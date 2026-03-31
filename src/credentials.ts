@@ -153,8 +153,39 @@ export function syncAuthJson(creds: ClaudeCredentials): void {
   }
 }
 
-const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
-const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
+export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+/**
+ * Parse a raw OAuth token response into ClaudeCredentials.
+ * Returns null if the response is missing a valid access_token.
+ * Defaults expires_in to 36000s (10h) to match observed Claude token lifetime.
+ */
+export function parseOAuthResponse(
+  raw: string,
+  currentRefreshToken: string,
+  now: number = Date.now(),
+): ClaudeCredentials | null {
+  let data: {
+    access_token?: string
+    refresh_token?: string
+    expires_in?: number
+    error?: string
+  }
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return null
+  }
+
+  if (!data.access_token) return null
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token ?? currentRefreshToken,
+    expiresAt: now + (data.expires_in ?? 36_000) * 1000,
+  }
+}
 
 export function refreshViaOAuth(
   refreshToken: string,
@@ -178,7 +209,7 @@ export function refreshViaOAuth(
       })
       .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
       .then(d => { process.stdout.write(JSON.stringify(d)); })
-      .catch(() => { process.exit(1); });
+      .catch(e => { process.stdout.write(JSON.stringify({ error: String(e) })); process.exit(1); });
     });
   `
 
@@ -191,12 +222,8 @@ export function refreshViaOAuth(
       stdio: ["pipe", "pipe", "ignore"],
     })
 
-    const data = JSON.parse(result) as {
-      access_token?: string
-      refresh_token?: string
-      expires_in?: number
-    }
-    if (!data.access_token) {
+    const creds = parseOAuthResponse(result, refreshToken)
+    if (!creds) {
       log("refresh_failed", {
         source: "oauth",
         error: "no access_token in response",
@@ -205,11 +232,7 @@ export function refreshViaOAuth(
     }
 
     log("refresh_success", { source: "oauth" })
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? refreshToken,
-      expiresAt: Date.now() + (data.expires_in ?? 36_000) * 1000,
-    }
+    return creds
   } catch (err) {
     log("refresh_failed", {
       source: "oauth",
