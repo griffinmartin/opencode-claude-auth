@@ -76,7 +76,10 @@ function extractServicesFromDump(output: string): string[] {
   const services: string[] = []
   const seen = new Set<string>()
 
-  const patterns = [/"Claude Code"/g, /"Claude Code-credentials(?:-[0-9a-f]+)?"/g]
+  const patterns = [
+    /"Claude Code"/g,
+    /"Claude Code-credentials(?:-[0-9a-f]+)?"/g,
+  ]
   for (const pattern of patterns) {
     let m = pattern.exec(output)
     while (m !== null) {
@@ -290,7 +293,10 @@ attributes:
     0x00000007 <blob>="Claude Code"
     0x00000007 <blob>="Claude Code-credentials"
     `
-    assert.deepEqual(extractServicesFromDump(dump), ["Claude Code", "Claude Code-credentials"])
+    assert.deepEqual(extractServicesFromDump(dump), [
+      "Claude Code",
+      "Claude Code-credentials",
+    ])
   })
 
   it("returns empty array for a dump with no Claude Code entries", () => {

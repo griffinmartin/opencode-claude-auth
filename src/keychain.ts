@@ -19,7 +19,7 @@ export interface ClaudeAccount {
 }
 
 const PRIMARY_SERVICES = ["Claude Code", "Claude Code-credentials"] as const
-const PRIMARY_SERVICE_SET = new Set(PRIMARY_SERVICES)
+const PRIMARY_SERVICE_SET: ReadonlySet<string> = new Set(PRIMARY_SERVICES)
 const SERVICE_PATTERNS = [
   /"Claude Code"/g,
   /"Claude Code-credentials(?:-[0-9a-f]+)?"/g,
