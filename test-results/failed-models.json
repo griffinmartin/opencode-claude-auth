@@ -1,20 +1,8 @@
 {
-  "claude-3-5-haiku-latest": {
+  "claude-3-7-sonnet-20250219": {
     "lastTested": "2026-03-21T01:43:14.741Z",
     "lastPassedAt": null,
-    "error": "model: claude-3-5-haiku-latest",
-    "consecutiveFailures": 1
-  },
-  "claude-3-5-sonnet-20241022": {
-    "lastTested": "2026-03-21T01:43:14.741Z",
-    "lastPassedAt": null,
-    "error": "model: claude-3-5-sonnet-20241022",
-    "consecutiveFailures": 1
-  },
-  "claude-3-sonnet-20240229": {
-    "lastTested": "2026-03-21T01:43:14.741Z",
-    "lastPassedAt": null,
-    "error": "model: claude-3-sonnet-20240229",
+    "error": "model: claude-3-7-sonnet-20250219",
     "consecutiveFailures": 1
   },
   "claude-3-5-haiku-20241022": {
@@ -23,28 +11,34 @@
     "error": "model: claude-3-5-haiku-20241022",
     "consecutiveFailures": 1
   },
+  "claude-3-opus-20240229": {
+    "lastTested": "2026-03-21T01:43:14.741Z",
+    "lastPassedAt": null,
+    "error": "model: claude-3-opus-20240229",
+    "consecutiveFailures": 1
+  },
+  "claude-3-5-haiku-latest": {
+    "lastTested": "2026-03-21T01:43:14.741Z",
+    "lastPassedAt": null,
+    "error": "model: claude-3-5-haiku-latest",
+    "consecutiveFailures": 1
+  },
   "claude-3-5-sonnet-20240620": {
     "lastTested": "2026-03-21T01:43:14.741Z",
     "lastPassedAt": null,
     "error": "model: claude-3-5-sonnet-20240620",
     "consecutiveFailures": 1
   },
-  "claude-3-7-sonnet-latest": {
+  "claude-3-sonnet-20240229": {
     "lastTested": "2026-03-21T01:43:14.741Z",
     "lastPassedAt": null,
-    "error": "model: claude-3-7-sonnet-latest",
+    "error": "model: claude-3-sonnet-20240229",
     "consecutiveFailures": 1
   },
-  "claude-3-7-sonnet-20250219": {
+  "claude-3-5-sonnet-20241022": {
     "lastTested": "2026-03-21T01:43:14.741Z",
     "lastPassedAt": null,
-    "error": "model: claude-3-7-sonnet-20250219",
-    "consecutiveFailures": 1
-  },
-  "claude-3-opus-20240229": {
-    "lastTested": "2026-03-21T01:43:14.741Z",
-    "lastPassedAt": null,
-    "error": "model: claude-3-opus-20240229",
+    "error": "model: claude-3-5-sonnet-20241022",
     "consecutiveFailures": 1
   }
 }
