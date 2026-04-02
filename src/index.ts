@@ -46,6 +46,12 @@ export {
   type ClaudeCredentials,
 } from "./credentials.ts"
 export { isEnable1mContext, type PluginSettings } from "./plugin-config.ts"
+export {
+  buildBillingHeaderValue,
+  computeCch,
+  computeVersionSuffix,
+  extractFirstUserMessageText,
+} from "./signing.ts"
 
 const SYSTEM_IDENTITY_PREFIX =
   "You are Claude Code, Anthropic's official CLI for Claude."
@@ -78,6 +84,12 @@ export async function fetchWithRetry(
       const retryAfter = res.headers.get("retry-after")
       const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN
       const delay = Number.isNaN(parsed) ? (i + 1) * 2000 : parsed * 1000
+      log("fetch_rate_limited", {
+        status: res.status,
+        attempt: i + 1,
+        retryAfter: retryAfter ?? "none",
+        delayMs: delay,
+      })
       await new Promise((r) => setTimeout(r, delay))
       continue
     }
@@ -138,15 +150,9 @@ export function buildRequestHeaders(
   headers.set("user-agent", getUserAgent())
   headers.set("x-client-request-id", crypto.randomUUID())
   headers.set("X-Claude-Code-Session-Id", sessionId)
-  headers.set("x-anthropic-billing-header", getBillingHeader(modelId))
   headers.delete("x-api-key")
 
   return headers
-}
-
-export function getBillingHeader(modelId: string): string {
-  const entrypoint = "cli"
-  return `cc_version=${getCliVersion()}.${modelId}; cc_entrypoint=${entrypoint}; cch=00000;`
 }
 
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
@@ -312,6 +318,31 @@ const plugin: Plugin = async () => {
               retryAttempt: 0,
             })
 
+            // On 401, force a credential refresh and retry once.
+            // This handles the common case of token expiry mid-session.
+            if (response.status === 401) {
+              log("fetch_401_retry", { modelId })
+              const refreshed = getCachedCredentials()
+              if (refreshed && refreshed.accessToken !== latest.accessToken) {
+                const retryHeaders = buildRequestHeaders(
+                  input,
+                  requestInit,
+                  refreshed.accessToken,
+                  modelId,
+                  excluded,
+                )
+                response = await fetchWithRetry(input, {
+                  ...requestInit,
+                  body,
+                  headers: retryHeaders,
+                })
+                log("fetch_401_retry_result", {
+                  status: response.status,
+                  modelId,
+                })
+              }
+            }
+
             // Check for long-context beta errors and retry with betas excluded
             // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
             for (
@@ -342,11 +373,13 @@ const plugin: Plugin = async () => {
               })
 
               // Rebuild headers without the excluded beta and retry
+              const currentCreds = getCachedCredentials()
+              const retryToken = currentCreds?.accessToken ?? latest.accessToken
               const newExcluded = getExcludedBetas(modelId)
               const newHeaders = buildRequestHeaders(
                 input,
                 requestInit,
-                latest.accessToken,
+                retryToken,
                 modelId,
                 newExcluded,
               )
@@ -356,6 +389,29 @@ const plugin: Plugin = async () => {
                 body,
                 headers: newHeaders,
               })
+            }
+
+            // Log non-200 responses at warn level so they're visible in OpenCode
+            if (!response.ok) {
+              const status = response.status
+              const cloned = response.clone()
+              cloned
+                .text()
+                .then((errorBody) => {
+                  let message = errorBody
+                  try {
+                    const parsed = JSON.parse(errorBody) as {
+                      error?: { type?: string; message?: string }
+                    }
+                    message =
+                      parsed.error?.message ?? parsed.error?.type ?? errorBody
+                  } catch {}
+                  log("fetch_error_response", { status, modelId, message })
+                  console.warn(
+                    `opencode-claude-auth: API ${status} for ${modelId}: ${message}`,
+                  )
+                })
+                .catch(() => {})
             }
 
             return transformResponseStream(response)
