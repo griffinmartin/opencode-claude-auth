@@ -92,9 +92,7 @@
         "context-management-2025-06-27",
         "effort-2025-11-24"
       ],
-      "excluded": [
-        "context-1m-2025-08-07"
-      ],
+      "excluded": ["context-1m-2025-08-07"],
       "error": null
     },
     {
