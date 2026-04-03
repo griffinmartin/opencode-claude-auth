@@ -24,6 +24,9 @@ export const config: ModelConfig = {
     "interleaved-thinking-2025-05-14",
   ],
   modelOverrides: {
+    haiku: {
+      exclude: ["interleaved-thinking-2025-05-14"],
+    },
     "4-6": {
       add: ["effort-2025-11-24"],
     },
