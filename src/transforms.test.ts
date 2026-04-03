@@ -22,7 +22,12 @@ describe("transforms", () => {
       messages: Array<{ content: Array<{ name: string }> }>
     }
 
-    assert.equal(parsed.system[0].text, "OpenCode and opencode")
+    // system[0] is now the billing header, original system text follows
+    assert.ok(
+      parsed.system[0].text.startsWith("x-anthropic-billing-header:"),
+      "system[0] should be the billing header",
+    )
+    assert.equal(parsed.system[1].text, "OpenCode and opencode")
     assert.equal(parsed.tools[0].name, "mcp_search")
     assert.equal(parsed.messages[0].content[0].name, "mcp_lookup")
   })
@@ -43,8 +48,9 @@ describe("transforms", () => {
       system: Array<{ text: string }>
     }
 
+    // system[0] is billing header, original text at system[1]
     assert.equal(
-      parsed.system[0].text,
+      parsed.system[1].text,
       "Use opencode-claude-auth plugin instructions as-is.",
     )
   })
@@ -65,15 +71,236 @@ describe("transforms", () => {
       system: Array<{ text: string }>
     }
 
+    // system[0] is billing header, original text at system[1]
     assert.equal(
-      parsed.system[0].text,
+      parsed.system[1].text,
       "OpenCode docs: https://example.com/opencode/docs and path /var/opencode/bin",
+    )
+  })
+
+  it("transformBody injects billing header as system[0] with computed cch", () => {
+    const input = JSON.stringify({
+      system: [{ type: "text", text: "system prompt" }],
+      messages: [{ role: "user", content: "hey" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ text: string }>
+    }
+
+    assert.ok(parsed.system[0].text.startsWith("x-anthropic-billing-header:"))
+    assert.ok(
+      parsed.system[0].text.includes("cch=fa690"),
+      `Expected cch=fa690 for 'hey', got: ${parsed.system[0].text}`,
+    )
+  })
+
+  it("transformBody billing header has no cache_control", () => {
+    const input = JSON.stringify({
+      system: [
+        { type: "text", text: "prompt", cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ text: string; cache_control?: unknown }>
+    }
+
+    // Billing header (system[0]) should not have cache_control
+    assert.equal(
+      parsed.system[0].cache_control,
+      undefined,
+      "Billing header must not have cache_control",
+    )
+  })
+
+  it("transformBody splits concatenated identity prefix into separate entry", () => {
+    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const input = JSON.stringify({
+      system: [
+        {
+          type: "text",
+          text: `${identity}\nWorking directory: /home/test`,
+        },
+      ],
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ type: string; text: string }>
+    }
+
+    // system[0] = billing header
+    // system[1] = identity prefix (split out)
+    // system[2] = remainder
+    assert.ok(parsed.system[0].text.startsWith("x-anthropic-billing-header:"))
+    assert.equal(parsed.system[1].text, identity)
+    assert.equal(parsed.system[2].text, "Working directory: /home/test")
+  })
+
+  it("transformBody preserves cache_control when splitting identity", () => {
+    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const input = JSON.stringify({
+      system: [
+        {
+          type: "text",
+          text: `${identity}\nMore content here`,
+          cache_control: { type: "ephemeral", ttl: "1h" },
+        },
+      ],
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ text: string; cache_control?: unknown }>
+    }
+
+    // Both split entries should preserve cache_control from the original
+    assert.deepEqual(parsed.system[1].cache_control, {
+      type: "ephemeral",
+      ttl: "1h",
+    })
+    assert.deepEqual(parsed.system[2].cache_control, {
+      type: "ephemeral",
+      ttl: "1h",
+    })
+  })
+
+  it("transformBody does not split identity-only system entry", () => {
+    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const input = JSON.stringify({
+      system: [{ type: "text", text: identity }],
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ text: string }>
+    }
+
+    // system[0] = billing, system[1] = identity (not split further)
+    assert.equal(parsed.system.length, 2)
+    assert.equal(parsed.system[1].text, identity)
+  })
+
+  it("transformBody removes duplicate billing headers", () => {
+    const input = JSON.stringify({
+      system: [
+        {
+          type: "text",
+          text: "x-anthropic-billing-header: cc_version=old; cc_entrypoint=cli; cch=00000;",
+        },
+        { type: "text", text: "prompt" },
+      ],
+      messages: [{ role: "user", content: "hey" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ text: string }>
+    }
+
+    const billingEntries = parsed.system.filter((e) =>
+      e.text.startsWith("x-anthropic-billing-header:"),
+    )
+    assert.equal(
+      billingEntries.length,
+      1,
+      "Should have exactly one billing header",
+    )
+    // And it should be the new computed one, not the old one
+    assert.ok(
+      billingEntries[0].text.includes("cch=fa690"),
+      `Expected computed cch, got: ${billingEntries[0].text}`,
     )
   })
 
   it("stripToolPrefix removes mcp_ from response payload names", () => {
     const input = '{"name":"mcp_search","type":"tool_use"}'
     assert.equal(stripToolPrefix(input), '{"name": "search","type":"tool_use"}')
+  })
+
+  it("transformResponseStream passes error responses through without SSE parsing", async () => {
+    const errorBody = JSON.stringify({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "Test error message",
+      },
+    })
+    const response = new Response(errorBody, {
+      status: 400,
+      statusText: "Bad Request",
+      headers: { "content-type": "application/json" },
+    })
+
+    const transformed = transformResponseStream(response)
+    assert.equal(transformed.status, 400)
+    assert.equal(transformed.statusText, "Bad Request")
+
+    const text = await transformed.text()
+    assert.equal(text, errorBody, "Error body should pass through unchanged")
+  })
+
+  it("transformResponseStream passes 401 errors through intact", async () => {
+    const errorBody = JSON.stringify({
+      type: "error",
+      error: {
+        type: "authentication_error",
+        message: "OAuth token has expired.",
+      },
+    })
+    const response = new Response(errorBody, { status: 401 })
+    const transformed = transformResponseStream(response)
+    assert.equal(transformed.status, 401)
+    const text = await transformed.text()
+    const parsed = JSON.parse(text) as { error: { message: string } }
+    assert.equal(parsed.error.message, "OAuth token has expired.")
+  })
+
+  it("transformResponseStream passes 429 errors through intact", async () => {
+    const errorBody = JSON.stringify({
+      type: "error",
+      error: { type: "rate_limit_error", message: "Rate limited" },
+    })
+    const response = new Response(errorBody, {
+      status: 429,
+      headers: { "retry-after": "30" },
+    })
+    const transformed = transformResponseStream(response)
+    assert.equal(transformed.status, 429)
+    assert.equal(transformed.headers.get("retry-after"), "30")
+    const text = await transformed.text()
+    assert.ok(text.includes("Rate limited"))
+  })
+
+  it("transformResponseStream passes 529 overloaded errors through", async () => {
+    const response = new Response("Overloaded", { status: 529 })
+    const transformed = transformResponseStream(response)
+    assert.equal(transformed.status, 529)
+    const text = await transformed.text()
+    assert.equal(text, "Overloaded")
+  })
+
+  it("transformResponseStream still strips tool prefixes in error bodies", async () => {
+    // stripToolPrefix matches the pattern "name": "mcp_..."
+    const errorBody = '{"name": "mcp_search", "error": "failed"}'
+    const response = new Response(errorBody, { status: 400 })
+    const transformed = transformResponseStream(response)
+    const text = await transformed.text()
+    assert.ok(
+      text.includes('"name": "search"'),
+      "Should strip mcp_ prefix even in error bodies",
+    )
+    assert.ok(
+      !text.includes("mcp_search"),
+      "Should not contain mcp_search after stripping",
+    )
   })
 
   it("transformResponseStream rewrites streamed tool names", async () => {

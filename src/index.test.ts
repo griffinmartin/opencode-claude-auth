@@ -11,7 +11,6 @@ import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { before, describe, it } from "node:test"
 import { pathToFileURL } from "node:url"
-import { config as modelConfig } from "./model-config.ts"
 
 interface ClaudeCredentials {
   accessToken: string
@@ -124,6 +123,7 @@ const SOURCE_FILES = [
   "betas.ts",
   "model-config.ts",
   "plugin-config.ts",
+  "signing.ts",
   "transforms.ts",
   "credentials.ts",
   "logger.ts",
@@ -279,8 +279,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     assert.equal(headers.get("x-api-key"), null)
     assert.equal(headers.get("x-custom"), "keep-me")
     assert.ok(headers.get("anthropic-beta")?.includes("custom-beta"))
-    assert.ok(
-      headers.get("x-anthropic-billing-header")?.includes("claude-sonnet-4-6"),
+    assert.equal(
+      headers.get("x-anthropic-billing-header"),
+      null,
+      "Billing header should not be set as HTTP header (it is injected into system array by transformBody)",
     )
     assert.ok(
       headers.get("x-client-request-id"),
@@ -342,12 +344,18 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     )
   })
 
-  it("getBillingHeader includes version and model", () => {
-    const header = helpers.getBillingHeader("claude-opus-4-1")
-    assert.ok(
-      header.includes(`cc_version=${modelConfig.ccVersion}.claude-opus-4-1`),
+  it("billing header is no longer set as HTTP header", () => {
+    const headers = helpers.buildRequestHeaders(
+      "https://api.anthropic.com/v1/messages",
+      { headers: {} },
+      "token",
+      "claude-opus-4-1",
     )
-    assert.ok(header.includes("cc_entrypoint=cli"))
+    assert.equal(
+      headers.get("x-anthropic-billing-header"),
+      null,
+      "Billing header moved from HTTP headers to system array",
+    )
   })
 
   it("buildRequestHeaders uses ANTHROPIC_CLI_VERSION for user-agent", () => {
@@ -383,13 +391,25 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     }
   })
 
-  it("getBillingHeader uses ANTHROPIC_CLI_VERSION when set", () => {
+  it("ANTHROPIC_CLI_VERSION overrides version in billing header (via transformBody)", () => {
     process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
     try {
-      const header = helpers.getBillingHeader("claude-opus-4-1")
+      // The billing header is now computed and injected by transformBody,
+      // so we test via transformBody rather than buildRequestHeaders
+      const { transformBody } = helpers
+      const body = JSON.stringify({
+        system: [{ type: "text", text: "test" }],
+        messages: [{ role: "user", content: "hey" }],
+      })
+      const result = transformBody(body)
+      assert.ok(typeof result === "string")
+      const parsed = JSON.parse(result as string) as {
+        system: Array<{ text: string }>
+      }
+      const billing = parsed.system[0].text
       assert.ok(
-        header.includes("cc_version=9.9.9"),
-        `Expected billing header to include 9.9.9, got: ${header}`,
+        billing.includes("cc_version=9.9.9"),
+        `Expected billing header to include 9.9.9, got: ${billing}`,
       )
     } finally {
       delete process.env.ANTHROPIC_CLI_VERSION
