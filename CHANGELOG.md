@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.2...v1.4.3) (2026-04-03)
+
+
+### Bug Fixes
+
+* compute CCH signing for billing header, fix system prompt splitting ([#116](https://github.com/griffinmartin/opencode-claude-auth/issues/116)) ([f2e101a](https://github.com/griffinmartin/opencode-claude-auth/commit/f2e101ae241388d3e2e1fd747230d6ce73d34b75))
+
 ## [1.4.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.1...v1.4.2) (2026-03-31)
 
 
