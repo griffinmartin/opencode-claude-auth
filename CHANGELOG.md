@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.3...v1.4.4) (2026-04-03)
+
+
+### Bug Fixes
+
+* exclude interleaved-thinking beta for haiku models ([#120](https://github.com/griffinmartin/opencode-claude-auth/issues/120)) ([de5d806](https://github.com/griffinmartin/opencode-claude-auth/commit/de5d806b995a31d5840c11a0cac1198e08eafbea))
+
 ## [1.4.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.2...v1.4.3) (2026-04-03)
 
 
