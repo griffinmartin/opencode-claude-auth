@@ -15,13 +15,23 @@ import {
   type ClaudeCredentials,
   type ClaudeAccount,
 } from "./keychain.ts"
-import { resetExcludedBetas } from "./betas.ts"
+import { isLongContextError, resetExcludedBetas } from "./betas.ts"
 import { log } from "./logger.ts"
 
 export type { ClaudeCredentials } from "./keychain.ts"
 export type { ClaudeAccount } from "./keychain.ts"
 
 const CREDENTIAL_CACHE_TTL_MS = 30_000
+
+const USAGE_EXHAUSTION_MESSAGE_PATTERNS = [
+  "usage limit",
+  "usage limits",
+  "weekly limit",
+  "session limit",
+  "credit balance",
+  "purchase more credits",
+  "exceeded your quota",
+]
 
 const accountCacheMap = new Map<
   string,
@@ -36,6 +46,10 @@ export function initAccounts(accounts: ClaudeAccount[]): void {
 
 export function getAccounts(): ClaudeAccount[] {
   return allAccounts
+}
+
+export function getActiveAccountSource(): string | null {
+  return activeAccountSource
 }
 
 export function setActiveAccountSource(source: string): void {
@@ -90,9 +104,36 @@ export function saveAccountSource(source: string): void {
     const dir = dirname(path)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     writeFileSync(path, source, "utf-8")
-  } catch {
-    // Non-fatal
+  } catch (err) {
+    log("save_account_source_failed", {
+      source,
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
+}
+
+export function isUsageExhaustionResponse(
+  status: number,
+  responseBody: string,
+  retryAfter: string | null = null,
+): boolean {
+  if (status !== 429) return false
+  if (retryAfter && retryAfter.trim().length > 0) return false
+  if (isLongContextError(responseBody)) return false
+
+  const lowerBody = responseBody.toLowerCase()
+  return USAGE_EXHAUSTION_MESSAGE_PATTERNS.some((pattern) =>
+    lowerBody.includes(pattern),
+  )
+}
+
+export function findAlternativeAccount(
+  currentSource: string | null,
+): ClaudeAccount | null {
+  if (!currentSource) return null
+
+  const accounts = refreshAccountsList()
+  return accounts.find((account) => account.source !== currentSource) ?? null
 }
 
 function getAuthJsonPaths(): string[] {
@@ -307,6 +348,24 @@ export function refreshIfNeeded(
     expiresAt: refreshed?.expiresAt,
   })
   return null
+}
+
+export function reloadActiveCredentials(): ClaudeCredentials | null {
+  const account = getActiveAccount()
+  if (!account) return null
+
+  const refreshed = refreshAccount(account.source)
+  if (!refreshed) {
+    accountCacheMap.delete(account.source)
+    return null
+  }
+
+  account.credentials = refreshed
+  accountCacheMap.set(account.source, {
+    creds: refreshed,
+    cachedAt: Date.now(),
+  })
+  return refreshed
 }
 
 /**

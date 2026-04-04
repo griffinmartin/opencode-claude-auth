@@ -1,6 +1,10 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
+import {
+  refreshViaOAuth,
+  parseOAuthResponse,
+  isUsageExhaustionResponse,
+} from "./credentials.ts"
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -77,7 +81,7 @@ export function __getReadCount() {
 
   await writeFile(
     tempBetas,
-    `export function resetExcludedBetas() {}\n`,
+    `export function resetExcludedBetas() {}\nexport function isLongContextError() { return false }\n`,
     "utf8",
   )
   await writeFile(tempCredentials, rewritten, "utf8")
@@ -100,6 +104,94 @@ export function __getReadCount() {
         expiresAt: number
       } | null
       initAccounts: (accounts: unknown[]) => void
+    },
+    keychainModule: keychainModule as { __getReadCount: () => number },
+  }
+}
+
+interface MockAccount {
+  label: string
+  source: string
+  credentials: {
+    accessToken: string
+    refreshToken: string
+    expiresAt: number
+  }
+}
+
+async function loadCredentialsWithMockAccounts(
+  initialAccounts: MockAccount[],
+): Promise<{
+  credentialsModule: {
+    initAccounts: (accounts: MockAccount[]) => void
+    setActiveAccountSource: (source: string) => void
+    findAlternativeAccount: (currentSource: string | null) => MockAccount | null
+  }
+  keychainModule: {
+    __getReadCount: () => number
+  }
+}> {
+  const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-failover-"))
+  const tempKeychain = join(tempDir, "keychain.ts")
+  const tempBetas = join(tempDir, "betas.ts")
+  const tempLogger = join(tempDir, "logger.ts")
+  const tempCredentials = join(tempDir, "credentials.ts")
+  const sourceCredentials = await readFile(
+    new URL("./credentials.ts", import.meta.url),
+    "utf8",
+  )
+  const rewritten = sourceCredentials.replace(
+    /from\s+["']\.\/(\w+)\.js["']/g,
+    'from "./$1.ts"',
+  )
+
+  await writeFile(
+    tempLogger,
+    `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+    "utf8",
+  )
+
+  await writeFile(
+    tempKeychain,
+    `let readCount = 0
+let accounts = ${JSON.stringify(initialAccounts)}
+
+export function readAllClaudeAccounts() {
+  readCount += 1
+  return accounts
+}
+
+export function refreshAccount(source) {
+  readCount += 1
+  return accounts.find((account) => account.source === source)?.credentials ?? null
+}
+
+export function writeBackCredentials() { return true }
+
+export function __getReadCount() {
+  return readCount
+}
+`,
+    "utf8",
+  )
+
+  await writeFile(
+    tempBetas,
+    `export function resetExcludedBetas() {}\nexport function isLongContextError(responseBody) { return responseBody.includes("Extra usage is required for long context requests") || responseBody.includes("long context beta is not yet available") }\n`,
+    "utf8",
+  )
+  await writeFile(tempCredentials, rewritten, "utf8")
+
+  const [credentialsModule, keychainModule] = await Promise.all([
+    import(pathToFileURL(tempCredentials).href),
+    import(pathToFileURL(tempKeychain).href),
+  ])
+
+  return {
+    credentialsModule: credentialsModule as {
+      initAccounts: (accounts: MockAccount[]) => void
+      setActiveAccountSource: (source: string) => void
+      findAlternativeAccount: (currentSource: string | null) => MockAccount | null
     },
     keychainModule: keychainModule as { __getReadCount: () => number },
   }
@@ -300,7 +392,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
       await writeFile(
         tempBetas,
-        `export function resetExcludedBetas() {}\n`,
+        `export function resetExcludedBetas() {}\nexport function isLongContextError() { return false }\n`,
         "utf8",
       )
       await writeFile(
@@ -384,7 +476,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
       await writeFile(
         tempBetas,
-        `export function resetExcludedBetas() {}\n`,
+        `export function resetExcludedBetas() {}\nexport function isLongContextError() { return false }\n`,
         "utf8",
       )
       await writeFile(
@@ -421,6 +513,145 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 describe("refreshViaOAuth", () => {
   it("is exported as a function", () => {
     assert.equal(typeof refreshViaOAuth, "function")
+  })
+})
+
+describe("isUsageExhaustionResponse", () => {
+  it("matches a 429 usage-limit response without retry-after", () => {
+    assert.equal(
+      isUsageExhaustionResponse(
+        429,
+        JSON.stringify({
+          error: {
+            type: "rate_limit_error",
+            message: "Your account has reached its weekly usage limit.",
+          },
+        }),
+      ),
+      true,
+    )
+  })
+
+  it("rejects a generic rate-limit response", () => {
+    assert.equal(
+      isUsageExhaustionResponse(
+        429,
+        JSON.stringify({
+          error: {
+            type: "rate_limit_error",
+            message: "Your account has hit a rate limit.",
+          },
+        }),
+      ),
+      false,
+    )
+  })
+
+  it("rejects responses with retry-after", () => {
+    assert.equal(
+      isUsageExhaustionResponse(
+        429,
+        JSON.stringify({
+          error: {
+            type: "rate_limit_error",
+            message: "Your account has reached its weekly usage limit.",
+          },
+        }),
+        "60",
+      ),
+      false,
+    )
+  })
+
+  it("rejects long-context usage errors", () => {
+    assert.equal(
+      isUsageExhaustionResponse(
+        429,
+        JSON.stringify({
+          error: {
+            type: "rate_limit_error",
+            message: "Extra usage is required for long context requests",
+          },
+        }),
+      ),
+      false,
+    )
+  })
+
+  it("rejects broad billing-only phrasing", () => {
+    assert.equal(
+      isUsageExhaustionResponse(
+        429,
+        JSON.stringify({
+          error: {
+            type: "rate_limit_error",
+            message: "Your billing profile needs attention.",
+          },
+        }),
+      ),
+      false,
+    )
+  })
+})
+
+describe("findAlternativeAccount", () => {
+  it("returns null when only one account exists", async () => {
+    const singleAccount: MockAccount[] = [
+      {
+        label: "Account 1",
+        source: "primary",
+        credentials: {
+          accessToken: "token-1",
+          refreshToken: "refresh-1",
+          expiresAt: Date.now() + 600_000,
+        },
+      },
+    ]
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithMockAccounts(singleAccount)
+
+    credentialsModule.initAccounts(singleAccount)
+    credentialsModule.setActiveAccountSource("primary")
+
+    assert.equal(credentialsModule.findAlternativeAccount("primary"), null)
+    assert.equal(keychainModule.__getReadCount(), 1)
+  })
+
+  it("returns a different source after refreshing account discovery", async () => {
+    const accountFixtures: MockAccount[] = [
+      {
+        label: "Account 1",
+        source: "primary",
+        credentials: {
+          accessToken: "token-1",
+          refreshToken: "refresh-1",
+          expiresAt: Date.now() + 600_000,
+        },
+      },
+      {
+        label: "Account 2",
+        source: "secondary",
+        credentials: {
+          accessToken: "token-2",
+          refreshToken: "refresh-2",
+          expiresAt: Date.now() + 600_000,
+        },
+      },
+    ]
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithMockAccounts(accountFixtures)
+
+    credentialsModule.initAccounts(accountFixtures)
+    credentialsModule.setActiveAccountSource("primary")
+
+    const alternative = credentialsModule.findAlternativeAccount("primary")
+
+    assert.ok(alternative)
+    if (!alternative) {
+      throw new Error("expected alternative account")
+    }
+    assert.equal(alternative.source, "secondary")
+    assert.equal(keychainModule.__getReadCount(), 1)
   })
 })
 
