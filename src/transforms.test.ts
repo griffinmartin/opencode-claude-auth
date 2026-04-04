@@ -142,7 +142,7 @@ describe("transforms", () => {
     assert.equal(parsed.system[2].text, "Working directory: /home/test")
   })
 
-  it("transformBody preserves cache_control when splitting identity", () => {
+  it("transformBody preserves cache_control only on remainder when splitting identity", () => {
     const identity = "You are Claude Code, Anthropic's official CLI for Claude."
     const input = JSON.stringify({
       system: [
@@ -160,11 +160,14 @@ describe("transforms", () => {
       system: Array<{ text: string; cache_control?: unknown }>
     }
 
-    // Both split entries should preserve cache_control from the original
-    assert.deepEqual(parsed.system[1].cache_control, {
-      type: "ephemeral",
-      ttl: "1h",
-    })
+    // Identity block should NOT have cache_control to avoid exceeding the
+    // API limit of 4 cache_control blocks per request.
+    assert.equal(
+      parsed.system[1].cache_control,
+      undefined,
+      "Identity block must not have cache_control",
+    )
+    // Remainder block should preserve cache_control from the original
     assert.deepEqual(parsed.system[2].cache_control, {
       type: "ephemeral",
       ttl: "1h",
