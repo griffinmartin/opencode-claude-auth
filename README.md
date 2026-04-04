@@ -96,6 +96,8 @@ Select "Switch Claude Code account" and pick the account you want to use. Your s
 
 If only one account is found, the switcher is hidden and the plugin uses it directly.
 
+If the active Claude account hits a usage-limit style 429 and another Claude Code account is already authenticated locally, the plugin retries once with the next available account and persists that switch for future requests.
+
 ## Troubleshooting
 
 | Problem                                             | Solution                                                                                                           |

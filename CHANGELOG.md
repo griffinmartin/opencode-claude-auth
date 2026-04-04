@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* auto-switch to another authenticated Claude account after usage-limit exhaustion in multi-account setups
+
 ## [1.4.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.2...v1.4.3) (2026-04-03)
 
 
