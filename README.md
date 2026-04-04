@@ -103,6 +103,7 @@ If only one account is found, the switcher is hidden and the plugin uses it dire
 | "Credentials not found"                             | Run `claude` to authenticate with Claude Code first                                                                |
 | "Keychain is locked"                                | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`                                               |
 | "Token expired and refresh failed"                  | The plugin runs `claude` CLI to refresh automatically. If this fails, re-authenticate manually by running `claude` |
+| Plugin added to `opencode.json` but auth still fails | Run `rm -rf ~/.cache/opencode` then restart OpenCode — it will reinstall plugins fresh from the cache              |
 | Not working on Linux/Windows                        | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                             |
 | Keychain access denied                              | Grant access when macOS prompts you                                                                                |
 | Keychain read timed out                             | Restart Keychain Access (can happen on macOS Tahoe)                                                                |
