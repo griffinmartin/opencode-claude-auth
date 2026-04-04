@@ -195,6 +195,55 @@ export function __getReadCount() {
   }
 }
 
+async function loadHelpersWithMockAccounts(
+  accountFixtures: Account[],
+  refreshedCredentialsBySource?: Record<string, ClaudeCredentials>,
+  failSyncAuthJson = false,
+): Promise<{
+  helpersModule: typeof import("./index.ts")
+}> {
+  const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-accounts-"))
+  const tempKeychain = join(tempDir, "keychain.ts")
+  const tempCredentials = join(tempDir, "credentials.ts")
+
+  await copySourceFiles(tempDir)
+  if (failSyncAuthJson) {
+    const credentialsSource = await readFile(tempCredentials, "utf8")
+    const rewrittenCredentialsSource = credentialsSource.replace(
+      "export function syncAuthJson(creds: ClaudeCredentials): void {",
+      'export function syncAuthJson(creds: ClaudeCredentials): void {\n  if (process.env.FAIL_SYNC_AUTH_JSON === "1") throw new Error("sync failed")',
+    )
+    await writeFile(tempCredentials, rewrittenCredentialsSource, "utf8")
+  }
+  await writeFile(
+    tempKeychain,
+    `let accounts = ${JSON.stringify(accountFixtures)}
+const refreshedCredentialsBySource = ${JSON.stringify(
+      refreshedCredentialsBySource ?? {},
+    )}
+
+export function readAllClaudeAccounts() {
+  return accounts
+}
+
+export function refreshAccount(source) {
+  return refreshedCredentialsBySource[source] ?? accounts.find((account) => account.source === source)?.credentials ?? null
+}
+
+export function writeBackCredentials() { return true }
+
+export function buildAccountLabels(creds) {
+  return creds.map((_, i) => \`Account \${i + 1}\`)
+}
+`,
+    "utf8",
+  )
+
+  const helpersModule = await import(pathToFileURL(join(tempDir, "index.ts")).href)
+
+  return { helpersModule }
+}
+
 function makeCreds(overrides?: Partial<ClaudeCredentials>): ClaudeCredentials {
   return {
     accessToken: "sk-ant-test-access",
@@ -735,6 +784,522 @@ describe("auth hook — account resolution", () => {
     ]
     assert.equal(resolveAccount(single, undefined).label, "Account 1")
     assert.equal(resolveAccount(single, "nonexistent").label, "Account 1")
+  })
+})
+
+describe("auth fetch — account failover", () => {
+  it("switches to another account after confirmed usage exhaustion", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalSetTimeout = globalThis.setTimeout
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    globalThis.setTimeout = (((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        handler()
+      }
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown) as typeof setTimeout
+
+    let callCount = 0
+    const seenAuthHeaders: string[] = []
+
+    try {
+      const { helpersModule } = await loadHelpersWithMockAccounts(
+        accounts.slice(0, 2),
+      )
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+        seenAuthHeaders.push(new Headers(init?.headers).get("authorization") ?? "")
+
+        if (callCount <= 3) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                type: "rate_limit_error",
+                message: "Your account has reached its weekly usage limit.",
+              },
+            }),
+            { status: 429 },
+          )
+        }
+
+        return new Response("ok", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const result = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+        },
+      )
+
+      assert.equal(result.status, 200)
+      assert.equal(callCount, 4)
+      assert.deepEqual(seenAuthHeaders, [
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-2",
+      ])
+
+      const stateFile = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "claude-account-source.txt",
+      )
+      assert.equal(
+        readFileSync(stateFile, "utf-8").trim(),
+        "Claude Code-credentials-b28bbb7c",
+      )
+
+      const authJsonPath = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "auth.json",
+      )
+      const authJson = JSON.parse(readFileSync(authJsonPath, "utf-8")) as {
+        anthropic: { access: string; refresh: string; expires: number }
+      }
+      assert.equal(authJson.anthropic.access, "at-2")
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("does not fail over on a generic 429 rate limit", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalSetTimeout = globalThis.setTimeout
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    globalThis.setTimeout = (((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        handler()
+      }
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown) as typeof setTimeout
+
+    let callCount = 0
+    const seenAuthHeaders: string[] = []
+
+    try {
+      const { helpersModule } = await loadHelpersWithMockAccounts(
+        accounts.slice(0, 2),
+      )
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+        seenAuthHeaders.push(new Headers(init?.headers).get("authorization") ?? "")
+        return new Response(
+          JSON.stringify({
+            error: {
+              type: "rate_limit_error",
+              message: "Your account has hit a rate limit.",
+            },
+          }),
+          { status: 429 },
+        )
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const result = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+        },
+      )
+
+      assert.equal(result.status, 429)
+      assert.equal(callCount, 3)
+      assert.deepEqual(seenAuthHeaders, [
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-1",
+      ])
+      assert.equal(
+        existsSync(
+          join(
+            tempHome,
+            ".local",
+            "share",
+            "opencode",
+            "claude-account-source.txt",
+          ),
+        ),
+        false,
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("retries once after the replacement account returns 401 with refreshed credentials", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalSetTimeout = globalThis.setTimeout
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    globalThis.setTimeout = (((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        handler()
+      }
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown) as typeof setTimeout
+
+    let callCount = 0
+    const seenAuthHeaders: string[] = []
+
+    try {
+      const { helpersModule } = await loadHelpersWithMockAccounts(
+        [
+          accounts[0],
+          {
+            ...accounts[1],
+            credentials: makeCreds({ accessToken: "at-2-stale" }),
+          },
+        ],
+        {
+          "Claude Code-credentials-b28bbb7c": makeCreds({
+            accessToken: "at-2-refreshed",
+          }),
+        },
+      )
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+        const authHeader = new Headers(init?.headers).get("authorization") ?? ""
+        seenAuthHeaders.push(authHeader)
+
+        if (callCount <= 3) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                type: "rate_limit_error",
+                message: "Your account has reached its weekly usage limit.",
+              },
+            }),
+            { status: 429 },
+          )
+        }
+
+        if (callCount === 4) {
+          return new Response("unauthorized", { status: 401 })
+        }
+
+        return new Response("ok", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const result = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+        },
+      )
+
+      assert.equal(result.status, 200)
+      assert.equal(callCount, 5)
+      assert.deepEqual(seenAuthHeaders, [
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-2-stale",
+        "Bearer at-2-refreshed",
+      ])
+
+      const authJsonPath = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "auth.json",
+      )
+      const authJson = JSON.parse(readFileSync(authJsonPath, "utf-8")) as {
+        anthropic: { access: string; refresh: string; expires: number }
+      }
+      assert.equal(authJson.anthropic.access, "at-2-refreshed")
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("keeps the replacement account persisted when the retry also fails", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalSetTimeout = globalThis.setTimeout
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    globalThis.setTimeout = (((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        handler()
+      }
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown) as typeof setTimeout
+
+    let callCount = 0
+
+    try {
+      const { helpersModule } = await loadHelpersWithMockAccounts(
+        accounts.slice(0, 2),
+      )
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+
+        if (callCount <= 3) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                type: "rate_limit_error",
+                message: "Your account has reached its weekly usage limit.",
+              },
+            }),
+            { status: 429 },
+          )
+        }
+
+        return new Response("server error", { status: 500 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const result = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+        },
+      )
+
+      assert.equal(result.status, 500)
+      assert.equal(callCount, 4)
+
+      const stateFile = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "claude-account-source.txt",
+      )
+      assert.equal(
+        readFileSync(stateFile, "utf-8").trim(),
+        "Claude Code-credentials-b28bbb7c",
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("continues failover when auth.json sync throws", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalSetTimeout = globalThis.setTimeout
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalFailSync = process.env.FAIL_SYNC_AUTH_JSON
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    globalThis.setTimeout = (((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        handler()
+      }
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown) as typeof setTimeout
+
+    let callCount = 0
+    const seenAuthHeaders: string[] = []
+
+    try {
+      const { helpersModule } = await loadHelpersWithMockAccounts(
+        accounts.slice(0, 2),
+        undefined,
+        true,
+      )
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+        seenAuthHeaders.push(new Headers(init?.headers).get("authorization") ?? "")
+
+        if (callCount <= 3) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                type: "rate_limit_error",
+                message: "Your account has reached its weekly usage limit.",
+              },
+            }),
+            { status: 429 },
+          )
+        }
+
+        return new Response("ok", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+      process.env.FAIL_SYNC_AUTH_JSON = "1"
+
+      const result = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+        },
+      )
+
+      assert.equal(result.status, 200)
+      assert.equal(callCount, 4)
+      assert.deepEqual(seenAuthHeaders, [
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-1",
+        "Bearer at-2",
+      ])
+
+      const stateFile = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "claude-account-source.txt",
+      )
+      assert.equal(
+        readFileSync(stateFile, "utf-8").trim(),
+        "Claude Code-credentials-b28bbb7c",
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalFailSync === "string") {
+        process.env.FAIL_SYNC_AUTH_JSON = originalFailSync
+      } else {
+        delete process.env.FAIL_SYNC_AUTH_JSON
+      }
+    }
   })
 })
 

@@ -14,10 +14,14 @@ import {
 import { transformBody, transformResponseStream } from "./transforms.ts"
 import { applyOpencodeConfig } from "./plugin-config.ts"
 import {
+  findAlternativeAccount,
   getCachedCredentials,
+  getActiveAccountSource,
   getCredentialsForSync,
+  reloadActiveCredentials,
   syncAuthJson,
   initAccounts,
+  isUsageExhaustionResponse,
   setActiveAccountSource,
   loadPersistedAccountSource,
   saveAccountSource,
@@ -299,8 +303,10 @@ const plugin: Plugin = async () => {
             )
             const body = transformBody(requestInit.body)
 
-            const headerKeys: string[] = []
-            headers.forEach((_, key) => headerKeys.push(key))
+              const headerKeys: string[] = []
+              headers.forEach((_, key) => {
+                headerKeys.push(key)
+              })
             const betas = (headers.get("anthropic-beta") ?? "")
               .split(",")
               .filter(Boolean)
@@ -320,13 +326,14 @@ const plugin: Plugin = async () => {
 
             // On 401, force a credential refresh and retry once.
             // This handles the common case of token expiry mid-session.
-            if (response.status === 401) {
-              log("fetch_401_retry", { modelId })
-              const refreshed = getCachedCredentials()
-              if (refreshed && refreshed.accessToken !== latest.accessToken) {
-                const retryHeaders = buildRequestHeaders(
-                  input,
-                  requestInit,
+              if (response.status === 401) {
+                log("fetch_401_retry", { modelId })
+                const refreshed = reloadActiveCredentials()
+                if (refreshed && refreshed.accessToken !== latest.accessToken) {
+                  syncAuthJson(refreshed)
+                  const retryHeaders = buildRequestHeaders(
+                    input,
+                    requestInit,
                   refreshed.accessToken,
                   modelId,
                   excluded,
@@ -339,12 +346,97 @@ const plugin: Plugin = async () => {
                 log("fetch_401_retry_result", {
                   status: response.status,
                   modelId,
-                })
+                  })
+                }
               }
-            }
 
-            // Check for long-context beta errors and retry with betas excluded
-            // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
+              if (response.status === 429) {
+                const responseBody = await response.clone().text()
+                const currentSource = getActiveAccountSource()
+
+                if (
+                  isUsageExhaustionResponse(
+                    response.status,
+                    responseBody,
+                    response.headers.get("retry-after"),
+                  )
+                ) {
+                  const replacement = findAlternativeAccount(currentSource)
+
+                  if (replacement) {
+                    setActiveAccountSource(replacement.source)
+
+                    const replacementCreds = getCachedCredentials()
+                    if (replacementCreds) {
+                      saveAccountSource(replacement.source)
+                      try {
+                        syncAuthJson(replacementCreds)
+                      } catch {
+                      }
+                      log("fetch_account_failover", {
+                        modelId,
+                        previousSource: currentSource ?? "none",
+                        newSource: replacement.source,
+                      })
+                      console.warn(
+                        `opencode-claude-auth: Claude account ${currentSource ?? "unknown"} exhausted, switching to ${replacement.label}.`,
+                      )
+
+                      const failoverHeaders = buildRequestHeaders(
+                        input,
+                        requestInit,
+                        replacementCreds.accessToken,
+                        modelId,
+                        excluded,
+                      )
+
+                      response = await fetch(input, {
+                        ...requestInit,
+                        body,
+                        headers: failoverHeaders,
+                      })
+
+                      if (response.status === 401) {
+                        const refreshedReplacement = reloadActiveCredentials()
+                        if (
+                          refreshedReplacement &&
+                          refreshedReplacement.accessToken !==
+                            replacementCreds.accessToken
+                        ) {
+                          try {
+                            syncAuthJson(refreshedReplacement)
+                          } catch {
+                          }
+                          const retryHeaders = buildRequestHeaders(
+                            input,
+                            requestInit,
+                            refreshedReplacement.accessToken,
+                            modelId,
+                            excluded,
+                          )
+
+                          response = await fetch(input, {
+                            ...requestInit,
+                            body,
+                            headers: retryHeaders,
+                          })
+                        }
+                      }
+
+                      log("fetch_account_failover_result", {
+                        status: response.status,
+                        modelId,
+                        newSource: replacement.source,
+                      })
+                    } else if (currentSource) {
+                      setActiveAccountSource(currentSource)
+                    }
+                  }
+                }
+              }
+
+              // Check for long-context beta errors and retry with betas excluded
+              // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
             for (
               let attempt = 0;
               attempt < LONG_CONTEXT_BETAS.length;
