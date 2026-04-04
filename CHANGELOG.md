@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.6](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.5...v1.4.6) (2026-04-04)
+
+
+### Bug Fixes
+
+* avoid duplicating cache_control when splitting identity system entry ([#131](https://github.com/griffinmartin/opencode-claude-auth/issues/131)) ([adcfd61](https://github.com/griffinmartin/opencode-claude-auth/commit/adcfd61b62401b82bc65bd34b7b2276ebd89ae2f))
+
 ## [1.4.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.4...v1.4.5) (2026-04-04)
 
 
