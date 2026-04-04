@@ -51,6 +51,7 @@ async function loadKeychainWithMockedSecurity(
   const rewritten = sourceKeychain
     .replace(/from\s+["']\.\/(\w+)\.js["']/g, 'from "./$1.ts"')
     .replace(/from\s+["']node:child_process["']/, 'from "./child-process.ts"')
+    .replace(/process\.platform/g, '"darwin"')
 
   await writeFile(
     tempLogger,
