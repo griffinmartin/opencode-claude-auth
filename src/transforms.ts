@@ -7,6 +7,68 @@ const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
 
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
+type ContentBlock = { type?: string; text?: string } & Record<string, unknown>
+type Message = {
+  role?: string
+  content?: string | ContentBlock[]
+}
+
+export function repairToolPairs(messages: Message[]): Message[] {
+  // Collect all tool_use ids and tool_result tool_use_ids
+  const toolUseIds = new Set<string>()
+  const toolResultIds = new Set<string>()
+
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      const id = block["id"]
+      if (block.type === "tool_use" && typeof id === "string") {
+        toolUseIds.add(id)
+      }
+      const toolUseId = block["tool_use_id"]
+      if (block.type === "tool_result" && typeof toolUseId === "string") {
+        toolResultIds.add(toolUseId)
+      }
+    }
+  }
+
+  // Find orphaned IDs
+  const orphanedUses = new Set<string>()
+  for (const id of toolUseIds) {
+    if (!toolResultIds.has(id)) orphanedUses.add(id)
+  }
+  const orphanedResults = new Set<string>()
+  for (const id of toolResultIds) {
+    if (!toolUseIds.has(id)) orphanedResults.add(id)
+  }
+
+  // Early return if nothing to fix
+  if (orphanedUses.size === 0 && orphanedResults.size === 0) {
+    return messages
+  }
+
+  // Filter orphaned blocks and remove messages with empty content arrays
+  return messages
+    .map((message) => {
+      if (!Array.isArray(message.content)) return message
+      const filtered = message.content.filter((block) => {
+        const id = block["id"]
+        if (block.type === "tool_use" && typeof id === "string") {
+          return !orphanedUses.has(id)
+        }
+        const toolUseId = block["tool_use_id"]
+        if (block.type === "tool_result" && typeof toolUseId === "string") {
+          return !orphanedResults.has(toolUseId)
+        }
+        return true
+      })
+      return { ...message, content: filtered }
+    })
+    .filter(
+      (message) =>
+        !(Array.isArray(message.content) && message.content.length === 0),
+    )
+}
 
 export function transformBody(
   body: BodyInit | null | undefined,
@@ -138,6 +200,10 @@ export function transformBody(
           }),
         }
       })
+    }
+
+    if (Array.isArray(parsed.messages)) {
+      parsed.messages = repairToolPairs(parsed.messages)
     }
 
     return JSON.stringify(parsed)

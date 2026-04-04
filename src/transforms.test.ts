@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
+  repairToolPairs,
   stripToolPrefix,
   transformBody,
   transformResponseStream,
@@ -536,6 +537,165 @@ describe("transforms", () => {
 
     const final = await reader.read()
     assert.equal(final.done, true)
+  })
+
+  describe("repairToolPairs", () => {
+    it("removes tool_use blocks with no matching tool_result", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_orphan", name: "search" }],
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: "no tool_result here" }],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      // The assistant message with only the orphaned tool_use should be removed
+      assert.equal(result.length, 1)
+      assert.equal(result[0].role, "user")
+    })
+
+    it("removes tool_result blocks with no matching tool_use", () => {
+      const messages = [
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_orphan", content: "ok" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      // The user message with only the orphaned tool_result should be removed
+      assert.equal(result.length, 0)
+    })
+
+    it("preserves text blocks when removing orphaned tool_use", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I will search for that." },
+            { type: "tool_use", id: "toolu_orphan", name: "search" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.equal(result.length, 1)
+      assert.deepEqual(result[0].content, [
+        { type: "text", text: "I will search for that." },
+      ])
+    })
+
+    it("does not modify valid tool_use/tool_result pairs", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_valid", name: "search" }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_valid", content: "ok" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.equal(result.length, 2)
+      assert.deepEqual(result, messages)
+    })
+
+    it("passes through messages with no tool blocks", () => {
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "hello" }] },
+        { role: "assistant", content: [{ type: "text", text: "world" }] },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, messages)
+    })
+
+    it("handles mix of valid and orphaned tool blocks", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_valid", name: "search" },
+            { type: "tool_use", id: "toolu_orphan", name: "lookup" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_valid", content: "ok" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.equal(result.length, 2)
+      // Only the valid tool_use remains
+      assert.deepEqual(result[0].content, [
+        { type: "tool_use", id: "toolu_valid", name: "search" },
+      ])
+      // tool_result for valid stays
+      assert.deepEqual(result[1].content, [
+        { type: "tool_result", tool_use_id: "toolu_valid", content: "ok" },
+      ])
+    })
+
+    it("preserves messages with string content", () => {
+      const messages = [
+        { role: "user", content: "just a string" },
+        { role: "assistant", content: "response string" },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, messages)
+    })
+
+    it("handles multiple valid pairs", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_a", name: "search" },
+            { type: "tool_use", id: "toolu_b", name: "read" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_a", content: "res_a" },
+            { type: "tool_result", tool_use_id: "toolu_b", content: "res_b" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, messages)
+    })
+  })
+
+  it("transformBody removes orphaned tool_use blocks from messages", () => {
+    const input = JSON.stringify({
+      system: [{ type: "text", text: "prompt" }],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_orphan", name: "search" },
+          ],
+        },
+        { role: "user", content: "hello" },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+
+    // Orphaned tool_use message should be removed, only user message remains
+    assert.equal(parsed.messages.length, 1)
+    assert.equal(parsed.messages[0].role, "user")
   })
 
   it("transformResponseStream flushes remaining buffered data on stream end", async () => {
