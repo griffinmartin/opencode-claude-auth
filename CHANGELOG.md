@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.4...v1.4.5) (2026-04-04)
+
+
+### Bug Fixes
+
+* strip effort parameter from request body for haiku models ([#126](https://github.com/griffinmartin/opencode-claude-auth/issues/126)) ([d163938](https://github.com/griffinmartin/opencode-claude-auth/commit/d1639387ca35391c6516f79d7121dad33544f69b))
+* use Object.keys guard for thinking cleanup instead of budget_tokens sentinel ([#129](https://github.com/griffinmartin/opencode-claude-auth/issues/129)) ([174875a](https://github.com/griffinmartin/opencode-claude-auth/commit/174875acbad15b9ea6fc37fdb37872516664ef2d))
+
 ## [1.4.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.3...v1.4.4) (2026-04-03)
 
 
