@@ -680,9 +680,7 @@ describe("transforms", () => {
       messages: [
         {
           role: "assistant",
-          content: [
-            { type: "tool_use", id: "toolu_orphan", name: "search" },
-          ],
+          content: [{ type: "tool_use", id: "toolu_orphan", name: "search" }],
         },
         { role: "user", content: "hello" },
       ],
