@@ -1,6 +1,7 @@
 export interface ModelOverride {
   exclude?: string[]
   add?: string[]
+  disableEffort?: boolean
 }
 
 export interface ModelConfig {
@@ -26,6 +27,7 @@ export const config: ModelConfig = {
   modelOverrides: {
     haiku: {
       exclude: ["interleaved-thinking-2025-05-14"],
+      disableEffort: true,
     },
     "4-6": {
       add: ["effort-2025-11-24"],

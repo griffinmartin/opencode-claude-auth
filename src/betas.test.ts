@@ -75,6 +75,28 @@ describe("betas", () => {
     }
   })
 
+  it("getModelOverride sets disableEffort for haiku models", () => {
+    for (const model of ["claude-haiku-4-5", "claude-haiku-4-5-20251001"]) {
+      const override = getModelOverride(model)
+      assert.ok(override, `${model} should have a model override`)
+      assert.equal(
+        override!.disableEffort,
+        true,
+        `${model} should have disableEffort set`,
+      )
+    }
+  })
+
+  it("getModelOverride does not set disableEffort for non-haiku models", () => {
+    for (const model of ["claude-sonnet-4-6", "claude-opus-4-6"]) {
+      const override = getModelOverride(model)
+      assert.ok(
+        !override?.disableEffort,
+        `${model} should not have disableEffort`,
+      )
+    }
+  })
+
   it("getModelBetas applies model overrides from config", () => {
     for (const [pattern, override] of Object.entries(config.modelOverrides)) {
       // Use a realistic model ID that matches the pattern

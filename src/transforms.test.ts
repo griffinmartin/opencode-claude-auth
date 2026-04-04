@@ -220,6 +220,110 @@ describe("transforms", () => {
     )
   })
 
+  it("transformBody strips output_config.effort for haiku", () => {
+    const input = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      output_config: { effort: "high" },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      output_config?: Record<string, unknown>
+    }
+
+    assert.equal(
+      parsed.output_config,
+      undefined,
+      "output_config should be removed when effort was its only field",
+    )
+  })
+
+  it("transformBody strips effort but keeps other output_config fields for haiku", () => {
+    const input = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      output_config: { effort: "high", max_tokens: 1024 },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      output_config?: { effort?: string; max_tokens?: number }
+    }
+
+    assert.ok(
+      parsed.output_config,
+      "output_config should be preserved when other fields exist",
+    )
+    assert.equal(parsed.output_config!.max_tokens, 1024)
+    assert.equal(
+      parsed.output_config!.effort,
+      undefined,
+      "effort should be stripped",
+    )
+  })
+
+  it("transformBody strips thinking.effort for haiku", () => {
+    const input = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      thinking: { type: "enabled", effort: "high" },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      thinking?: Record<string, unknown>
+    }
+
+    assert.equal(
+      parsed.thinking,
+      undefined,
+      "thinking should be removed when only effort is present",
+    )
+  })
+
+  it("transformBody preserves effort for non-haiku models", () => {
+    const input = JSON.stringify({
+      model: "claude-opus-4-6",
+      output_config: { effort: "high" },
+      thinking: { type: "enabled", effort: "high" },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      output_config?: { effort?: string }
+      thinking?: { effort?: string }
+    }
+
+    assert.equal(
+      parsed.output_config!.effort,
+      "high",
+      "output_config.effort should remain for opus",
+    )
+    assert.equal(
+      parsed.thinking!.effort,
+      "high",
+      "thinking.effort should remain for opus",
+    )
+  })
+
+  it("transformBody handles haiku without effort-related fields", () => {
+    const input = JSON.stringify({
+      model: "claude-haiku-4-5",
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      output_config?: unknown
+      thinking?: unknown
+    }
+
+    assert.equal(parsed.output_config, undefined)
+    assert.equal(parsed.thinking, undefined)
+  })
+
   it("stripToolPrefix removes mcp_ from response payload names", () => {
     const input = '{"name":"mcp_search","type":"tool_use"}'
     assert.equal(stripToolPrefix(input), '{"name": "search","type":"tool_use"}')

@@ -1,5 +1,5 @@
 import { buildBillingHeaderValue } from "./signing.ts"
-import { config } from "./model-config.ts"
+import { config, getModelOverride } from "./model-config.ts"
 
 const TOOL_PREFIX = "mcp_"
 
@@ -19,6 +19,9 @@ export function transformBody(
     const parsed = JSON.parse(body) as {
       model?: string
       system?: SystemEntry[]
+      thinking?: Record<string, unknown>
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      output_config?: Record<string, unknown>
       tools?: Array<{ name?: string } & Record<string, unknown>>
       messages?: Array<{
         role?: string
@@ -84,6 +87,26 @@ export function transformBody(
       }
     }
     parsed.system = splitSystem
+
+    // Strip effort for models that don't support it (e.g. haiku).
+    // OpenCode sends { output_config: { effort: "high" } } but haiku
+    // rejects the effort parameter with a 400 error.
+    const modelId = parsed.model ?? ""
+    const override = getModelOverride(modelId)
+    if (override?.disableEffort) {
+      if (parsed.output_config) {
+        delete parsed.output_config.effort
+        if (Object.keys(parsed.output_config).length === 0) {
+          delete parsed.output_config
+        }
+      }
+      if (parsed.thinking) {
+        delete parsed.thinking.effort
+        if (!("budget_tokens" in parsed.thinking)) {
+          delete parsed.thinking
+        }
+      }
+    }
 
     if (Array.isArray(parsed.tools)) {
       parsed.tools = parsed.tools.map((tool) => ({
