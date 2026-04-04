@@ -8,9 +8,10 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs"
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import {
   buildAccountLabels,
   keychainSuffixForDir,
@@ -21,6 +22,98 @@ import {
 } from "./keychain.ts"
 
 // Mirrors listClaudeKeychainServices regex logic for unit testing
+async function loadKeychainWithMockedSecurity(
+  securityDump: string,
+  keychainEntries: Record<string, string>,
+): Promise<{
+  readAllClaudeAccounts: () => Array<{
+    label: string
+    source: string
+    configDir?: string
+    credentials: {
+      accessToken: string
+      refreshToken: string
+      expiresAt: number
+      subscriptionType?: string
+    }
+  }>
+}> {
+  const tempDir = await mkdtemp(
+    join(tmpdir(), "opencode-claude-auth-keychain-"),
+  )
+  const tempKeychain = join(tempDir, "keychain.ts")
+  const tempLogger = join(tempDir, "logger.ts")
+  const tempChildProcess = join(tempDir, "child-process.ts")
+  const sourceKeychain = await readFile(
+    new URL("./keychain.ts", import.meta.url),
+    "utf8",
+  )
+  const rewritten = sourceKeychain
+    .replace(/from\s+["']\.\/(\w+)\.js["']/g, 'from "./$1.ts"')
+    .replace(/from\s+["']node:child_process["']/, 'from "./child-process.ts"')
+
+  await writeFile(
+    tempLogger,
+    `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+    "utf8",
+  )
+
+  await writeFile(
+    tempChildProcess,
+    `const securityDump = ${JSON.stringify(securityDump)}
+const keychainEntries = ${JSON.stringify(keychainEntries)}
+
+export function execSync(command) {
+  if (command.includes("dump-keychain")) return securityDump
+  if (command.includes("find-generic-password")) {
+    const match = command.match(/-s "([^"]+)"/)
+    const service = match ? match[1] : undefined
+    const raw = service ? keychainEntries[service] : undefined
+    if (raw === undefined) {
+      const error = new Error("The specified item could not be found in the keychain.")
+      error.status = 44
+      throw error
+    }
+    return raw
+  }
+  throw new Error("unexpected execSync call: " + command)
+}
+
+export function execFileSync(file, args) {
+  if (file !== "/usr/bin/security") {
+    throw new Error("unexpected execFileSync file: " + file)
+  }
+  const service = args[args.indexOf("-s") + 1]
+  const raw = keychainEntries[service]
+  if (raw === undefined) {
+    const error = new Error("The specified item could not be found in the keychain.")
+    error.status = 44
+    error.stderr = "The specified item could not be found in the keychain."
+    throw error
+  }
+  return raw
+}
+`,
+    "utf8",
+  )
+
+  await writeFile(tempKeychain, rewritten, "utf8")
+  const keychainModule = await import(pathToFileURL(tempKeychain).href)
+  return keychainModule as {
+    readAllClaudeAccounts: () => Array<{
+      label: string
+      source: string
+      configDir?: string
+      credentials: {
+        accessToken: string
+        refreshToken: string
+        expiresAt: number
+        subscriptionType?: string
+      }
+    }>
+  }
+}
+
 function extractServicesFromDump(output: string): string[] {
   const PRIMARY = "Claude Code-credentials"
   const services: string[] = []
@@ -185,9 +278,146 @@ describe("account labelling", () => {
       buildAccountLabels(
         [makeAccountCreds("pro"), makeAccountCreds("team")],
         [null, "bob@example.com"],
+        ["Claude Code-credentials", "Claude Code-credentials-b28bbb7c"],
       ),
-      ["Claude Pro", "Claude Team: bob@example.com"],
+      ["Claude Pro: Claude Code-credentials", "Claude Team: bob@example.com"],
     )
+  })
+})
+
+describe("readAllClaudeAccounts", () => {
+  it("resolves suffixed keychain services back to config dirs and emails", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    const primaryDir = join(tempHome, ".claude")
+    const workDir = join(tempHome, ".work")
+    const workSuffix = keychainSuffixForDir(workDir)
+
+    mkdirSync(primaryDir, { recursive: true })
+    mkdirSync(workDir, { recursive: true })
+
+    writeFileSync(
+      join(primaryDir, ".claude.json"),
+      JSON.stringify({
+        oauthAccount: { emailAddress: "primary@example.com" },
+      }),
+    )
+    writeFileSync(
+      join(workDir, ".claude.json"),
+      JSON.stringify({
+        oauthAccount: { emailAddress: "work@example.com" },
+      }),
+    )
+
+    const dump = `
+    "svce"<blob>="Claude Code-credentials-${workSuffix}"
+    "svce"<blob>="Claude Code-credentials"
+    `
+    const primaryCreds = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "primary-at",
+        refreshToken: "primary-rt",
+        expiresAt: 1_700_000_000_000,
+        subscriptionType: "pro",
+      },
+    })
+    const workCreds = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "work-at",
+        refreshToken: "work-rt",
+        expiresAt: 1_700_000_000_001,
+        subscriptionType: "pro",
+      },
+    })
+
+    process.env.HOME = tempHome
+
+    try {
+      const { readAllClaudeAccounts } = await loadKeychainWithMockedSecurity(
+        dump,
+        {
+          "Claude Code-credentials": primaryCreds,
+          [`Claude Code-credentials-${workSuffix}`]: workCreds,
+        },
+      )
+
+      assert.deepEqual(readAllClaudeAccounts(), [
+        {
+          label: "Claude Pro 1: primary@example.com",
+          source: "Claude Code-credentials",
+          configDir: primaryDir,
+          credentials: {
+            accessToken: "primary-at",
+            refreshToken: "primary-rt",
+            expiresAt: 1_700_000_000_000,
+            subscriptionType: "pro",
+          },
+        },
+        {
+          label: "Claude Pro 2: work@example.com",
+          source: `Claude Code-credentials-${workSuffix}`,
+          configDir: workDir,
+          credentials: {
+            accessToken: "work-at",
+            refreshToken: "work-rt",
+            expiresAt: 1_700_000_000_001,
+            subscriptionType: "pro",
+          },
+        },
+      ])
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps keychain source visible when email lookup fails", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    const primaryDir = join(tempHome, ".claude")
+    const workDir = join(tempHome, ".work")
+    const workSuffix = keychainSuffixForDir(workDir)
+
+    mkdirSync(primaryDir, { recursive: true })
+    mkdirSync(workDir, { recursive: true })
+    writeFileSync(join(primaryDir, ".claude.json"), JSON.stringify({}))
+    writeFileSync(join(workDir, ".claude.json"), JSON.stringify({}))
+
+    process.env.HOME = tempHome
+
+    try {
+      const { readAllClaudeAccounts } = await loadKeychainWithMockedSecurity(
+        `"svce"<blob>="Claude Code-credentials-${workSuffix}"`,
+        {
+          [`Claude Code-credentials-${workSuffix}`]: JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "work-at",
+              refreshToken: "work-rt",
+              expiresAt: 1_700_000_000_001,
+            },
+          }),
+        },
+      )
+
+      const [account] = readAllClaudeAccounts()
+      assert.equal(account.source, `Claude Code-credentials-${workSuffix}`)
+      assert.equal(
+        account.label,
+        `Claude: Claude Code-credentials-${workSuffix}`,
+      )
+      assert.equal(account.configDir, workDir)
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
   })
 })
 
