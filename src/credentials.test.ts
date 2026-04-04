@@ -51,20 +51,36 @@ async function loadCredentialsWithCountingKeychain(
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-creds-"))
   const tempKeychain = join(tempDir, "keychain.ts")
   const tempBetas = join(tempDir, "betas.ts")
+  const tempChildProcess = join(tempDir, "child-process.ts")
   const tempLogger = join(tempDir, "logger.ts")
   const tempCredentials = join(tempDir, "credentials.ts")
   const sourceCredentials = await readFile(
     new URL("./credentials.ts", import.meta.url),
     "utf8",
   )
-  const rewritten = sourceCredentials.replace(
-    /from\s+["']\.\/(\w+)\.js["']/g,
-    'from "./$1.ts"',
-  )
+  const rewritten = sourceCredentials
+    .replace(/from\s+["']\.\/(\w+)\.js["']/g, 'from "./$1.ts"')
+    .replace(
+      'import { execFileSync, execSync } from "node:child_process"',
+      'import { execFileSync, execSync } from "./child-process.ts"',
+    )
 
   await writeFile(
     tempLogger,
     `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+    "utf8",
+  )
+
+  await writeFile(
+    tempChildProcess,
+    `export function execFileSync() {
+  throw new Error("oauth disabled in test harness")
+}
+
+export function execSync() {
+  return ""
+}
+`,
     "utf8",
   )
 
