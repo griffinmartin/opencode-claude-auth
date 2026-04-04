@@ -263,7 +263,7 @@ describe("transforms", () => {
     )
   })
 
-  it("transformBody strips thinking.effort for haiku", () => {
+  it("transformBody strips thinking.effort but preserves other fields for haiku", () => {
     const input = JSON.stringify({
       model: "claude-haiku-4-5-20251001",
       thinking: { type: "enabled", effort: "high" },
@@ -275,10 +275,53 @@ describe("transforms", () => {
       thinking?: Record<string, unknown>
     }
 
+    assert.ok(
+      parsed.thinking,
+      "thinking should be preserved when non-effort fields remain",
+    )
+    assert.equal(
+      parsed.thinking!.effort,
+      undefined,
+      "effort should be stripped",
+    )
+    assert.equal(parsed.thinking!.type, "enabled", "type should be preserved")
+  })
+
+  it("transformBody removes thinking entirely when effort is its only field for haiku", () => {
+    const input = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      thinking: { effort: "high" },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      thinking?: Record<string, unknown>
+    }
+
     assert.equal(
       parsed.thinking,
       undefined,
-      "thinking should be removed when only effort is present",
+      "thinking should be removed when effort was its only field",
+    )
+  })
+
+  it("transformBody preserves thinking for haiku when effort is absent", () => {
+    const input = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      thinking: { type: "enabled" },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      thinking?: Record<string, unknown>
+    }
+
+    assert.deepEqual(
+      parsed.thinking,
+      { type: "enabled" },
+      "thinking without effort should pass through unchanged",
     )
   })
 

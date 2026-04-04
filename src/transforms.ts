@@ -100,9 +100,9 @@ export function transformBody(
           delete parsed.output_config
         }
       }
-      if (parsed.thinking) {
+      if (parsed.thinking && "effort" in parsed.thinking) {
         delete parsed.thinking.effort
-        if (!("budget_tokens" in parsed.thinking)) {
+        if (Object.keys(parsed.thinking).length === 0) {
           delete parsed.thinking
         }
       }
