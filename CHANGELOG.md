@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.7](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.6...v1.4.7) (2026-04-05)
+
+
+### Bug Fixes
+
+* repair orphaned tool_use/tool_result pairs before API request ([#136](https://github.com/griffinmartin/opencode-claude-auth/issues/136)) ([ceaf742](https://github.com/griffinmartin/opencode-claude-auth/commit/ceaf742c6249a898fcf5617383e6c1a6a71770e5)), closes [#133](https://github.com/griffinmartin/opencode-claude-auth/issues/133)
+
 ## [1.4.6](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.5...v1.4.6) (2026-04-04)
 
 
