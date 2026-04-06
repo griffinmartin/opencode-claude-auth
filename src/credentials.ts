@@ -328,13 +328,14 @@ export function getCredentialsForSync(): ClaudeCredentials | null {
   return null
 }
 
-export function getCachedCredentials(): ClaudeCredentials | null {
+export function getCachedCredentials(forceRefresh = false): ClaudeCredentials | null {
   const account = getActiveAccount()
   if (!account) return null
 
   const now = Date.now()
   const cached = accountCacheMap.get(account.source)
   if (
+    !forceRefresh &&
     cached &&
     now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
     cached.creds.expiresAt > now + 60_000
@@ -346,9 +347,25 @@ export function getCachedCredentials(): ClaudeCredentials | null {
     return cached.creds
   }
 
+  if (forceRefresh) {
+    log("cache_bypass", {
+      source: account.source,
+      reason: "forced_reload",
+    })
+    accountCacheMap.delete(account.source)
+    const reloaded = refreshAccount(account.source)
+    if (reloaded) {
+      account.credentials = reloaded
+    }
+  }
+
   log("cache_miss", {
     source: account.source,
-    reason: cached ? "stale or expiring" : "empty",
+    reason: forceRefresh
+      ? "forced_reload"
+      : cached
+        ? "stale or expiring"
+        : "empty",
   })
 
   const fresh = refreshIfNeeded(account)

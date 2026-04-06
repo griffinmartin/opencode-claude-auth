@@ -72,6 +72,119 @@ const sessionId = crypto.randomUUID()
 
 type FetchFn = typeof fetch
 
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+
+function createAbortError(
+  message: string,
+  name: "AbortError" | "TimeoutError",
+): Error {
+  const error = new Error(message)
+  error.name = name
+  return error
+}
+
+export function getRequestTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const timeoutValue = env.ANTHROPIC_REQUEST_TIMEOUT_MS
+  if (!timeoutValue || !/^\d+$/.test(timeoutValue)) {
+    return DEFAULT_REQUEST_TIMEOUT_MS
+  }
+
+  const parsedTimeout = Number.parseInt(timeoutValue, 10)
+  return parsedTimeout > 0 ? parsedTimeout : DEFAULT_REQUEST_TIMEOUT_MS
+}
+
+function buildRequestTimeoutSignal(
+  signal: AbortSignal | null | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void } {
+  const timeoutController = new AbortController()
+  const timeoutId = setTimeout(
+    () => {
+      timeoutController.abort(
+        createAbortError(
+          `Anthropic request timed out after ${timeoutMs}ms`,
+          "TimeoutError",
+        ),
+      )
+    },
+    timeoutMs,
+  ) as ReturnType<typeof setTimeout> & {
+    unref?: () => void
+  }
+  timeoutId.unref?.()
+
+  const clearTimeoutSignal = () => clearTimeout(timeoutId)
+
+  if (!signal) {
+    return {
+      signal: timeoutController.signal,
+      cleanup: clearTimeoutSignal,
+    }
+  }
+
+  const combinedController = new AbortController()
+  const abortFromTimeout = () => {
+    cleanup()
+    combinedController.abort(
+      timeoutController.signal.reason ??
+        createAbortError(
+          `Anthropic request timed out after ${timeoutMs}ms`,
+          "TimeoutError",
+        ),
+    )
+  }
+  const abortFromCaller = () => {
+    cleanup()
+    combinedController.abort(
+      signal.reason ??
+        createAbortError("Anthropic request was aborted", "AbortError"),
+    )
+  }
+  const cleanup = () => {
+    clearTimeoutSignal()
+    timeoutController.signal.removeEventListener("abort", abortFromTimeout)
+    signal.removeEventListener("abort", abortFromCaller)
+  }
+
+  if (signal.aborted) {
+    abortFromCaller()
+    return {
+      signal: combinedController.signal,
+      cleanup,
+    }
+  }
+
+  timeoutController.signal.addEventListener("abort", abortFromTimeout, {
+    once: true,
+  })
+  signal.addEventListener("abort", abortFromCaller, { once: true })
+
+  return {
+    signal: combinedController.signal,
+    cleanup,
+  }
+}
+
+async function fetchWithRequestTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  fetchImpl: FetchFn = fetch,
+): Promise<Response> {
+  const timeoutMs = getRequestTimeoutMs()
+  const { signal, cleanup } = buildRequestTimeoutSignal(init.signal, timeoutMs)
+
+  try {
+    return await fetchImpl(input, {
+      ...init,
+      signal,
+    })
+  } finally {
+    cleanup()
+  }
+}
+
 export async function fetchWithRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -306,7 +419,7 @@ const plugin: Plugin = async () => {
               .filter(Boolean)
             log("fetch_headers_built", { headerKeys, betas, modelId })
 
-            let response = await fetchWithRetry(input, {
+            let response = await fetchWithRequestTimeout(input, {
               ...requestInit,
               body,
               headers,
@@ -318,29 +431,26 @@ const plugin: Plugin = async () => {
               retryAttempt: 0,
             })
 
-            // On 401, force a credential refresh and retry once.
-            // This handles the common case of token expiry mid-session.
             if (response.status === 401) {
               log("fetch_401_retry", { modelId })
-              const refreshed = getCachedCredentials()
-              if (refreshed && refreshed.accessToken !== latest.accessToken) {
-                const retryHeaders = buildRequestHeaders(
-                  input,
-                  requestInit,
-                  refreshed.accessToken,
-                  modelId,
-                  excluded,
-                )
-                response = await fetchWithRetry(input, {
-                  ...requestInit,
-                  body,
-                  headers: retryHeaders,
-                })
-                log("fetch_401_retry_result", {
-                  status: response.status,
-                  modelId,
-                })
-              }
+              const refreshed = getCachedCredentials(true)
+              const retryToken = refreshed?.accessToken ?? latest.accessToken
+              const retryHeaders = buildRequestHeaders(
+                input,
+                requestInit,
+                retryToken,
+                modelId,
+                excluded,
+              )
+              response = await fetchWithRequestTimeout(input, {
+                ...requestInit,
+                body,
+                headers: retryHeaders,
+              })
+              log("fetch_401_retry_result", {
+                status: response.status,
+                modelId,
+              })
             }
 
             // Check for long-context beta errors and retry with betas excluded
@@ -384,7 +494,7 @@ const plugin: Plugin = async () => {
                 newExcluded,
               )
 
-              response = await fetchWithRetry(input, {
+              response = await fetchWithRequestTimeout(input, {
                 ...requestInit,
                 body,
                 headers: newHeaders,

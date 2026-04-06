@@ -146,7 +146,10 @@ async function loadHelpersWithCountingKeychain(
   initialExpiresAt: number,
 ): Promise<{
   helpersModule: typeof import("./index.ts")
-  keychainModule: { __getReadCount: () => number }
+  keychainModule: {
+    __getReadCount: () => number
+    __setCredentials: (overrides: Partial<ClaudeCredentials>) => void
+  }
 }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cache-"))
   const tempKeychain = join(tempDir, "keychain.ts")
@@ -155,20 +158,24 @@ async function loadHelpersWithCountingKeychain(
   await writeFile(
     tempKeychain,
     `let readCount = 0
-let credentials = {
+let storedCredentials = {
   accessToken: "token",
   refreshToken: "refresh",
   expiresAt: ${initialExpiresAt}
 }
 
+function cloneCredentials() {
+  return { ...storedCredentials }
+}
+
 export function readAllClaudeAccounts() {
   readCount += 1
-  return [{ label: "Account 1", source: "Claude Code-credentials", credentials }]
+  return [{ label: "Account 1", source: "Claude Code-credentials", credentials: cloneCredentials() }]
 }
 
 export function refreshAccount(source) {
   readCount += 1
-  return credentials
+  return cloneCredentials()
 }
 
 export function writeBackCredentials() { return true }
@@ -179,6 +186,10 @@ export function buildAccountLabels(creds) {
 
 export function __getReadCount() {
   return readCount
+}
+
+export function __setCredentials(overrides) {
+  Object.assign(storedCredentials, overrides)
 }
 `,
     "utf8",
@@ -191,8 +202,51 @@ export function __getReadCount() {
 
   return {
     helpersModule,
-    keychainModule: keychainModule as { __getReadCount: () => number },
+    keychainModule: keychainModule as {
+      __getReadCount: () => number
+      __setCredentials: (overrides: Partial<ClaudeCredentials>) => void
+    },
   }
+}
+
+async function loadAuthLoader(
+  initialExpiresAt: number,
+): Promise<{
+  helpersModule: typeof import("./index.ts")
+  keychainModule: {
+    __getReadCount: () => number
+    __setCredentials: (overrides: Partial<ClaudeCredentials>) => void
+  }
+  authFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+}> {
+  const { helpersModule, keychainModule } =
+    await loadHelpersWithCountingKeychain(initialExpiresAt)
+  const plugin = await helpersModule.default({} as never)
+  const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+  assert.equal(typeof typedPlugin.auth?.loader, "function")
+
+  const authConfig = await typedPlugin.auth!.loader!(
+    async () => ({
+      type: "oauth",
+      refresh: "refresh",
+      access: "access",
+      expires: Date.now() + 60_000,
+    }),
+    { models: {} },
+  )
+
+  return {
+    helpersModule,
+    keychainModule,
+    authFetch: authConfig.fetch,
+  }
+}
+
+async function loadAuthLoaderFetch(
+  initialExpiresAt: number,
+): Promise<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
+  const { authFetch } = await loadAuthLoader(initialExpiresAt)
+  return authFetch
 }
 
 function makeCreds(overrides?: Partial<ClaudeCredentials>): ClaudeCredentials {
@@ -528,6 +582,23 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     )
   })
 
+  it("getRequestTimeoutMs falls back to default for invalid env values", () => {
+    assert.equal(helpers.DEFAULT_REQUEST_TIMEOUT_MS, 30_000)
+    assert.equal(
+      helpers.getRequestTimeoutMs({ ANTHROPIC_REQUEST_TIMEOUT_MS: "25" }),
+      25,
+    )
+
+    for (const invalidValue of ["0", "-1", "1.5", "abc", "10ms"]) {
+      assert.equal(
+        helpers.getRequestTimeoutMs({
+          ANTHROPIC_REQUEST_TIMEOUT_MS: invalidValue,
+        }),
+        helpers.DEFAULT_REQUEST_TIMEOUT_MS,
+      )
+    }
+  })
+
   it("system transform does not inject when system already contains prefix", async () => {
     const originalSetInterval = globalThis.setInterval
     const originalHome = process.env.HOME
@@ -678,6 +749,406 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       })
 
       assert.equal(forwardedInput, originalInput)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth loader aborts hung outbound fetch within request timeout", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalRequestTimeout = process.env.ANTHROPIC_REQUEST_TIMEOUT_MS
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    process.env.ANTHROPIC_REQUEST_TIMEOUT_MS = "10"
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+
+    try {
+      const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
+      globalThis.fetch = ((
+        _input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        callCount += 1
+
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          if (!signal) {
+            reject(new Error("Expected auth loader to forward a timeout signal"))
+            return
+          }
+
+          if (signal.aborted) {
+            reject(signal.reason)
+            return
+          }
+
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          })
+        })
+      }) as typeof fetch
+
+      await assert.rejects(
+        authFetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        }),
+        (error: unknown) => {
+          assert.equal((error as Error).name, "TimeoutError")
+          assert.match((error as Error).message, /10ms/)
+          return true
+        },
+      )
+      assert.equal(callCount, 1)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalRequestTimeout === "string") {
+        process.env.ANTHROPIC_REQUEST_TIMEOUT_MS = originalRequestTimeout
+      } else {
+        delete process.env.ANTHROPIC_REQUEST_TIMEOUT_MS
+      }
+    }
+  })
+
+  it("auth loader preserves caller abort signal over request timeout", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalRequestTimeout = process.env.ANTHROPIC_REQUEST_TIMEOUT_MS
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    process.env.ANTHROPIC_REQUEST_TIMEOUT_MS = "50"
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+    const callerAbort = new Error("caller aborted")
+    callerAbort.name = "AbortError"
+    const callerController = new AbortController()
+
+    try {
+      const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
+      globalThis.fetch = ((
+        _input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        callCount += 1
+
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          if (!signal) {
+            reject(new Error("Expected auth loader to forward a combined signal"))
+            return
+          }
+
+          if (signal.aborted) {
+            reject(signal.reason)
+            return
+          }
+
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          })
+        })
+      }) as typeof fetch
+
+      const pendingResponse = authFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        signal: callerController.signal,
+      })
+
+      setTimeout(() => callerController.abort(callerAbort), 0)
+
+      await assert.rejects(pendingResponse, (error: unknown) => {
+        assert.strictEqual(error, callerAbort)
+        return true
+      })
+      assert.equal(callCount, 1)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalRequestTimeout === "string") {
+        process.env.ANTHROPIC_REQUEST_TIMEOUT_MS = originalRequestTimeout
+      } else {
+        delete process.env.ANTHROPIC_REQUEST_TIMEOUT_MS
+      }
+    }
+  })
+
+  it("auth loader retries once on 401 before surfacing terminal failure", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+    const seenAuthorizationHeaders: string[] = []
+    const responseBody = JSON.stringify({ error: { message: "unauthorized" } })
+
+    try {
+      const { authFetch, keychainModule } = await loadAuthLoader(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+        seenAuthorizationHeaders.push(
+          new Headers(init?.headers).get("authorization") ?? "",
+        )
+
+        if (callCount === 1) {
+          keychainModule.__setCredentials({ accessToken: "token-refreshed" })
+        }
+
+        return new Response(responseBody, {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        })
+      }) as typeof fetch
+
+      const response = await authFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+      })
+
+      assert.equal(response.status, 401)
+      assert.equal(await response.text(), responseBody)
+      assert.equal(callCount, 2)
+      assert.deepEqual(seenAuthorizationHeaders, [
+        "Bearer token",
+        "Bearer token-refreshed",
+      ])
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth loader surfaces generic 429 immediately for upstream fallback", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+    const responseBody = JSON.stringify({ error: { message: "rate limited" } })
+
+    try {
+      const { authFetch, helpersModule } = await loadAuthLoader(
+        Date.now() + 10 * 60_000,
+      )
+      helpersModule.resetExcludedBetas()
+      globalThis.fetch = (async () => {
+        callCount += 1
+        return new Response(responseBody, {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        })
+      }) as typeof fetch
+
+      const response = await authFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+      })
+
+      assert.equal(response.status, 429)
+      assert.equal(await response.text(), responseBody)
+      assert.equal(callCount, 1)
+      assert.equal(helpersModule.getExcludedBetas("claude-haiku-4-5").size, 0)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth loader retries long-context errors only while exclusions remain", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+    const responseBody = JSON.stringify({
+      error: { message: "Extra usage is required for long context requests" },
+    })
+    const modelId = "claude-sonnet-4-6"
+
+    try {
+      const { authFetch, helpersModule } = await loadAuthLoader(
+        Date.now() + 10 * 60_000,
+      )
+      helpersModule.resetExcludedBetas()
+      globalThis.fetch = (async () => {
+        callCount += 1
+        return new Response(responseBody, {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        })
+      }) as typeof fetch
+
+      const response = await authFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: modelId, messages: [] }),
+      })
+
+      assert.equal(response.status, 429)
+      assert.equal(await response.text(), responseBody)
+      assert.equal(callCount, helpersModule.LONG_CONTEXT_BETAS.length + 1)
+      assert.equal(
+        helpersModule.getExcludedBetas(modelId).size,
+        helpersModule.LONG_CONTEXT_BETAS.length,
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth loader surfaces 503 immediately for upstream fallback", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+    const responseBody = JSON.stringify({ error: { message: "service unavailable" } })
+
+    try {
+      const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
+      globalThis.fetch = (async () => {
+        callCount += 1
+        return new Response(responseBody, {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        })
+      }) as typeof fetch
+
+      const response = await authFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+      })
+
+      assert.equal(response.status, 503)
+      assert.equal(await response.text(), responseBody)
+      assert.equal(callCount, 1)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth loader surfaces 529 immediately for upstream fallback", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let callCount = 0
+    const responseBody = JSON.stringify({ error: { message: "overloaded" } })
+
+    try {
+      const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
+      globalThis.fetch = (async () => {
+        callCount += 1
+        return new Response(responseBody, {
+          status: 529,
+          headers: { "content-type": "application/json" },
+        })
+      }) as typeof fetch
+
+      const response = await authFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+      })
+
+      assert.equal(response.status, 529)
+      assert.equal(await response.text(), responseBody)
+      assert.equal(callCount, 1)
     } finally {
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
