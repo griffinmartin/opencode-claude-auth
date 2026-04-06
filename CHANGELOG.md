@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+* allow configuring request and stream idle timeouts via `ANTHROPIC_REQUEST_TIMEOUT_MS` and `ANTHROPIC_STREAM_IDLE_TIMEOUT_MS`
+
+### Bug Fixes
+* surface generic API rate limits (429) and server overloads (503, 529) immediately to enable upstream fallback
+* bound hung outbound authentication fetches with a 30s default timeout
+* abort stalled successful SSE streams after a 15s idle period to prevent infinite "thinking" loops
+
 ## [1.4.7](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.6...v1.4.7) (2026-04-05)
 
 

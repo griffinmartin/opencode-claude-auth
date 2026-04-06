@@ -107,6 +107,7 @@ If only one account is found, the switcher is hidden and the plugin uses it dire
 | Keychain access denied                              | Grant access when macOS prompts you                                                                                |
 | Keychain read timed out                             | Restart Keychain Access (can happen on macOS Tahoe)                                                                |
 | "Credentials are unavailable or expired"            | Run `claude` to refresh your Claude Code credentials                                                               |
+| API rate or usage limits (429/503/529)              | These errors are surfaced immediately so OpenCode can fall back to other providers. Check your Anthropic usage.    |
 | "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below                            |
 
 ### Diagnostic logging
@@ -179,13 +180,15 @@ This reads your stored credentials, calls Anthropic's OAuth token endpoint, and 
 
 All configurable parameters can be overridden via environment variables. If Anthropic changes something before we publish an update, set an env var and keep working:
 
-| Variable                      | Description                                                                | Default                                                                                                 |
-| ----------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_CLI_VERSION`       | Claude CLI version for user-agent and billing headers                      | `2.1.80`                                                                                                |
-| `ANTHROPIC_USER_AGENT`        | Full User-Agent string (overrides CLI version)                             | `claude-cli/{version} (external, cli)`                                                                  |
-| `ANTHROPIC_BETA_FLAGS`        | Comma-separated beta feature flags                                         | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
-| `ANTHROPIC_ENABLE_1M_CONTEXT` | Enable 1M token context window for 4.6+ models (requires Max subscription) | `false`                                                                                                 |
-| `CLAUDE_AUTH_DEBUG`           | Enable diagnostic logging (`1` for default path, or a custom file path)    | disabled                                                                                                |
+| Variable                          | Description                                                                | Default                                                                                                 |
+| --------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_CLI_VERSION`           | Claude CLI version for user-agent and billing headers                      | `2.1.80`                                                                                                |
+| `ANTHROPIC_USER_AGENT`            | Full User-Agent string (overrides CLI version)                             | `claude-cli/{version} (external, cli)`                                                                  |
+| `ANTHROPIC_BETA_FLAGS`            | Comma-separated beta feature flags                                         | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
+| `ANTHROPIC_ENABLE_1M_CONTEXT`     | Enable 1M token context window for 4.6+ models (requires Max subscription) | `false`                                                                                                 |
+| `ANTHROPIC_REQUEST_TIMEOUT_MS`    | Timeout for outbound authentication and metadata fetches                   | `30000` (30s)                                                                                           |
+| `ANTHROPIC_STREAM_IDLE_TIMEOUT_MS` | Timeout for stalled response streams (SSE)                                 | `15000` (15s)                                                                                           |
+| `CLAUDE_AUTH_DEBUG`               | Enable diagnostic logging (`1` for default path, or a custom file path)    | disabled                                                                                                |
 
 Example:
 
@@ -206,7 +209,12 @@ export ANTHROPIC_ENABLE_1M_CONTEXT=true  # requires Claude Max
 - Provides an account switcher via `opencode auth login` when multiple accounts are found; persists selection to `~/.local/share/opencode/claude-account-source.txt`
 - Syncs credentials to `auth.json` on startup and every 5 minutes as a fallback (sync never triggers refresh; refresh is lazy, only on API requests)
 - On Windows, writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json`
-- Retries API requests on 429 (rate limit) and 529 (overloaded) with exponential backoff, respecting `retry-after` headers
+- Surfaces API rate limits (429) and server overloads (503, 529) immediately to OpenCode to allow for quick fallback to other configured providers
+- Bounded internal retries are limited to:
+  - One `401 Unauthorized` attempt after an in-place token refresh
+  - Long-context beta exclusion for canonical `context_too_long` errors (up to 3 attempts)
+- Aborts hung outbound requests within `ANTHROPIC_REQUEST_TIMEOUT_MS` (default 30s)
+- Terminates stalled successful response streams within `ANTHROPIC_STREAM_IDLE_TIMEOUT_MS` (default 15s)
 - When a token is within 60 seconds of expiry, refreshes directly via `POST https://claude.ai/v1/oauth/token` (no LLM tokens consumed). Falls back to `claude` CLI if the direct refresh fails. New tokens are written back to Keychain (macOS) or credentials file (Linux/Windows) to keep stored credentials in sync with rotated refresh tokens
 - If credentials aren't OAuth-based, the auth loader returns `{}` and falls through to API key auth
 - If credentials are unavailable or unreadable, the plugin disables itself and OpenCode continues without Claude auth
