@@ -216,6 +216,16 @@ export function stripToolPrefix(text: string): string {
   return text.replace(/"name"\s*:\s*"mcp_([^"]+)"/g, '"name": "$1"')
 }
 
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 15_000
+
+export function getStreamIdleTimeoutMs(): number {
+  const raw = process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+  if (raw === undefined) return DEFAULT_STREAM_IDLE_TIMEOUT_MS
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_STREAM_IDLE_TIMEOUT_MS
+  return parsed
+}
+
 export function transformResponseStream(response: Response): Response {
   if (!response.body) {
     return response
@@ -252,6 +262,8 @@ export function transformResponseStream(response: Response): Response {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   let buffer = ""
+  const idleMs = getStreamIdleTimeoutMs()
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
 
   const stream = new ReadableStream({
     async pull(controller) {
@@ -260,11 +272,39 @@ export function transformResponseStream(response: Response): Response {
         if (boundary !== -1) {
           const completeEvent = buffer.slice(0, boundary + 2)
           buffer = buffer.slice(boundary + 2)
+          // Reset idle timer after emitting a complete SSE event
+          if (idleTimer !== undefined) clearTimeout(idleTimer)
+          idleTimer = undefined
           controller.enqueue(encoder.encode(stripToolPrefix(completeEvent)))
           return
         }
 
-        const { done, value } = await reader.read()
+        // Race reader.read() against idle timeout
+        const idlePromise = new Promise<{ idle: true }>((resolve) => {
+          idleTimer = setTimeout(() => resolve({ idle: true }), idleMs)
+        })
+
+        const result = await Promise.race([
+          reader.read().then((r) => ({ idle: false as const, ...r })),
+          idlePromise,
+        ])
+
+        if ("idle" in result && result.idle) {
+          // Idle timeout fired — cancel upstream and error the stream
+          reader.cancel().catch(() => {})
+          controller.error(
+            new Error(
+              `SSE stream idle timeout: no data received for ${idleMs}ms`,
+            ),
+          )
+          return
+        }
+
+        // Clear the idle timer after a successful raw read
+        if (idleTimer !== undefined) clearTimeout(idleTimer)
+        idleTimer = undefined
+
+        const { done, value } = result as ReadableStreamReadResult<Uint8Array>
 
         if (done) {
           if (buffer) {
@@ -277,6 +317,10 @@ export function transformResponseStream(response: Response): Response {
 
         buffer += decoder.decode(value, { stream: true })
       }
+    },
+    cancel() {
+      if (idleTimer !== undefined) clearTimeout(idleTimer)
+      reader.cancel().catch(() => {})
     },
   })
 

@@ -5,6 +5,8 @@ import {
   stripToolPrefix,
   transformBody,
   transformResponseStream,
+  getStreamIdleTimeoutMs,
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
 } from "./transforms.ts"
 
 describe("transforms", () => {
@@ -694,6 +696,104 @@ describe("transforms", () => {
     // Orphaned tool_use message should be removed, only user message remains
     assert.equal(parsed.messages.length, 1)
     assert.equal(parsed.messages[0].role, "user")
+  })
+
+  it("transformResponseStream errors stalled SSE stream after idle timeout", async () => {
+    const encoder = new TextEncoder()
+
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"partial":"chunk"}'))
+      },
+    })
+
+    const saved = process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+    process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = "50"
+    try {
+      const response = new Response(source, { status: 200 })
+      const transformed = transformResponseStream(response)
+      const reader = transformed.body!.getReader()
+
+      await assert.rejects(reader.read(), (err: Error) => {
+        assert.ok(
+          err.message.includes("SSE stream idle timeout"),
+          `Expected idle timeout error, got: ${err.message}`,
+        )
+        return true
+      })
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+      else process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
+    }
+  })
+
+  it("transformResponseStream continues streaming when boundaries arrive before timeout", async () => {
+    const encoder = new TextEncoder()
+    let enqueueChunk: ((chunk: string) => void) | undefined
+    let closeStream: (() => void) | undefined
+
+    const source = new ReadableStream({
+      start(controller) {
+        enqueueChunk = (chunk: string) => controller.enqueue(encoder.encode(chunk))
+        closeStream = () => controller.close()
+      },
+    })
+
+    const saved = process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+    process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = "200"
+    try {
+      const response = new Response(source, { status: 200 })
+      const transformed = transformResponseStream(response)
+      const reader = transformed.body!.getReader()
+      const decoder = new TextDecoder()
+
+      enqueueChunk!('data: {"event":"one"}\n\n')
+      const first = await reader.read()
+      assert.equal(first.done, false)
+      assert.ok(decoder.decode(first.value).includes('"event":"one"'))
+
+      await new Promise((r) => setTimeout(r, 50))
+      enqueueChunk!('data: {"event":"two"}\n\n')
+      const second = await reader.read()
+      assert.equal(second.done, false)
+      assert.ok(decoder.decode(second.value).includes('"event":"two"'))
+
+      closeStream!()
+      const final = await reader.read()
+      assert.equal(final.done, true)
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+      else process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
+    }
+  })
+
+  it("getStreamIdleTimeoutMs returns default for missing env", () => {
+    const saved = process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+    delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+    try {
+      assert.equal(getStreamIdleTimeoutMs(), DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
+    }
+  })
+
+  it("getStreamIdleTimeoutMs rejects non-positive and non-integer values", () => {
+    const saved = process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+    try {
+      for (const bad of ["0", "-1", "3.5", "abc", ""]) {
+        process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = bad
+        assert.equal(
+          getStreamIdleTimeoutMs(),
+          DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+          `Expected default for "${bad}"`,
+        )
+      }
+      process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = "5000"
+      assert.equal(getStreamIdleTimeoutMs(), 5000)
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+      else process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
+    }
   })
 
   it("transformResponseStream flushes remaining buffered data on stream end", async () => {
