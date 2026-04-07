@@ -80,6 +80,8 @@ export function transformBody(
   try {
     const parsed = JSON.parse(body) as {
       model?: string
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      max_tokens?: number
       system?: SystemEntry[]
       thinking?: Record<string, unknown>
       // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -171,6 +173,18 @@ export function transformBody(
           delete parsed.thinking
         }
       }
+    }
+
+    // Ensure max_tokens > thinking.budget_tokens (API requirement).
+    // OpenCode may set budget_tokens >= max_tokens for custom models that
+    // aren't in its built-in registry, causing a 400 error from the API.
+    if (
+      parsed.thinking &&
+      typeof parsed.thinking.budget_tokens === "number" &&
+      typeof parsed.max_tokens === "number" &&
+      parsed.max_tokens <= parsed.thinking.budget_tokens
+    ) {
+      parsed.thinking.budget_tokens = Math.floor(parsed.max_tokens * 0.8)
     }
 
     if (Array.isArray(parsed.tools)) {

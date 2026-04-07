@@ -329,6 +329,73 @@ describe("transforms", () => {
     )
   })
 
+  it("transformBody caps budget_tokens when equal to max_tokens", () => {
+    const input = JSON.stringify({
+      model: "claude-opus-4-6",
+      max_tokens: 128000,
+      thinking: { type: "enabled", budget_tokens: 128000 },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      max_tokens: number
+      thinking: { type: string; budget_tokens: number }
+    }
+
+    assert.equal(parsed.max_tokens, 128000, "max_tokens should be unchanged")
+    assert.equal(
+      parsed.thinking.budget_tokens,
+      102400,
+      "budget_tokens should be capped to 80% of max_tokens",
+    )
+    assert.ok(
+      parsed.max_tokens > parsed.thinking.budget_tokens,
+      "max_tokens must be greater than budget_tokens",
+    )
+  })
+
+  it("transformBody caps budget_tokens when greater than max_tokens", () => {
+    const input = JSON.stringify({
+      model: "claude-opus-4-6",
+      max_tokens: 32000,
+      thinking: { type: "enabled", budget_tokens: 50000 },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      max_tokens: number
+      thinking: { type: string; budget_tokens: number }
+    }
+
+    assert.equal(parsed.max_tokens, 32000)
+    assert.equal(parsed.thinking.budget_tokens, 25600)
+    assert.ok(parsed.max_tokens > parsed.thinking.budget_tokens)
+  })
+
+  it("transformBody does not modify budget_tokens when already less than max_tokens", () => {
+    const input = JSON.stringify({
+      model: "claude-opus-4-6",
+      max_tokens: 128000,
+      thinking: { type: "enabled", budget_tokens: 100000 },
+      messages: [{ role: "user", content: "test" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      max_tokens: number
+      thinking: { type: string; budget_tokens: number }
+    }
+
+    assert.equal(parsed.max_tokens, 128000)
+    assert.equal(
+      parsed.thinking.budget_tokens,
+      100000,
+      "budget_tokens should be unchanged when already valid",
+    )
+  })
+
   it("transformBody preserves effort for non-haiku models", () => {
     const input = JSON.stringify({
       model: "claude-opus-4-6",
