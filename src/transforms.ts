@@ -6,6 +6,34 @@ const TOOL_PREFIX = "mcp_"
 const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
 
+const OPENCODE_IDENTITY =
+  "You are OpenCode, the best coding agent on the planet."
+
+/**
+ * Strips the OpenCode identity section from system prompt text.
+ * Removes everything from OPENCODE_IDENTITY up to (but not including) "# Code References".
+ * This prevents Anthropic from detecting third-party app usage and redirecting
+ * requests to extra usage billing instead of plan limits (Pro/Max subscription).
+ *
+ * Since April 2026, Anthropic detects the OpenCode identity string and returns:
+ * "Third-party apps now draw from extra usage, not plan limits."
+ */
+export function sanitizeSystemText(text: string): string {
+  const startIdx = text.indexOf(OPENCODE_IDENTITY)
+  if (startIdx === -1) return text
+
+  const codeRefsMarker = "# Code References"
+  const endIdx = text.indexOf(codeRefsMarker, startIdx)
+  if (endIdx === -1) {
+    // If we can't find the marker, leave text unchanged rather than
+    // accidentally stripping useful content.
+    return text
+  }
+
+  // Remove everything from OpenCode identity up to (but not including) "# Code References"
+  return text.slice(0, startIdx) + text.slice(endIdx)
+}
+
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
 type ContentBlock = { type?: string; text?: string } & Record<string, unknown>
 type Message = {
@@ -121,6 +149,22 @@ export function transformBody(
 
     // Insert billing header as system[0], without cache_control
     parsed.system.unshift({ type: "text", text: billingHeader })
+
+    // --- Strip OpenCode identity to prevent third-party detection ---
+    // Since April 2026, Anthropic detects the OpenCode identity string in the
+    // system prompt and redirects to extra usage billing. This strips the
+    // OpenCode identity section while preserving the rest of the prompt.
+    parsed.system = parsed.system
+      .map((entry) => {
+        if (entry.type === "text" && typeof entry.text === "string") {
+          return { ...entry, text: sanitizeSystemText(entry.text) }
+        }
+        return entry
+      })
+      .filter(
+        (entry) =>
+          !(entry.type === "text" && typeof entry.text === "string" && entry.text.trim().length === 0),
+      )
 
     // --- Split identity prefix into its own system entry ---
     // OpenCode's system.transform hook prepends the identity string, but

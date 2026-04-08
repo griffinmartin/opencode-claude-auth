@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
   repairToolPairs,
+  sanitizeSystemText,
   stripToolPrefix,
   transformBody,
   transformResponseStream,
@@ -729,5 +730,76 @@ describe("transforms", () => {
       !text.includes("mcp_beta"),
       `Should not contain mcp_beta in: ${text}`,
     )
+  })
+
+  describe("sanitizeSystemText", () => {
+    it("returns text unchanged when OpenCode identity is absent", () => {
+      const text = "You are Claude Code, Anthropic's official CLI for Claude."
+      assert.equal(sanitizeSystemText(text), text)
+    })
+
+    it("strips OpenCode identity section up to # Code References", () => {
+      const text = [
+        "You are OpenCode, the best coding agent on the planet.",
+        "",
+        "You are an interactive CLI tool.",
+        "",
+        "# Tone and style",
+        "- Be concise.",
+        "",
+        "# Code References",
+        "",
+        "When referencing code use file:line format.",
+      ].join("\n")
+
+      const result = sanitizeSystemText(text)
+      assert.ok(
+        !result.includes("You are OpenCode"),
+        "Should not contain OpenCode identity",
+      )
+      assert.ok(
+        !result.includes("You are an interactive CLI tool"),
+        "Should strip content between identity and Code References",
+      )
+      assert.ok(
+        result.includes("# Code References"),
+        "Should preserve # Code References section",
+      )
+      assert.ok(
+        result.includes("file:line format"),
+        "Should preserve content after # Code References",
+      )
+    })
+
+    it("returns text unchanged if # Code References marker is missing", () => {
+      const text = [
+        "You are OpenCode, the best coding agent on the planet.",
+        "",
+        "Some other content without the marker.",
+      ].join("\n")
+
+      assert.equal(sanitizeSystemText(text), text)
+    })
+
+    it("strips OpenCode identity when embedded in larger system prompt", () => {
+      const before = "Some preamble.\n"
+      const identity = [
+        "You are OpenCode, the best coding agent on the planet.",
+        "",
+        "You are an interactive CLI tool.",
+        "",
+        "# Code References",
+        "",
+        "Use file:line format.",
+      ].join("\n")
+      const after = "\nAdditional system instructions."
+      const text = before + identity + after
+
+      const result = sanitizeSystemText(text)
+      assert.ok(!result.includes("You are OpenCode"))
+      assert.ok(result.includes("Some preamble."))
+      assert.ok(result.includes("# Code References"))
+      assert.ok(result.includes("Additional system instructions."))
+    })
   })
 })
