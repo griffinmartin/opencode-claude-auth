@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.9](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.8...v1.4.9) (2026-04-08)
+
+
+### Bug Fixes
+
+* re-trigger npm publish after failed v1.4.8 release ([#150](https://github.com/griffinmartin/opencode-claude-auth/issues/150)) ([5412711](https://github.com/griffinmartin/opencode-claude-auth/commit/5412711bca7e5596c3784573d249d4db53ef9427))
+
 ## [1.4.8](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.7...v1.4.8) (2026-04-08)
 
 
