@@ -9,6 +9,19 @@
 * surface generic API rate limits (429) and server overloads (503, 529) immediately to enable upstream fallback
 * bound hung outbound authentication fetches with a 30s default timeout
 * abort stalled successful SSE streams after a 15s idle period to prevent infinite "thinking" loops
+## [1.4.9](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.8...v1.4.9) (2026-04-08)
+
+
+### Bug Fixes
+
+* re-trigger npm publish after failed v1.4.8 release ([#150](https://github.com/griffinmartin/opencode-claude-auth/issues/150)) ([5412711](https://github.com/griffinmartin/opencode-claude-auth/commit/5412711bca7e5596c3784573d249d4db53ef9427))
+
+## [1.4.8](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.7...v1.4.8) (2026-04-08)
+
+
+### Bug Fixes
+
+* relocate system prompt to user message to avoid OAuth 400 rejection ([#148](https://github.com/griffinmartin/opencode-claude-auth/issues/148)) ([bb6320c](https://github.com/griffinmartin/opencode-claude-auth/commit/bb6320cbe9c985a89258bf2ca1e027f2be7cd923))
 
 ## [1.4.7](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.6...v1.4.7) (2026-04-05)
 
