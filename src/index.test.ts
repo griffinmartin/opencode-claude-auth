@@ -209,9 +209,7 @@ export function __setCredentials(overrides) {
   }
 }
 
-async function loadAuthLoader(
-  initialExpiresAt: number,
-): Promise<{
+async function loadAuthLoader(initialExpiresAt: number): Promise<{
   helpersModule: typeof import("./index.ts")
   keychainModule: {
     __getReadCount: () => number
@@ -244,7 +242,9 @@ async function loadAuthLoader(
 
 async function loadAuthLoaderFetch(
   initialExpiresAt: number,
-): Promise<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
+): Promise<
+  (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+> {
   const { authFetch } = await loadAuthLoader(initialExpiresAt)
   return authFetch
 }
@@ -779,16 +779,15 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
     try {
       const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
-      globalThis.fetch = ((
-        _input: RequestInfo | URL,
-        init?: RequestInit,
-      ) => {
+      globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
         callCount += 1
 
         return new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal
           if (!signal) {
-            reject(new Error("Expected auth loader to forward a timeout signal"))
+            reject(
+              new Error("Expected auth loader to forward a timeout signal"),
+            )
             return
           }
 
@@ -853,16 +852,15 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
     try {
       const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
-      globalThis.fetch = ((
-        _input: RequestInfo | URL,
-        init?: RequestInit,
-      ) => {
+      globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
         callCount += 1
 
         return new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal
           if (!signal) {
-            reject(new Error("Expected auth loader to forward a combined signal"))
+            reject(
+              new Error("Expected auth loader to forward a combined signal"),
+            )
             return
           }
 
@@ -877,11 +875,14 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const pendingResponse = authFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
-        signal: callerController.signal,
-      })
+      const pendingResponse = authFetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+          signal: callerController.signal,
+        },
+      )
 
       setTimeout(() => callerController.abort(callerAbort), 0)
 
@@ -927,7 +928,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       const { authFetch, keychainModule } = await loadAuthLoader(
         Date.now() + 10 * 60_000,
       )
-      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      globalThis.fetch = (async (
+        _input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
         callCount += 1
         seenAuthorizationHeaders.push(
           new Headers(init?.headers).get("authorization") ?? "",
@@ -943,10 +947,13 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const response = await authFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
-      })
+      const response = await authFetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
 
       assert.equal(response.status, 401)
       assert.equal(await response.text(), responseBody)
@@ -995,10 +1002,13 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const response = await authFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
-      })
+      const response = await authFetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
 
       assert.equal(response.status, 429)
       assert.equal(await response.text(), responseBody)
@@ -1047,10 +1057,13 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const response = await authFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        body: JSON.stringify({ model: modelId, messages: [] }),
-      })
+      const response = await authFetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: modelId, messages: [] }),
+        },
+      )
 
       assert.equal(response.status, 429)
       assert.equal(await response.text(), responseBody)
@@ -1084,7 +1097,9 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     })) as unknown as typeof setInterval
 
     let callCount = 0
-    const responseBody = JSON.stringify({ error: { message: "service unavailable" } })
+    const responseBody = JSON.stringify({
+      error: { message: "service unavailable" },
+    })
 
     try {
       const authFetch = await loadAuthLoaderFetch(Date.now() + 10 * 60_000)
@@ -1096,10 +1111,13 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const response = await authFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
-      })
+      const response = await authFetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
 
       assert.equal(response.status, 503)
       assert.equal(await response.text(), responseBody)
@@ -1141,10 +1159,13 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const response = await authFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
-      })
+      const response = await authFetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
 
       assert.equal(response.status, 529)
       assert.equal(await response.text(), responseBody)

@@ -100,21 +100,16 @@ function buildRequestTimeoutSignal(
   timeoutMs: number,
 ): { signal: AbortSignal; cleanup: () => void } {
   const timeoutController = new AbortController()
-  const timeoutId = setTimeout(
-    () => {
-      timeoutController.abort(
-        createAbortError(
-          `Anthropic request timed out after ${timeoutMs}ms`,
-          "TimeoutError",
-        ),
-      )
-    },
-    timeoutMs,
-  ) as ReturnType<typeof setTimeout> & {
+  const timeoutId = setTimeout(() => {
+    timeoutController.abort(
+      createAbortError(
+        `Anthropic request timed out after ${timeoutMs}ms`,
+        "TimeoutError",
+      ),
+    )
+  }, timeoutMs) as ReturnType<typeof setTimeout> & {
     unref?: () => void
   }
-  timeoutId.unref?.()
-
   const clearTimeoutSignal = () => clearTimeout(timeoutId)
 
   if (!signal) {
