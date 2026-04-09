@@ -722,7 +722,8 @@ describe("transforms", () => {
         return true
       })
     } finally {
-      if (saved === undefined) delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+      if (saved === undefined)
+        delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
       else process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
     }
   })
@@ -734,7 +735,8 @@ describe("transforms", () => {
 
     const source = new ReadableStream({
       start(controller) {
-        enqueueChunk = (chunk: string) => controller.enqueue(encoder.encode(chunk))
+        enqueueChunk = (chunk: string) =>
+          controller.enqueue(encoder.encode(chunk))
         closeStream = () => controller.close()
       },
     })
@@ -762,7 +764,8 @@ describe("transforms", () => {
       const final = await reader.read()
       assert.equal(final.done, true)
     } finally {
-      if (saved === undefined) delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+      if (saved === undefined)
+        delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
       else process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
     }
   })
@@ -773,7 +776,8 @@ describe("transforms", () => {
     try {
       assert.equal(getStreamIdleTimeoutMs(), DEFAULT_STREAM_IDLE_TIMEOUT_MS)
     } finally {
-      if (saved !== undefined) process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
+      if (saved !== undefined)
+        process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
     }
   })
 
@@ -791,7 +795,8 @@ describe("transforms", () => {
       process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = "5000"
       assert.equal(getStreamIdleTimeoutMs(), 5000)
     } finally {
-      if (saved === undefined) delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
+      if (saved === undefined)
+        delete process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
       else process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = saved
     }
   })

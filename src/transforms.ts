@@ -222,7 +222,8 @@ export function getStreamIdleTimeoutMs(): number {
   const raw = process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS
   if (raw === undefined) return DEFAULT_STREAM_IDLE_TIMEOUT_MS
   const parsed = Number(raw)
-  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_STREAM_IDLE_TIMEOUT_MS
+  if (!Number.isInteger(parsed) || parsed <= 0)
+    return DEFAULT_STREAM_IDLE_TIMEOUT_MS
   return parsed
 }
 

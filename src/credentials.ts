@@ -328,7 +328,9 @@ export function getCredentialsForSync(): ClaudeCredentials | null {
   return null
 }
 
-export function getCachedCredentials(forceRefresh = false): ClaudeCredentials | null {
+export function getCachedCredentials(
+  forceRefresh = false,
+): ClaudeCredentials | null {
   const account = getActiveAccount()
   if (!account) return null
 
