@@ -1,7 +1,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -120,6 +126,7 @@ describe("credential caching", () => {
           label: "Account 1",
           source: "keychain",
           credentials: {
+            authType: "oauth",
             accessToken: "token",
             refreshToken: "refresh",
             expiresAt: now + 10 * 60_000,
@@ -153,6 +160,7 @@ describe("credential caching", () => {
           label: "Account 1",
           source: "keychain",
           credentials: {
+            authType: "oauth",
             accessToken: "token",
             refreshToken: "refresh",
             expiresAt: now + 10 * 60_000,
@@ -188,6 +196,7 @@ describe("credential caching", () => {
         label: "Account 1",
         source: "keychain",
         credentials: {
+          authType: "oauth",
           accessToken: "old-token",
           refreshToken: "old-refresh",
           expiresAt: now + 30_000, // expires in 30s, below 60s threshold
@@ -231,6 +240,7 @@ describe("credential caching", () => {
           label: "Account 1",
           source: "keychain",
           credentials: {
+            authType: "oauth",
             accessToken: "token",
             refreshToken: "refresh",
             expiresAt: now + 10 * 60_000,
@@ -312,6 +322,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
       const mod = await import(pathToFileURL(tempCredentials).href)
       mod.syncAuthJson({
+        authType: "oauth",
         accessToken: "tok",
         refreshToken: "ref",
         expiresAt: Date.now() + 600_000,
@@ -396,6 +407,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
       const mod = await import(pathToFileURL(tempCredentials).href)
       mod.syncAuthJson({
+        authType: "oauth",
         accessToken: "tok",
         refreshToken: "ref",
         expiresAt: Date.now() + 600_000,
@@ -408,6 +420,79 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         0o600,
         `Expected tightened mode 0o600, got 0o${mode.toString(8)}`,
       )
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("writes API key credentials using auth.json api shape", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-api-sync-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const tempDir = await mkdtemp(
+        join(tmpdir(), "opencode-claude-auth-sync-api-"),
+      )
+      const tempCredentials = join(tempDir, "credentials.ts")
+      const tempKeychain = join(tempDir, "keychain.ts")
+      const tempBetas = join(tempDir, "betas.ts")
+      const tempLogger = join(tempDir, "logger.ts")
+      const sourceCredentials = await readFile(
+        new URL("./credentials.ts", import.meta.url),
+        "utf8",
+      )
+      const rewritten = sourceCredentials.replace(
+        /from\s+["']\.\/(\w+)\.js["']/g,
+        'from "./$1.ts"',
+      )
+
+      await writeFile(
+        tempKeychain,
+        `export function readAllClaudeAccounts() { return [] }
+export function refreshAccount() { return null }
+export function writeBackCredentials() { return true }
+export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }`,
+        "utf8",
+      )
+      await writeFile(
+        tempBetas,
+        `export function resetExcludedBetas() {}\n`,
+        "utf8",
+      )
+      await writeFile(
+        tempLogger,
+        `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+        "utf8",
+      )
+      await writeFile(tempCredentials, rewritten, "utf8")
+
+      const mod = await import(pathToFileURL(tempCredentials).href)
+      mod.syncAuthJson({
+        authType: "api",
+        accessToken: "sk-ant-api03-test",
+        refreshToken: "",
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      })
+
+      const authPath = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "auth.json",
+      )
+      const written = JSON.parse(readFileSync(authPath, "utf-8"))
+      assert.deepEqual(written.anthropic, {
+        type: "api",
+        key: "sk-ant-api03-test",
+      })
     } finally {
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome

@@ -118,6 +118,7 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
       }
     }
   }
+  // ClaudeCredentials.authType maps to auth.json's anthropic.type field.
   auth.anthropic =
     creds.authType === "api"
       ? {

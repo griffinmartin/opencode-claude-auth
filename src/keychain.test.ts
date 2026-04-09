@@ -6,106 +6,20 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
   buildAccountLabels,
+  extractServicesFromDump,
+  parseCredentials,
   updateCredentialBlob,
   writeBackCredentials,
 } from "./keychain.ts"
 import { chmodSync, statSync } from "node:fs"
 import { mkdtemp } from "node:fs/promises"
 
-// Mirrors the parseCredentials logic from keychain.ts for unit testing
-function parseCredentials(raw: string): {
-  authType?: "api" | "oauth"
+function readCredentialsFile(credPath: string): {
+  authType: "api" | "oauth"
   accessToken: string
   refreshToken: string
   expiresAt: number
   subscriptionType?: string
-} | null {
-  if (raw.startsWith("sk-ant-")) {
-    return {
-      authType: "api",
-      accessToken: raw,
-      refreshToken: "",
-      expiresAt: Number.MAX_SAFE_INTEGER,
-    }
-  }
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return null
-  }
-
-  const data = (parsed as { claudeAiOauth?: unknown }).claudeAiOauth ?? parsed
-  const creds = data as {
-    accessToken?: unknown
-    refreshToken?: unknown
-    expiresAt?: unknown
-    subscriptionType?: unknown
-    mcpOAuth?: unknown
-  }
-
-  if ((parsed as { mcpOAuth?: unknown }).mcpOAuth && !creds.accessToken) {
-    return null
-  }
-
-  if (
-    typeof creds.accessToken !== "string" ||
-    typeof creds.refreshToken !== "string" ||
-    typeof creds.expiresAt !== "number"
-  ) {
-    return null
-  }
-
-  return {
-    authType: "oauth",
-    accessToken: creds.accessToken,
-    refreshToken: creds.refreshToken,
-    expiresAt: creds.expiresAt,
-    subscriptionType:
-      typeof creds.subscriptionType === "string"
-        ? creds.subscriptionType
-        : undefined,
-  }
-}
-
-// Mirrors listClaudeKeychainServices regex logic for unit testing
-function extractServicesFromDump(output: string): string[] {
-  const PRIMARY = ["Claude Code", "Claude Code-credentials"]
-  const primarySet = new Set(PRIMARY)
-  const services: string[] = []
-  const seen = new Set<string>()
-
-  const patterns = [
-    /"Claude Code"/g,
-    /"Claude Code-credentials(?:-[0-9a-f]+)?"/g,
-  ]
-  for (const pattern of patterns) {
-    let m = pattern.exec(output)
-    while (m !== null) {
-      const svc = m[0].slice(1, -1)
-      if (!seen.has(svc)) {
-        seen.add(svc)
-        services.push(svc)
-      }
-      m = pattern.exec(output)
-    }
-  }
-
-  const ordered: string[] = []
-  for (const primary of PRIMARY) {
-    if (seen.has(primary)) ordered.push(primary)
-  }
-  for (const svc of services) {
-    if (!primarySet.has(svc)) ordered.push(svc)
-  }
-  return ordered
-}
-
-function readCredentialsFile(credPath: string): {
-  accessToken: string
-  refreshToken: string
-  expiresAt: number
 } | null {
   try {
     const raw = readFileSync(credPath, "utf-8")
@@ -350,11 +264,13 @@ attributes:
 const makeAccountCreds = (
   sub?: string,
 ): {
+  authType: "oauth"
   accessToken: string
   refreshToken: string
   expiresAt: number
   subscriptionType?: string
 } => ({
+  authType: "oauth",
   accessToken: "at",
   refreshToken: "rt",
   expiresAt: 9999999999999,
@@ -568,6 +484,7 @@ describe("writeBackCredentials (file source)", () => {
       )
 
       const result = writeBackCredentials("file", {
+        authType: "oauth",
         accessToken: "new-at",
         refreshToken: "new-rt",
         expiresAt: 2000,
@@ -614,6 +531,7 @@ describe("writeBackCredentials (file source)", () => {
       chmodSync(credPath, 0o644)
 
       writeBackCredentials("file", {
+        authType: "oauth",
         accessToken: "new-at",
         refreshToken: "new-rt",
         expiresAt: 2000,
@@ -640,6 +558,7 @@ describe("writeBackCredentials (file source)", () => {
 
     try {
       const result = writeBackCredentials("file", {
+        authType: "oauth",
         accessToken: "at",
         refreshToken: "rt",
         expiresAt: 1000,
@@ -668,11 +587,44 @@ describe("writeBackCredentials (file source)", () => {
       writeFileSync(join(claudeDir, ".credentials.json"), "not json {")
 
       const result = writeBackCredentials("file", {
+        authType: "oauth",
         accessToken: "at",
         refreshToken: "rt",
         expiresAt: 1000,
       })
       assert.equal(result, false)
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("returns false without rewriting API key entries", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-wb-api-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const credPath = join(claudeDir, ".credentials.json")
+      writeFileSync(credPath, "sk-ant-api03-existing", "utf-8")
+
+      const result = writeBackCredentials("file", {
+        authType: "api",
+        accessToken: "sk-ant-api03-existing",
+        refreshToken: "",
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      })
+
+      assert.equal(result, false)
+      assert.equal(readFileSync(credPath, "utf-8"), "sk-ant-api03-existing")
     } finally {
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome

@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { log } from "./logger.ts"
 
 export interface ClaudeCredentials {
-  authType?: "api" | "oauth"
+  authType: "api" | "oauth"
   accessToken: string
   refreshToken: string
   expiresAt: number
@@ -25,12 +25,16 @@ const SERVICE_PATTERNS = [
   /"Claude Code-credentials(?:-[0-9a-f]+)?"/g,
 ]
 
-function parseCredentials(raw: string): ClaudeCredentials | null {
+export function parseCredentials(raw: string): ClaudeCredentials | null {
+  // Claude Code currently stores managed API keys as raw sk-ant-* entries rather
+  // than JSON blobs, so treat that prefix as the API-key discriminator.
   if (raw.startsWith("sk-ant-")) {
     return {
       authType: "api",
       accessToken: raw,
       refreshToken: "",
+      // API keys do not expire on the OAuth schedule, so keep them eligible for
+      // sync/usage without forcing refresh logic down the token path.
       expiresAt: Number.MAX_SAFE_INTEGER,
     }
   }
@@ -151,6 +155,32 @@ function readKeychainService(serviceName: string): string | null {
   }
 }
 
+export function extractServicesFromDump(dump: string): string[] {
+  const services: string[] = []
+  const seen = new Set<string>()
+
+  for (const pattern of SERVICE_PATTERNS) {
+    let m = pattern.exec(dump)
+    while (m !== null) {
+      const svc = m[0].slice(1, -1)
+      if (!seen.has(svc)) {
+        seen.add(svc)
+        services.push(svc)
+      }
+      m = pattern.exec(dump)
+    }
+  }
+
+  const ordered: string[] = []
+  for (const primaryService of PRIMARY_SERVICES) {
+    if (seen.has(primaryService)) ordered.push(primaryService)
+  }
+  for (const svc of services) {
+    if (!PRIMARY_SERVICE_SET.has(svc)) ordered.push(svc)
+  }
+  return ordered
+}
+
 function listClaudeKeychainServices(): string[] {
   try {
     const dump = execSync("security dump-keychain", {
@@ -158,28 +188,7 @@ function listClaudeKeychainServices(): string[] {
       encoding: "utf-8",
     })
 
-    const services: string[] = []
-    const seen = new Set<string>()
-
-    for (const pattern of SERVICE_PATTERNS) {
-      let m = pattern.exec(dump)
-      while (m !== null) {
-        const svc = m[0].slice(1, -1)
-        if (!seen.has(svc)) {
-          seen.add(svc)
-          services.push(svc)
-        }
-        m = pattern.exec(dump)
-      }
-    }
-
-    const ordered: string[] = []
-    for (const primaryService of PRIMARY_SERVICES) {
-      if (seen.has(primaryService)) ordered.push(primaryService)
-    }
-    for (const svc of services) {
-      if (!PRIMARY_SERVICE_SET.has(svc)) ordered.push(svc)
-    }
+    const ordered = extractServicesFromDump(dump)
     log("keychain_list", { servicesFound: ordered })
     return ordered
   } catch {
@@ -301,6 +310,8 @@ export function writeBackCredentials(
   source: string,
   creds: ClaudeCredentials,
 ): boolean {
+  if (creds.authType === "api") return false
+
   const newCreds = {
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
