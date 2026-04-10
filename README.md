@@ -108,7 +108,7 @@ If only one account is found, the switcher is hidden and the plugin uses it dire
 | Keychain read timed out                             | Restart Keychain Access (can happen on macOS Tahoe)                                                                |
 | "Credentials are unavailable or expired"            | Run `claude` to refresh your Claude Code credentials                                                               |
 | "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below                            |
-| Plugin not updating to latest version               | Delete the cached package: `rm -rf ~/.cache/opencode/packages/opencode-claude-auth@latest/` then restart OpenCode |
+| Plugin not updating to latest version               | Delete the cached package: `rm -rf ~/.cache/opencode/packages/opencode-claude-auth@latest/` then restart OpenCode  |
 
 ### Diagnostic logging
 
