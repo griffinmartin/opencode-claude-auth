@@ -37,11 +37,11 @@ Install the opencode-claude-auth plugin and configure it by following: https://r
 
    ```json
    {
-     "plugin": ["opencode-claude-auth"]
+     "plugin": ["opencode-claude-auth@latest"]
    }
    ```
 
-   > No manual `npm install` is needed — OpenCode [automatically installs npm plugins using Bun at startup](https://opencode.ai/docs/plugins/#how-plugins-are-installed).
+   > The `@latest` tag ensures OpenCode always pulls the newest version on startup. No manual `npm install` is needed — OpenCode [automatically installs npm plugins using Bun at startup](https://opencode.ai/docs/plugins/#how-plugins-are-installed).
 
 2. **Use it** — just run OpenCode. The plugin handles auth automatically using your Claude Code credentials.
 
@@ -108,6 +108,29 @@ If only one account is found, the switcher is hidden and the plugin uses it dire
 | Keychain read timed out                             | Restart Keychain Access (can happen on macOS Tahoe)                                                                |
 | "Credentials are unavailable or expired"            | Run `claude` to refresh your Claude Code credentials                                                               |
 | "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below                            |
+| "You're out of extra usage" / "Third-party apps now draw from extra usage" | Update to v1.4.9+, clear the plugin cache, and restart. See [Updating the plugin](#updating-the-plugin) below |
+
+### Updating the plugin
+
+If you're seeing **"You're out of extra usage"** or **"Third-party apps now draw from extra usage"** errors (even with a valid Pro/Max subscription), you likely have a stale cached version of the plugin. Follow these steps:
+
+1. **Ensure `@latest` is in your config** (`~/.config/opencode/opencode.json`):
+
+   ```json
+   {
+     "plugin": ["opencode-claude-auth@latest"]
+   }
+   ```
+
+2. **Clear the cached plugin** so OpenCode fetches the new version:
+
+   ```bash
+   rm -rf ~/.cache/opencode/packages/opencode-claude-auth*
+   ```
+
+3. **Restart OpenCode** (fully quit, not just a new session).
+
+4. **Re-authenticate** if needed by running `claude` in your terminal.
 
 ### Diagnostic logging
 
@@ -143,7 +166,7 @@ Add `enable1mContext` to any agent in your `opencode.json` (project-level or `~/
 
 ```json
 {
-  "plugin": ["opencode-claude-auth"],
+  "plugin": ["opencode-claude-auth@latest"],
   "agent": {
     "build": {
       "enable1mContext": true

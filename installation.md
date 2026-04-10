@@ -46,11 +46,11 @@ This will prompt you to log in and store credentials in Keychain (macOS) or `~/.
 
 Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`.
 
-Add `opencode-claude-auth` to the `plugin` array:
+Add `opencode-claude-auth@latest` to the `plugin` array (the `@latest` tag ensures OpenCode always pulls the newest version):
 
 ```json
 {
-  "plugin": ["opencode-claude-auth"]
+  "plugin": ["opencode-claude-auth@latest"]
 }
 ```
 
@@ -60,10 +60,10 @@ Or run this command to do it automatically:
 node -e "
 const fs = require('fs'), p = require('path').join(require('os').homedir(), '.config/opencode/opencode.json');
 const c = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p,'utf8')) : {};
-c.plugin = [...new Set([...(Array.isArray(c.plugin) ? c.plugin : []), 'opencode-claude-auth'])];
+c.plugin = [...new Set([...(Array.isArray(c.plugin) ? c.plugin : []), 'opencode-claude-auth@latest'])];
 fs.mkdirSync(require('path').dirname(p), {recursive:true});
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
-console.log('Added opencode-claude-auth to', p);
+console.log('Added opencode-claude-auth@latest to', p);
 "
 ```
 
@@ -77,7 +77,7 @@ Verify the plugin was added:
 cat ~/.config/opencode/opencode.json
 ```
 
-You should see `opencode-claude-auth` in the `plugin` array.
+You should see `opencode-claude-auth@latest` in the `plugin` array.
 
 ## Done
 
