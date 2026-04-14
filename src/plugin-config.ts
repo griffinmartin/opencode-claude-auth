@@ -47,9 +47,11 @@ function ensureAnthropicModelCompatibility(config: unknown): void {
 
   const cfg = config as Record<string, unknown>
   const providersRaw = cfg.provider
-  if (!providersRaw || typeof providersRaw !== "object") return
+  if (!providersRaw || typeof providersRaw !== "object") {
+    cfg.provider = {}
+  }
 
-  const providers = providersRaw as Record<string, unknown>
+  const providers = cfg.provider as Record<string, unknown>
   const anthropicRaw = providers.anthropic
 
   if (!anthropicRaw || typeof anthropicRaw !== "object") {

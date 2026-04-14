@@ -128,6 +128,18 @@ describe("plugin-config", () => {
       assert.ok(models["claude-opus-4-1"])
     })
 
+    it("creates provider config and adds Anthropic compatibility IDs when provider is missing", () => {
+      const config: Record<string, unknown> = {}
+
+      applyOpencodeConfig(config)
+
+      const provider = config.provider as Record<string, unknown>
+      const anthropic = provider.anthropic as Record<string, unknown>
+      const models = anthropic.models as Record<string, unknown>
+      assert.ok(models["claude-opus-4-6"])
+      assert.ok(models["claude-sonnet-4-6"])
+    })
+
     it("does not overwrite existing Anthropic model entries", () => {
       const existing = { id: "custom-id", name: "custom-name" }
       const config = {
