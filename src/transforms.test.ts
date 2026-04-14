@@ -8,7 +8,7 @@ import {
 } from "./transforms.ts"
 
 describe("transforms", () => {
-  it("transformBody moves non-core system text to user message and prefixes tool names", () => {
+  it("transformBody moves non-core system text to user message and does not prefix tool names", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "OpenCode and opencode" }],
       tools: [{ name: "search" }],
@@ -36,8 +36,9 @@ describe("transforms", () => {
     // The original system text should now be prepended to the first user message
     assert.equal(parsed.messages[0].content[0].type, "text")
     assert.equal(parsed.messages[0].content[0].text, "OpenCode and opencode")
-    assert.equal(parsed.tools[0].name, "mcp_search")
-    assert.equal(parsed.messages[0].content[1].name, "mcp_lookup")
+    // Tool names should NOT be prefixed with mcp_
+    assert.equal(parsed.tools[0].name, "search")
+    assert.equal(parsed.messages[0].content[1].name, "lookup")
   })
 
   it("transformBody relocates non-core system text to user message", () => {
@@ -452,6 +453,66 @@ describe("transforms", () => {
   it("stripToolPrefix removes mcp_ from response payload names", () => {
     const input = '{"name":"mcp_search","type":"tool_use"}'
     assert.equal(stripToolPrefix(input), '{"name": "search","type":"tool_use"}')
+  })
+
+  it("stripToolPrefix reverses TodoWrite back to todowrite", () => {
+    const input = '{"name":"TodoWrite","type":"tool_use"}'
+    assert.equal(stripToolPrefix(input), '{"name": "todowrite","type":"tool_use"}')
+  })
+
+  it("stripToolPrefix reverses backgroundOutput and backgroundCancel", () => {
+    const input1 = '{"name":"backgroundOutput","type":"tool_use"}'
+    assert.equal(stripToolPrefix(input1), '{"name": "background_output","type":"tool_use"}')
+    const input2 = '{"name":"backgroundCancel","type":"tool_use"}'
+    assert.equal(stripToolPrefix(input2), '{"name": "background_cancel","type":"tool_use"}')
+  })
+
+  it("transformBody renames blocked tool names in tools and messages", () => {
+    const input = JSON.stringify({
+      system: [],
+      tools: [
+        { name: "todowrite" },
+        { name: "background_output" },
+        { name: "background_cancel" },
+        { name: "search" },
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "t1", name: "todowrite" },
+            { type: "tool_use", id: "t2", name: "background_output" },
+            { type: "tool_use", id: "t3", name: "search" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "ok" },
+            { type: "tool_result", tool_use_id: "t2", content: "ok" },
+            { type: "tool_result", tool_use_id: "t3", content: "ok" },
+          ],
+        },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      tools: Array<{ name: string }>
+      messages: Array<{
+        content: Array<{ type: string; name?: string }>
+      }>
+    }
+
+    assert.equal(parsed.tools[0].name, "TodoWrite")
+    assert.equal(parsed.tools[1].name, "backgroundOutput")
+    assert.equal(parsed.tools[2].name, "backgroundCancel")
+    assert.equal(parsed.tools[3].name, "search")
+
+    const assistantContent = parsed.messages[0].content
+    assert.equal(assistantContent[0].name, "TodoWrite")
+    assert.equal(assistantContent[1].name, "backgroundOutput")
+    assert.equal(assistantContent[2].name, "search")
   })
 
   it("transformResponseStream passes error responses through without SSE parsing", async () => {

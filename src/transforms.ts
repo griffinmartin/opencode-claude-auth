@@ -208,8 +208,12 @@ export function transformBody(
 
     // Anthropic's OAuth billing validation rejects tool names with the
     // mcp_ prefix when multiple tools are present. Skip prefixing and
-    // rename the blocked bare name "todowrite" → "TodoWrite" instead.
-    const BLOCKED_TOOL_NAMES: Record<string, string> = { "todowrite": "TodoWrite" }
+    // rename only the specific tool names that the validator blocks.
+    const BLOCKED_TOOL_NAMES: Record<string, string> = {
+      "todowrite": "TodoWrite",
+      "background_output": "backgroundOutput",
+      "background_cancel": "backgroundCancel",
+    }
     if (Array.isArray(parsed.tools)) {
       parsed.tools = parsed.tools.map((tool) => {
         if (typeof tool.name === "string" && BLOCKED_TOOL_NAMES[tool.name]) {
@@ -259,6 +263,8 @@ export function stripToolPrefix(text: string): string {
   return text
     .replace(/"name"\s*:\s*"mcp_([^"]+)"/g, '"name": "$1"')
     .replace(/"name"\s*:\s*"TodoWrite"/g, '"name": "todowrite"')
+    .replace(/"name"\s*:\s*"backgroundOutput"/g, '"name": "background_output"')
+    .replace(/"name"\s*:\s*"backgroundCancel"/g, '"name": "background_cancel"')
 }
 
 export function transformResponseStream(response: Response): Response {
