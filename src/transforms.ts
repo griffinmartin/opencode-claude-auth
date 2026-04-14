@@ -206,30 +206,40 @@ export function transformBody(
       }
     }
 
+    // Anthropic's OAuth billing validation rejects tool names with the
+    // mcp_ prefix when multiple tools are present. Skip prefixing and
+    // rename the blocked bare name "todowrite" → "TodoWrite" instead.
+    const BLOCKED_TOOL_NAMES: Record<string, string> = { "todowrite": "TodoWrite" }
     if (Array.isArray(parsed.tools)) {
-      parsed.tools = parsed.tools.map((tool) => ({
-        ...tool,
-        name: tool.name ? `${TOOL_PREFIX}${tool.name}` : tool.name,
-      }))
+      parsed.tools = parsed.tools.map((tool) => {
+        if (typeof tool.name === "string" && BLOCKED_TOOL_NAMES[tool.name]) {
+          return { ...tool, name: BLOCKED_TOOL_NAMES[tool.name] }
+        }
+        return tool
+      })
     }
 
     if (Array.isArray(parsed.messages)) {
       parsed.messages = parsed.messages.map((message) => {
-        if (!Array.isArray(message.content)) {
-          return message
-        }
-
+        if (!Array.isArray(message.content)) return message
+        const hasBlocked = message.content.some(
+          (block) =>
+            block.type === "tool_use" &&
+            typeof block.name === "string" &&
+            BLOCKED_TOOL_NAMES[block.name],
+        )
+        if (!hasBlocked) return message
         return {
           ...message,
           content: message.content.map((block) => {
-            if (block.type !== "tool_use" || typeof block.name !== "string") {
-              return block
+            if (
+              block.type === "tool_use" &&
+              typeof block.name === "string" &&
+              BLOCKED_TOOL_NAMES[block.name]
+            ) {
+              return { ...block, name: BLOCKED_TOOL_NAMES[block.name] }
             }
-
-            return {
-              ...block,
-              name: `${TOOL_PREFIX}${block.name}`,
-            }
+            return block
           }),
         }
       })
@@ -246,7 +256,9 @@ export function transformBody(
 }
 
 export function stripToolPrefix(text: string): string {
-  return text.replace(/"name"\s*:\s*"mcp_([^"]+)"/g, '"name": "$1"')
+  return text
+    .replace(/"name"\s*:\s*"mcp_([^"]+)"/g, '"name": "$1"')
+    .replace(/"name"\s*:\s*"TodoWrite"/g, '"name": "todowrite"')
 }
 
 export function transformResponseStream(response: Response): Response {

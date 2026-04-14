@@ -260,6 +260,7 @@ const plugin: Plugin = async () => {
 
         return {
           apiKey: "",
+          baseURL: "https://api.anthropic.com/v1",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             const latest = getCachedCredentials()
             if (!latest) {
