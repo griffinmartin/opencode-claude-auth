@@ -84,10 +84,7 @@ export function xxhash64(input: Uint8Array, seed: bigint): bigint {
       off += 32
     }
 
-    h = add(
-      add(rotl(v1, 1), rotl(v2, 7)),
-      add(rotl(v3, 12), rotl(v4, 18)),
-    )
+    h = add(add(rotl(v1, 1), rotl(v2, 7)), add(rotl(v3, 12), rotl(v4, 18)))
     h = mergeAccumulator(h, v1)
     h = mergeAccumulator(h, v2)
     h = mergeAccumulator(h, v3)
@@ -107,7 +104,10 @@ export function xxhash64(input: Uint8Array, seed: bigint): bigint {
 
   // Remaining 4-byte block
   if (off + 4 <= len) {
-    h = add(mul(rotl((h ^ mul(u32le(input, off), PRIME1)) & M, 23), PRIME2), PRIME3)
+    h = add(
+      mul(rotl((h ^ mul(u32le(input, off), PRIME1)) & M, 23), PRIME2),
+      PRIME3,
+    )
     off += 4
   }
 

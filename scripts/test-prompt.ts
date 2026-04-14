@@ -24,7 +24,9 @@ const modelId = process.argv[3] ?? "claude-sonnet-4-6"
 // Init credentials
 const accounts = readAllClaudeAccounts()
 if (accounts.length === 0) {
-  console.error("No Claude Code credentials found. Run `claude` to authenticate.")
+  console.error(
+    "No Claude Code credentials found. Run `claude` to authenticate.",
+  )
   process.exit(1)
 }
 initAccounts(accounts)

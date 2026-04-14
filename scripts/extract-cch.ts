@@ -4,7 +4,11 @@
  *
  * Usage: pnpm run build && node --experimental-strip-types scripts/extract-cch.ts
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http"
 import { request as httpsRequest } from "node:https"
 import { spawn } from "node:child_process"
 import { writeFileSync } from "node:fs"
@@ -41,14 +45,14 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 
     // Now compute what our implementation produces
     // Replace the real cch with 00000 placeholder to simulate what Bun hashes
-    const bodyWithPlaceholder = bodyStr.replace(
-      /cch=[0-9a-f]{5}/,
-      "cch=00000",
-    )
+    const bodyWithPlaceholder = bodyStr.replace(/cch=[0-9a-f]{5}/, "cch=00000")
     const encoder = new TextEncoder()
     const fullBodyHash = computeCchHash(encoder.encode(bodyWithPlaceholder))
     console.log("Our xxHash64 (full body):", fullBodyHash)
-    console.log("Match (full body):", fullBodyHash === realCch ? "YES ✓" : "NO ✗")
+    console.log(
+      "Match (full body):",
+      fullBodyHash === realCch ? "YES ✓" : "NO ✗",
+    )
 
     // Also try hashing with system stripped to billing-only
     try {
@@ -88,18 +92,18 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
 
     // Save body with placeholder for seed brute-forcing
-    writeFileSync("/tmp/claude-body-placeholder.json", bodyWithPlaceholder, "utf-8")
+    writeFileSync(
+      "/tmp/claude-body-placeholder.json",
+      bodyWithPlaceholder,
+      "utf-8",
+    )
     writeFileSync("/tmp/claude-cch-real.txt", realCch ?? "", "utf-8")
     console.log("\nSaved body to /tmp/claude-body-placeholder.json")
     console.log("Saved real cch to /tmp/claude-cch-real.txt")
 
     // Extract version info
-    const versionMatch = bodyStr.match(
-      /cc_version=([^;]+)/,
-    )
-    const entrypointMatch = bodyStr.match(
-      /cc_entrypoint=([^;]+)/,
-    )
+    const versionMatch = bodyStr.match(/cc_version=([^;]+)/)
+    const entrypointMatch = bodyStr.match(/cc_entrypoint=([^;]+)/)
     console.log("\nBilling header details:")
     console.log("  cc_version:", versionMatch?.[1])
     console.log("  cc_entrypoint:", entrypointMatch?.[1])
@@ -112,9 +116,15 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       console.log("  system block count:", p.system?.length)
       if (Array.isArray(p.system)) {
         for (let i = 0; i < p.system.length; i++) {
-          const entry = p.system[i] as { text?: string; cache_control?: unknown }
-          const text = typeof entry.text === "string" ? entry.text.slice(0, 80) : "?"
-          const cc = entry.cache_control ? JSON.stringify(entry.cache_control) : "none"
+          const entry = p.system[i] as {
+            text?: string
+            cache_control?: unknown
+          }
+          const text =
+            typeof entry.text === "string" ? entry.text.slice(0, 80) : "?"
+          const cc = entry.cache_control
+            ? JSON.stringify(entry.cache_control)
+            : "none"
           console.log(`  system[${i}]: cache_control=${cc} text="${text}..."`)
         }
       }
@@ -153,15 +163,19 @@ const timer = setTimeout(() => {
 }, TIMEOUT_MS)
 
 server.listen(PORT, () => {
-  const child = spawn("claude", ["-p", "say hi", "--model", "claude-haiku-4-5"], {
-    env: {
-      ...process.env,
-      ANTHROPIC_API_KEY: "",
-      ANTHROPIC_BASE_URL: `http://localhost:${PORT}`,
-      TERM: "dumb",
+  const child = spawn(
+    "claude",
+    ["-p", "say hi", "--model", "claude-haiku-4-5"],
+    {
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_BASE_URL: `http://localhost:${PORT}`,
+        TERM: "dumb",
+      },
+      stdio: "ignore",
     },
-    stdio: "ignore",
-  })
+  )
 
   child.on("error", (err) => {
     console.log("Claude CLI error:", err.message)
