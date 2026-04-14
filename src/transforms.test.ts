@@ -36,8 +36,8 @@ describe("transforms", () => {
     // The original system text should now be prepended to the first user message
     assert.equal(parsed.messages[0].content[0].type, "text")
     assert.equal(parsed.messages[0].content[0].text, "OpenCode and opencode")
-    assert.equal(parsed.tools[0].name, "mcp_search")
-    assert.equal(parsed.messages[0].content[1].name, "mcp_lookup")
+    assert.match(parsed.tools[0].name, /^t_[0-9a-f]{8}$/)
+    assert.match(parsed.messages[0].content[1].name, /^t_[0-9a-f]{8}$/)
   })
 
   it("transformBody relocates non-core system text to user message", () => {
@@ -449,9 +449,20 @@ describe("transforms", () => {
     assert.equal(parsed.thinking, undefined)
   })
 
-  it("stripToolPrefix removes mcp_ from response payload names", () => {
-    const input = '{"name":"mcp_search","type":"tool_use"}'
-    assert.equal(stripToolPrefix(input), '{"name": "search","type":"tool_use"}')
+  it("stripToolPrefix reverses obfuscated tool names", () => {
+    // Populate the maps by obfuscating via transformBody
+    const body = transformBody(JSON.stringify({
+      tools: [{ name: "search" }],
+      messages: [{ role: "user", content: "test" }],
+    }))
+    const parsed = JSON.parse(body as string) as {
+      tools: Array<{ name: string }>
+    }
+    const obf = parsed.tools[0].name
+    // Now test deobfuscation
+    const input = `{"name":"${obf}","type":"tool_use"}`
+    const result = stripToolPrefix(input)
+    assert.ok(result.includes('"name": "search"'))
   })
 
   it("transformResponseStream passes error responses through without SSE parsing", async () => {
@@ -517,23 +528,42 @@ describe("transforms", () => {
   })
 
   it("transformResponseStream still strips tool prefixes in error bodies", async () => {
-    // stripToolPrefix matches the pattern "name": "mcp_..."
-    const errorBody = '{"name": "mcp_search", "error": "failed"}'
+    // Populate maps via round-trip
+    const body = transformBody(JSON.stringify({
+      tools: [{ name: "search" }],
+      messages: [{ role: "user", content: "x" }],
+    }))
+    const parsedBody = JSON.parse(body as string) as {
+      tools: Array<{ name: string }>
+    }
+    const obf = parsedBody.tools[0].name
+
+    const errorBody = `{"name": "${obf}", "error": "failed"}`
     const response = new Response(errorBody, { status: 400 })
     const transformed = transformResponseStream(response)
     const text = await transformed.text()
     assert.ok(
       text.includes('"name": "search"'),
-      "Should strip mcp_ prefix even in error bodies",
+      "Should deobfuscate tool name in error bodies",
     )
     assert.ok(
-      !text.includes("mcp_search"),
-      "Should not contain mcp_search after stripping",
+      !text.includes(obf),
+      "Should not contain obfuscated name after stripping",
     )
   })
 
   it("transformResponseStream rewrites streamed tool names", async () => {
-    const payload = '{"name":"mcp_lookup"}'
+    // Populate maps via round-trip
+    const body = transformBody(JSON.stringify({
+      tools: [{ name: "lookup" }],
+      messages: [{ role: "user", content: "x" }],
+    }))
+    const parsedBody = JSON.parse(body as string) as {
+      tools: Array<{ name: string }>
+    }
+    const obf = parsedBody.tools[0].name
+
+    const payload = `{"name":"${obf}"}`
     const response = new Response(payload)
     const transformed = transformResponseStream(response)
     const text = await transformed.text()
@@ -542,8 +572,21 @@ describe("transforms", () => {
   })
 
   it("transformResponseStream buffers across chunks until event boundary", async () => {
-    const chunk1 = 'data: {"name":"mc'
-    const chunk2 = 'p_search"}\n\ndata: {"type":"done"}\n\n'
+    // Populate maps via round-trip
+    const body = transformBody(JSON.stringify({
+      tools: [{ name: "search" }],
+      messages: [{ role: "user", content: "x" }],
+    }))
+    const parsedBody = JSON.parse(body as string) as {
+      tools: Array<{ name: string }>
+    }
+    const obf = parsedBody.tools[0].name
+
+    // Split the obfuscated name across two chunks
+    const fullData = `data: {"name":"${obf}"}\n\ndata: {"type":"done"}\n\n`
+    const splitAt = 15 // splits inside the tool name
+    const chunk1 = fullData.slice(0, splitAt)
+    const chunk2 = fullData.slice(splitAt)
     const encoder = new TextEncoder()
 
     const stream = new ReadableStream({
@@ -563,18 +606,28 @@ describe("transforms", () => {
       `Expected stripped name in: ${text}`,
     )
     assert.ok(
-      !text.includes("mcp_search"),
-      `Should not contain mcp_search in: ${text}`,
+      !text.includes(obf),
+      `Should not contain obfuscated name in: ${text}`,
     )
   })
 
   it("transformResponseStream withholds output until event boundary arrives", async () => {
+    // Populate maps via round-trip
+    const bodyResult = transformBody(JSON.stringify({
+      tools: [{ name: "test" }],
+      messages: [{ role: "user", content: "x" }],
+    }))
+    const parsedBody = JSON.parse(bodyResult as string) as {
+      tools: Array<{ name: string }>
+    }
+    const obf = parsedBody.tools[0].name
+
     const encoder = new TextEncoder()
     let sendBoundary: (() => void) | undefined
 
     const source = new ReadableStream({
       start(controller) {
-        controller.enqueue(encoder.encode('data: {"name":"mcp_test"}'))
+        controller.enqueue(encoder.encode(`data: {"name":"${obf}"}`))
         sendBoundary = () => {
           controller.enqueue(encoder.encode("\n\n"))
           controller.close()
@@ -609,8 +662,8 @@ describe("transforms", () => {
       `Expected stripped name: ${text}`,
     )
     assert.ok(
-      !text.includes("mcp_test"),
-      `Should not contain mcp_test: ${text}`,
+      !text.includes(obf),
+      `Should not contain obfuscated name: ${text}`,
     )
 
     const final = await reader.read()
@@ -780,9 +833,20 @@ describe("transforms", () => {
   })
 
   it("transformResponseStream flushes remaining buffered data on stream end", async () => {
+    // Populate maps for both tool names via round-trip
+    const bodyResult = transformBody(JSON.stringify({
+      tools: [{ name: "alpha" }, { name: "beta" }],
+      messages: [{ role: "user", content: "x" }],
+    }))
+    const parsedBody = JSON.parse(bodyResult as string) as {
+      tools: Array<{ name: string }>
+    }
+    const obfAlpha = parsedBody.tools[0].name
+    const obfBeta = parsedBody.tools[1].name
+
     const encoder = new TextEncoder()
-    const chunk1 = 'data: {"name":"mcp_alpha"}\n\n'
-    const chunk2 = 'data: {"name":"mcp_beta"}'
+    const chunk1 = `data: {"name":"${obfAlpha}"}\n\n`
+    const chunk2 = `data: {"name":"${obfBeta}"}`
 
     const stream = new ReadableStream({
       start(controller) {
@@ -805,12 +869,12 @@ describe("transforms", () => {
       `Expected beta stripped in: ${text}`,
     )
     assert.ok(
-      !text.includes("mcp_alpha"),
-      `Should not contain mcp_alpha in: ${text}`,
+      !text.includes(obfAlpha),
+      `Should not contain obfuscated alpha in: ${text}`,
     )
     assert.ok(
-      !text.includes("mcp_beta"),
-      `Should not contain mcp_beta in: ${text}`,
+      !text.includes(obfBeta),
+      `Should not contain obfuscated beta in: ${text}`,
     )
   })
 })
