@@ -48,7 +48,6 @@ export {
 export { isEnable1mContext, type PluginSettings } from "./plugin-config.ts"
 export {
   buildBillingHeaderValue,
-  computeCch,
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from "./signing.ts"

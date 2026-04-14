@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
   extractFirstUserMessageText,
-  computeCch,
   computeVersionSuffix,
   buildBillingHeaderValue,
 } from "./signing.ts"
@@ -65,20 +64,6 @@ describe("signing", () => {
     })
   })
 
-  describe("computeCch", () => {
-    it("matches test vector: 'hey' → fa690", () => {
-      assert.equal(computeCch("hey"), "fa690")
-    })
-
-    it("matches test vector: empty string → e3b0c", () => {
-      assert.equal(computeCch(""), "e3b0c")
-    })
-
-    it("matches test vector: long message", () => {
-      assert.equal(computeCch("Hello, how are you doing today?"), "852db")
-    })
-  })
-
   describe("computeVersionSuffix", () => {
     it("matches test vector: 'hey' + v2.1.37 → 0d9", () => {
       assert.equal(computeVersionSuffix("hey", "2.1.37"), "0d9")
@@ -121,7 +106,7 @@ describe("signing", () => {
       )
       assert.equal(
         result,
-        "x-anthropic-billing-header: cc_version=2.1.90.b39; cc_entrypoint=cli; cch=fa690;",
+        "x-anthropic-billing-header: cc_version=2.1.90.b39; cc_entrypoint=cli; cch=00000;",
       )
     })
 
@@ -141,13 +126,13 @@ describe("signing", () => {
       )
       assert.equal(
         result,
-        "x-anthropic-billing-header: cc_version=2.1.90.b39; cc_entrypoint=cli; cch=fa690;",
+        "x-anthropic-billing-header: cc_version=2.1.90.b39; cc_entrypoint=cli; cch=00000;",
       )
     })
 
-    it("handles missing user message (hashes empty string)", () => {
+    it("handles missing user message (uses placeholder cch)", () => {
       const result = buildBillingHeaderValue([], "2.1.90", "cli")
-      assert.ok(result.includes("cch=e3b0c"))
+      assert.ok(result.includes("cch=00000"))
     })
 
     it("uses provided entrypoint", () => {
