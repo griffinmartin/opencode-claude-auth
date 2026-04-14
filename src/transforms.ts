@@ -1,5 +1,7 @@
 import { buildBillingHeaderValue } from "./signing.ts"
 import { config, getModelOverride } from "./model-config.ts"
+import { log } from "./logger.ts"
+import { computeCchHash } from "./xxhash64.ts"
 
 // Obfuscate tool names: the API blacklists certain tool names (todowrite,
 // background_output, background_cancel). To avoid detection we hash ALL tool
@@ -259,8 +261,22 @@ export function transformBody(
       parsed.messages = repairToolPairs(parsed.messages)
     }
 
-    return JSON.stringify(parsed)
-  } catch {
+    // --- Compute cch via xxHash64 ---
+    // Hash the FULL serialized body with cch=00000 placeholder in place,
+    // then replace the placeholder with the computed hash.
+    const serialized = JSON.stringify(parsed)
+    const encoder = new TextEncoder()
+    const cch = computeCchHash(encoder.encode(serialized))
+    const final = serialized.replace("cch=00000", `cch=${cch}`)
+
+    log("transform_cch", { cch, bodyLength: serialized.length })
+
+    return final
+  } catch (err) {
+    log("transform_body_error", {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
+    })
     return body
   }
 }
