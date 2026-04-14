@@ -484,10 +484,7 @@ describe("transforms", () => {
   })
 
   it("stripToolPrefix reverses PascalCase mcp_ prefix", () => {
-    assert.equal(
-      stripToolPrefix('{"name": "mcp_Bash"}'),
-      '{"name": "bash"}',
-    )
+    assert.equal(stripToolPrefix('{"name": "mcp_Bash"}'), '{"name": "bash"}')
     assert.equal(
       stripToolPrefix('{"name": "mcp_Background_output"}'),
       '{"name": "background_output"}',
