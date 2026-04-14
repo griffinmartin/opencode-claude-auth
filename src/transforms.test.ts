@@ -37,7 +37,11 @@ describe("transforms", () => {
     assert.equal(parsed.messages[0].content[0].type, "text")
     assert.equal(parsed.messages[0].content[0].text, "OpenCode and opencode")
     assert.match(parsed.tools[0].name, /^t_[0-9a-f]{8}$/)
-    assert.match(parsed.messages[0].content[1].name, /^t_[0-9a-f]{8}$/)
+    const secondToolName = parsed.messages[0].content[1].name
+    if (typeof secondToolName !== "string") {
+      throw new Error("expected second tool name to be present")
+    }
+    assert.match(secondToolName, /^t_[0-9a-f]{8}$/)
   })
 
   it("transformBody relocates non-core system text to user message", () => {
