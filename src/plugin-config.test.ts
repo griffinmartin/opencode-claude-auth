@@ -108,6 +108,42 @@ describe("plugin-config", () => {
       })
       assert.equal(getPluginSettings().enable1mContext, true)
     })
+
+    it("adds Anthropic compatibility model IDs when provider.anthropic exists", () => {
+      const config = {
+        provider: {
+          anthropic: {
+            models: {
+              "claude-opus-4-1": { id: "claude-opus-4-1" },
+            },
+          },
+        },
+      }
+
+      applyOpencodeConfig(config)
+
+      const models = config.provider.anthropic.models
+      assert.ok(models["claude-opus-4-6"])
+      assert.ok(models["claude-sonnet-4-6"])
+      assert.ok(models["claude-opus-4-1"])
+    })
+
+    it("does not overwrite existing Anthropic model entries", () => {
+      const existing = { id: "custom-id", name: "custom-name" }
+      const config = {
+        provider: {
+          anthropic: {
+            models: {
+              "claude-opus-4-6": existing,
+            },
+          },
+        },
+      }
+
+      applyOpencodeConfig(config)
+
+      assert.equal(config.provider.anthropic.models["claude-opus-4-6"], existing)
+    })
   })
 
   describe("resetPluginSettings", () => {
