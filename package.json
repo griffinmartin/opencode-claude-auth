@@ -60,7 +60,8 @@
     "lint": "oxlint && oxfmt --check .",
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
-    "prepublishOnly": "pnpm run build && pnpm test"
+    "prepublishOnly": "pnpm run build && pnpm test",
+    "test:prompt": "pnpm run build && node --experimental-strip-types scripts/test-prompt.ts"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "latest",
