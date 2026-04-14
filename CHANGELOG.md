@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.10](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.9...v1.4.10) (2026-04-14)
+
+
+### Bug Fixes
+
+* PascalCase tool names after mcp_ prefix to match Claude Code convention ([#191](https://github.com/griffinmartin/opencode-claude-auth/issues/191)) ([9121ca4](https://github.com/griffinmartin/opencode-claude-auth/commit/9121ca47a5e9757e041aea240a29c10e4dfabf95))
+
 ## [1.4.9](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.8...v1.4.9) (2026-04-08)
 
 

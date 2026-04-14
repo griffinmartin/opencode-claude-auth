@@ -1,6 +1,6 @@
 {
   "name": "opencode-claude-auth",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "OpenCode plugin that uses your Claude Code credentials — no separate login needed.",
   "keywords": [
     "anthropic",
