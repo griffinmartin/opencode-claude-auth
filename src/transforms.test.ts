@@ -451,10 +451,12 @@ describe("transforms", () => {
 
   it("stripToolPrefix reverses obfuscated tool names", () => {
     // Populate the maps by obfuscating via transformBody
-    const body = transformBody(JSON.stringify({
-      tools: [{ name: "search" }],
-      messages: [{ role: "user", content: "test" }],
-    }))
+    const body = transformBody(
+      JSON.stringify({
+        tools: [{ name: "search" }],
+        messages: [{ role: "user", content: "test" }],
+      }),
+    )
     const parsed = JSON.parse(body as string) as {
       tools: Array<{ name: string }>
     }
@@ -529,10 +531,12 @@ describe("transforms", () => {
 
   it("transformResponseStream still strips tool prefixes in error bodies", async () => {
     // Populate maps via round-trip
-    const body = transformBody(JSON.stringify({
-      tools: [{ name: "search" }],
-      messages: [{ role: "user", content: "x" }],
-    }))
+    const body = transformBody(
+      JSON.stringify({
+        tools: [{ name: "search" }],
+        messages: [{ role: "user", content: "x" }],
+      }),
+    )
     const parsedBody = JSON.parse(body as string) as {
       tools: Array<{ name: string }>
     }
@@ -554,10 +558,12 @@ describe("transforms", () => {
 
   it("transformResponseStream rewrites streamed tool names", async () => {
     // Populate maps via round-trip
-    const body = transformBody(JSON.stringify({
-      tools: [{ name: "lookup" }],
-      messages: [{ role: "user", content: "x" }],
-    }))
+    const body = transformBody(
+      JSON.stringify({
+        tools: [{ name: "lookup" }],
+        messages: [{ role: "user", content: "x" }],
+      }),
+    )
     const parsedBody = JSON.parse(body as string) as {
       tools: Array<{ name: string }>
     }
@@ -573,10 +579,12 @@ describe("transforms", () => {
 
   it("transformResponseStream buffers across chunks until event boundary", async () => {
     // Populate maps via round-trip
-    const body = transformBody(JSON.stringify({
-      tools: [{ name: "search" }],
-      messages: [{ role: "user", content: "x" }],
-    }))
+    const body = transformBody(
+      JSON.stringify({
+        tools: [{ name: "search" }],
+        messages: [{ role: "user", content: "x" }],
+      }),
+    )
     const parsedBody = JSON.parse(body as string) as {
       tools: Array<{ name: string }>
     }
@@ -613,10 +621,12 @@ describe("transforms", () => {
 
   it("transformResponseStream withholds output until event boundary arrives", async () => {
     // Populate maps via round-trip
-    const bodyResult = transformBody(JSON.stringify({
-      tools: [{ name: "test" }],
-      messages: [{ role: "user", content: "x" }],
-    }))
+    const bodyResult = transformBody(
+      JSON.stringify({
+        tools: [{ name: "test" }],
+        messages: [{ role: "user", content: "x" }],
+      }),
+    )
     const parsedBody = JSON.parse(bodyResult as string) as {
       tools: Array<{ name: string }>
     }
@@ -834,10 +844,12 @@ describe("transforms", () => {
 
   it("transformResponseStream flushes remaining buffered data on stream end", async () => {
     // Populate maps for both tool names via round-trip
-    const bodyResult = transformBody(JSON.stringify({
-      tools: [{ name: "alpha" }, { name: "beta" }],
-      messages: [{ role: "user", content: "x" }],
-    }))
+    const bodyResult = transformBody(
+      JSON.stringify({
+        tools: [{ name: "alpha" }, { name: "beta" }],
+        messages: [{ role: "user", content: "x" }],
+      }),
+    )
     const parsedBody = JSON.parse(bodyResult as string) as {
       tools: Array<{ name: string }>
     }

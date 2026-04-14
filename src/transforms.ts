@@ -1,6 +1,5 @@
 import { buildBillingHeaderValue } from "./signing.ts"
 import { config, getModelOverride } from "./model-config.ts"
-import { log } from "./logger.ts"
 
 // Obfuscate tool names: the API blacklists certain tool names (todowrite,
 // background_output, background_cancel). To avoid detection we hash ALL tool
@@ -244,7 +243,10 @@ export function transformBody(
             if (block.type === "tool_use" && typeof block.name === "string") {
               return { ...block, name: obfuscateToolName(block.name) }
             }
-            if (block.type === "tool_result" && typeof block["tool_use_id"] === "string") {
+            if (
+              block.type === "tool_result" &&
+              typeof block["tool_use_id"] === "string"
+            ) {
               // tool_result references tool_use by id, not name — no change needed
             }
             return block
