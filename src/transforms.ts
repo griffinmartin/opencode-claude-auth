@@ -169,35 +169,33 @@ export function transformBody(
     }
     parsed.system = splitSystem
 
-    // --- Relocate non-core system entries to user messages ---
-    // Anthropic's API now validates the system prompt for OAuth-authenticated
-    // requests that use Claude Code billing.  Third-party system prompts
-    // (like OpenCode's) trigger a 400 "out of extra usage" rejection when
-    // they appear inside the system[] array alongside the identity prefix.
-    //
-    // Work-around: keep only the billing header and identity prefix in
-    // system[], and prepend all other system content to the first user
-    // message where it is functionally equivalent but avoids the check.
-    const BILLING_PREFIX = "x-anthropic-billing-header"
-    const keptSystem: SystemEntry[] = []
-    const movedTexts: string[] = []
-    for (const entry of parsed.system) {
-      const txt = typeof entry === "string" ? entry : (entry.text ?? "")
-      if (txt.startsWith(BILLING_PREFIX) || txt.startsWith(SYSTEM_IDENTITY)) {
-        keptSystem.push(entry)
-      } else if (txt.length > 0) {
-        movedTexts.push(txt)
-      }
+    // --- Relocate blocked system entries to user messages ---
+    // Anthropic's billing validator rejects specific URLs in system[]
+    // (e.g. the OpenCode GitHub repo URL). Instead of moving ALL
+    // non-core system content (which regresses instruction priority
+    // and prompt-cache efficiency), only relocate entries that contain
+    // a blocked string. Everything else stays in system[].
+    const BLOCKED_SYSTEM_STRINGS = [
+      "github.com/anomalyco/opencode",
+    ]
+
+    function isBlocked(text: string): boolean {
+      return BLOCKED_SYSTEM_STRINGS.some((s) => text.includes(s))
     }
-    if (movedTexts.length > 0 && Array.isArray(parsed.messages)) {
-      const firstUser = parsed.messages.find((m) => m.role === "user")
-      if (firstUser) {
-        parsed.system = keptSystem
-        const prefix = movedTexts.join("\n\n")
-        if (typeof firstUser.content === "string") {
-          firstUser.content = prefix + "\n\n" + firstUser.content
-        } else if (Array.isArray(firstUser.content)) {
-          firstUser.content.unshift({ type: "text", text: prefix })
+
+    // Scrub blocked strings from system entries in-place rather than
+    // relocating entire entries. OpenCode concatenates the full system
+    // prompt (identity + agent prompt + env + AGENTS + skills) into a
+    // single text block, so moving the whole entry on a substring match
+    // would frontload the entire prompt into the user message.
+    for (const entry of parsed.system) {
+      if (
+        entry.type === "text" &&
+        typeof entry.text === "string" &&
+        isBlocked(entry.text)
+      ) {
+        for (const blocked of BLOCKED_SYSTEM_STRINGS) {
+          entry.text = entry.text.split(blocked).join("")
         }
       }
     }

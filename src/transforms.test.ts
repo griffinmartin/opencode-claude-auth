@@ -8,7 +8,7 @@ import {
 } from "./transforms.ts"
 
 describe("transforms", () => {
-  it("transformBody moves non-core system text to user message and PascalCase-prefixes tool names", () => {
+  it("transformBody keeps safe system text in system[] and PascalCase-prefixes tool names", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "OpenCode and opencode" }],
       tools: [{ name: "search" }],
@@ -27,20 +27,42 @@ describe("transforms", () => {
       }>
     }
 
-    // system should only contain the billing header (non-core text relocated)
-    assert.equal(parsed.system.length, 1)
-    assert.ok(
-      parsed.system[0].text.startsWith("x-anthropic-billing-header:"),
-      "system[0] should be the billing header",
-    )
-    // The original system text should now be prepended to the first user message
-    assert.equal(parsed.messages[0].content[0].type, "text")
-    assert.equal(parsed.messages[0].content[0].text, "OpenCode and opencode")
+    // safe text stays in system[] (billing + original)
+    assert.equal(parsed.system.length, 2)
+    assert.ok(parsed.system[0].text.startsWith("x-anthropic-billing-header:"))
+    assert.equal(parsed.system[1].text, "OpenCode and opencode")
     assert.equal(parsed.tools[0].name, "mcp_Search")
-    assert.equal(parsed.messages[0].content[1].name, "mcp_Lookup")
+    assert.equal(parsed.messages[0].content[0].name, "mcp_Lookup")
   })
 
-  it("transformBody relocates non-core system text to user message", () => {
+  it("transformBody scrubs blocked URL from system text in-place", () => {
+    const input = JSON.stringify({
+      system: [{ type: "text", text: "Report at https://github.com/anomalyco/opencode for bugs" }],
+      tools: [{ name: "search" }],
+      messages: [
+        { role: "user", content: [{ type: "tool_use", name: "lookup" }] },
+      ],
+    })
+
+    const output = transformBody(input)
+    assert.equal(typeof output, "string")
+    const parsed = JSON.parse(output as string) as {
+      system: Array<{ text: string }>
+      tools: Array<{ name: string }>
+      messages: Array<{
+        content: Array<{ type?: string; text?: string; name?: string }>
+      }>
+    }
+
+    // blocked URL scrubbed, entry stays in system[]
+    assert.equal(parsed.system.length, 2) // billing + scrubbed entry
+    assert.ok(!parsed.system[1].text.includes("anomalyco"))
+    assert.ok(parsed.system[1].text.includes("Report at"))
+    assert.equal(parsed.tools[0].name, "mcp_Search")
+    assert.equal(parsed.messages[0].content[0].name, "mcp_Lookup")
+  })
+
+  it("transformBody keeps safe non-core system text in system[]", () => {
     const input = JSON.stringify({
       system: [
         {
@@ -58,16 +80,12 @@ describe("transforms", () => {
       messages: Array<{ content: string }>
     }
 
-    // Non-core system text should be moved to user message
-    assert.equal(parsed.system.length, 1) // only billing header
-    assert.ok(
-      parsed.messages[0].content.includes(
-        "Use opencode-claude-auth plugin instructions as-is.",
-      ),
-    )
+    // Safe text stays in system[]
+    assert.equal(parsed.system.length, 2) // billing + safe text
+    assert.equal(parsed.system[1].text, "Use opencode-claude-auth plugin instructions as-is.")
   })
 
-  it("transformBody relocates URL/path system text to user message", () => {
+  it("transformBody keeps safe URL/path system text in system[]", () => {
     const input = JSON.stringify({
       system: [
         {
@@ -85,13 +103,9 @@ describe("transforms", () => {
       messages: Array<{ content: string }>
     }
 
-    // Non-core system text should be relocated
-    assert.equal(parsed.system.length, 1) // only billing header
-    assert.ok(
-      parsed.messages[0].content.includes(
-        "OpenCode docs: https://example.com/opencode/docs and path /var/opencode/bin",
-      ),
-    )
+    // Safe URLs stay in system[]
+    assert.equal(parsed.system.length, 2)
+    assert.equal(parsed.system[1].text, "OpenCode docs: https://example.com/opencode/docs and path /var/opencode/bin")
   })
 
   it("transformBody injects billing header as system[0] with computed cch", () => {
@@ -151,14 +165,11 @@ describe("transforms", () => {
       messages: Array<{ content: string }>
     }
 
-    // system[0] = billing header, system[1] = identity prefix
+    // system[0] = billing header, system[1] = identity prefix, system[2] = remainder (safe)
     assert.ok(parsed.system[0].text.startsWith("x-anthropic-billing-header:"))
     assert.equal(parsed.system[1].text, identity)
-    // remainder is relocated to user message
-    assert.equal(parsed.system.length, 2)
-    assert.ok(
-      parsed.messages[0].content.includes("Working directory: /home/test"),
-    )
+    assert.equal(parsed.system.length, 3)
+    assert.equal(parsed.system[2].text, "Working directory: /home/test")
   })
 
   it("transformBody preserves identity without cache_control and relocates remainder", () => {
@@ -186,9 +197,9 @@ describe("transforms", () => {
       undefined,
       "Identity block must not have cache_control",
     )
-    // Remainder is relocated to user message, not kept in system
-    assert.equal(parsed.system.length, 2)
-    assert.ok(parsed.messages[0].content.includes("More content here"))
+    // Remainder stays in system[] (safe content)
+    assert.equal(parsed.system.length, 3)
+    assert.equal(parsed.system[2].text, "More content here")
   })
 
   it("transformBody does not split identity-only system entry", () => {
@@ -238,8 +249,8 @@ describe("transforms", () => {
       billingEntries[0].text.includes("cch=fa690"),
       `Expected computed cch, got: ${billingEntries[0].text}`,
     )
-    // "prompt" should be relocated to user message
-    assert.ok(parsed.messages[0].content.includes("prompt"))
+    // "prompt" is safe, stays in system[]
+    assert.ok(parsed.system.some((e) => e.text === "prompt"))
   })
 
   it("transformBody relocates multiple non-core system entries to user message as content blocks", () => {
@@ -266,24 +277,14 @@ describe("transforms", () => {
       }>
     }
 
-    // system should only have billing header + identity
-    assert.equal(parsed.system.length, 2)
+    // Safe custom blocks stay in system[]
+    assert.equal(parsed.system.length, 4)
     assert.ok(parsed.system[0].text.startsWith("x-anthropic-billing-header:"))
     assert.equal(parsed.system[1].text, identity)
-    // Both custom blocks should be prepended to user message content
-    assert.equal(parsed.messages[0].content[0].type, "text")
-    assert.ok(
-      parsed.messages[0].content[0].text.includes(
-        "Custom instructions block A",
-      ),
-    )
-    assert.ok(
-      parsed.messages[0].content[0].text.includes(
-        "Custom instructions block B",
-      ),
-    )
-    // Original user content preserved
-    assert.equal(parsed.messages[0].content[1].text, "hello")
+    assert.equal(parsed.system[2].text, "Custom instructions block A")
+    assert.equal(parsed.system[3].text, "Custom instructions block B")
+    // Original user content unchanged
+    assert.equal(parsed.messages[0].content[0].text, "hello")
   })
 
   it("transformBody keeps system intact when no messages exist", () => {
@@ -811,8 +812,7 @@ describe("transforms", () => {
       messages: Array<{ role: string; content: unknown }>
     }
 
-    // Orphaned tool_use message should be removed.
-    // The user message remains, with the relocated system "prompt" prepended.
+    // Orphaned tool_use message removed. User message stays.
     assert.equal(parsed.messages.length, 1)
     assert.equal(parsed.messages[0].role, "user")
     assert.ok(
