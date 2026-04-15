@@ -181,6 +181,43 @@ function readCredentialsFile(): ClaudeCredentials | null {
   }
 }
 
+/**
+ * Read credentials from the CLAUDE_CODE_OAUTH_TOKEN environment variable.
+ *
+ * Claude Desktop sets this variable when it spawns Claude Code processes. When
+ * it is present, `claude auth login` considers the session already authenticated
+ * and never writes credentials to disk, so the env var is the only source
+ * available on those systems.
+ *
+ * The token is a JWT; we decode the `exp` claim to derive `expiresAt`. If
+ * decoding fails we default to 10 hours (observed Claude token lifetime).
+ * There is no refresh token in this path — when the token expires the caller
+ * must obtain a new one (e.g. by restarting Claude Desktop).
+ */
+function readEnvToken(): ClaudeCredentials | null {
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  if (!token) return null
+
+  // Attempt to decode expiry from the JWT payload (second base64url segment).
+  let expiresAt = Date.now() + 36_000 * 1000 // default: 10 hours
+  try {
+    const payloadB64 = token.split(".")[1]
+    if (payloadB64) {
+      const payload = JSON.parse(
+        Buffer.from(payloadB64, "base64url").toString("utf-8"),
+      ) as { exp?: unknown }
+      if (typeof payload.exp === "number") {
+        expiresAt = payload.exp * 1000
+      }
+    }
+  } catch {
+    // JWT decode failed — use default expiry
+  }
+
+  log("env_token_read", { success: true, expiresAt })
+  return { accessToken: token, refreshToken: "", expiresAt }
+}
+
 export function buildAccountLabels(credsList: ClaudeCredentials[]): string[] {
   const baseLabels = credsList.map((c) => {
     if (c.subscriptionType) {
@@ -206,9 +243,22 @@ export function buildAccountLabels(credsList: ClaudeCredentials[]): string[] {
 export function readAllClaudeAccounts(): ClaudeAccount[] {
   if (process.platform !== "darwin") {
     const creds = readCredentialsFile()
-    if (!creds) return []
-    const [label] = buildAccountLabels([creds])
-    return [{ label, source: "file", credentials: creds }]
+    if (creds) {
+      const [label] = buildAccountLabels([creds])
+      return [{ label, source: "file", credentials: creds }]
+    }
+
+    // Fallback: use CLAUDE_CODE_OAUTH_TOKEN when set (e.g. launched from Claude
+    // Desktop). In that environment the env var is already a valid access token
+    // and `claude auth login` never writes credentials to disk because it
+    // considers the session already authenticated.
+    const envCreds = readEnvToken()
+    if (envCreds) {
+      log("env_token_fallback", { reason: "credentials_file_not_found" })
+      return [{ label: "Claude (env)", source: "env", credentials: envCreds }]
+    }
+
+    return []
   }
 
   const services = listClaudeKeychainServices()
@@ -282,6 +332,9 @@ export function writeBackCredentials(
   source: string,
   creds: ClaudeCredentials,
 ): boolean {
+  // Env-var credentials are read-only; there is nowhere to write them back.
+  if (source === "env") return false
+
   const newCreds = {
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
@@ -342,9 +395,8 @@ export function writeBackCredentials(
 }
 
 export function refreshAccount(source: string): ClaudeCredentials | null {
-  if (source === "file") {
-    return readCredentialsFile()
-  }
+  if (source === "file") return readCredentialsFile()
+  if (source === "env") return readEnvToken()
   const raw = readKeychainService(source)
   if (!raw) return null
   return parseCredentials(raw)

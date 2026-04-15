@@ -98,10 +98,19 @@ export function saveAccountSource(source: string): void {
 function getAuthJsonPaths(): string[] {
   const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
   if (process.platform === "win32") {
-    const appData =
+    // Write to both Local and Roaming AppData on Windows.
+    // OpenCode stores its data directory in %APPDATA% (Roaming), but earlier
+    // versions of this plugin only wrote to %LOCALAPPDATA%. Writing to both
+    // ensures OpenCode's own auth picker also sees fresh credentials.
+    const localAppData =
       process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
-    const localAppDataPath = join(appData, "opencode", "auth.json")
-    return [xdgPath, localAppDataPath]
+    const roamingAppData =
+      process.env.APPDATA ?? join(homedir(), "AppData", "Roaming")
+    return [
+      xdgPath,
+      join(localAppData, "opencode", "auth.json"),
+      join(roamingAppData, "opencode", "auth.json"),
+    ]
   }
   return [xdgPath]
 }
@@ -290,6 +299,22 @@ export function refreshIfNeeded(
       writeBackCredentials(target.source, oauthCreds)
       return oauthCreds
     }
+  }
+
+  // Env-var credentials have no refresh token and no CLI path.
+  // Re-read the env var in case it was rotated by the parent process (e.g.
+  // Claude Desktop refreshed and updated its child environment). If it has
+  // genuinely expired, return null immediately rather than blocking for up to
+  // 60 s on a CLI timeout that cannot help.
+  if (target.source === "env") {
+    log("refresh_fallback_env", { source: target.source })
+    const refreshed = refreshAccount(target.source)
+    if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
+      target.credentials = refreshed
+      return refreshed
+    }
+    log("refresh_exhausted", { source: target.source, reason: "env_token_expired" })
+    return null
   }
 
   // Fall back to CLI-based refresh (consumes Haiku tokens)
