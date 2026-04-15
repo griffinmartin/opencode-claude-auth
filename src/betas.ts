@@ -47,10 +47,13 @@ export function resetExcludedBetas(): void {
 }
 
 export function isLongContextError(responseBody: string): boolean {
+  const normalized = responseBody.toLowerCase()
   return (
     responseBody.includes(
       "Extra usage is required for long context requests",
-    ) || responseBody.includes("long context beta is not yet available")
+    ) ||
+    responseBody.includes("long context beta is not yet available") ||
+    normalized.includes("you're out of extra usage")
   )
 }
 

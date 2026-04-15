@@ -202,6 +202,20 @@ describe("betas", () => {
     )
   })
 
+  it("isLongContextError treats extra-usage quota responses as long-context fallbacks", () => {
+    assert.equal(
+      isLongContextError(
+        "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+      ),
+      true,
+    )
+    assert.equal(
+      isLongContextError("Extra usage is required for long context requests"),
+      true,
+    )
+    assert.equal(isLongContextError("plain unrelated error"), false)
+  })
+
   it("getModelBetas filters out excluded betas when provided", () => {
     const betaToExclude = config.baseBetas[config.baseBetas.length - 1]
     const betaToKeep = config.baseBetas[0]
