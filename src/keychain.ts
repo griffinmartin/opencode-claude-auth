@@ -139,6 +139,7 @@ function listClaudeKeychainServices(): string[] {
   try {
     const dump = execSync("security dump-keychain", {
       timeout: 5000,
+      maxBuffer: 1024 * 1024 * 10, // 10 MB
       encoding: "utf-8",
     })
 
@@ -164,6 +165,7 @@ function listClaudeKeychainServices(): string[] {
     log("keychain_list", { servicesFound: ordered })
     return ordered
   } catch {
+    log("keychain_list", { error: "Failed to list keychein services" })
     return [PRIMARY_SERVICE]
   }
 }
