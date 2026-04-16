@@ -32,6 +32,9 @@ export const config: ModelConfig = {
     "4-6": {
       add: ["effort-2025-11-24"],
     },
+    "4-7": {
+      add: ["effort-2025-11-24"],
+    },
   },
 }
 

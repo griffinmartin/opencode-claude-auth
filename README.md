@@ -55,7 +55,7 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 
 ## Supported models
 
-15 supported models. Run `pnpm run test:models` to verify against your account.
+17 supported models. Run `pnpm run test:models` to verify against your account.
 
 | Model                      |
 | -------------------------- |
@@ -69,11 +69,13 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 | claude-opus-4-5            |
 | claude-opus-4-5-20251101   |
 | claude-opus-4-6            |
+| claude-opus-4-7            |
 | claude-sonnet-4-0          |
 | claude-sonnet-4-20250514   |
 | claude-sonnet-4-5          |
 | claude-sonnet-4-5-20250929 |
 | claude-sonnet-4-6          |
+| claude-sonnet-4-7          |
 
 ## Credential sources
 
