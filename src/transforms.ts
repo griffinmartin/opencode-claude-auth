@@ -111,7 +111,7 @@ export function transformBody(
 
     // --- Billing header: inject as system[0] (no cache_control) ---
     const version = process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
-    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli"
+    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "sdk-cli"
     const billingHeader = buildBillingHeaderValue(
       (parsed.messages ?? []) as Array<{
         role?: string
