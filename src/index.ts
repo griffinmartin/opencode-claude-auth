@@ -71,7 +71,8 @@ function getStainlessHeaders(): Record<string, string> {
   return {
     "x-stainless-arch": process.arch === "arm64" ? "arm64" : process.arch,
     "x-stainless-lang": "js",
-    "x-stainless-os": process.platform === "darwin" ? "MacOS" : process.platform,
+    "x-stainless-os":
+      process.platform === "darwin" ? "MacOS" : process.platform,
     "x-stainless-package-version": "0.81.0",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",

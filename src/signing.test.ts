@@ -119,7 +119,9 @@ describe("signing", () => {
         "2.1.112",
         "sdk-cli",
       )
-      assert.ok(result.startsWith("x-anthropic-billing-header: cc_version=2.1.112."))
+      assert.ok(
+        result.startsWith("x-anthropic-billing-header: cc_version=2.1.112."),
+      )
       assert.ok(result.includes("cc_entrypoint=sdk-cli"))
       assert.ok(result.includes("cch=fa690"))
     })
@@ -138,7 +140,9 @@ describe("signing", () => {
         "2.1.112",
         "sdk-cli",
       )
-      assert.ok(result.startsWith("x-anthropic-billing-header: cc_version=2.1.112."))
+      assert.ok(
+        result.startsWith("x-anthropic-billing-header: cc_version=2.1.112."),
+      )
       assert.ok(result.includes("cc_entrypoint=sdk-cli"))
       assert.ok(result.includes("cch=fa690"))
     })

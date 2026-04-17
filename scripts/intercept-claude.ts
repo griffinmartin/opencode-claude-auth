@@ -125,7 +125,7 @@ function interceptModel(model: string): Promise<CapturedRequest | null> {
         }
 
         const billingHeader = Array.isArray(parsed.system)
-          ? parsed.system
+          ? (parsed.system
               .map((entry) => {
                 if (typeof entry === "string") return entry
                 if (entry && typeof entry === "object" && "text" in entry) {
@@ -134,8 +134,8 @@ function interceptModel(model: string): Promise<CapturedRequest | null> {
                 return ""
               })
               .find((text) => text.startsWith("x-anthropic-billing-header")) ??
-            ""
-          : headers["x-anthropic-billing-header"] ?? ""
+            "")
+          : (headers["x-anthropic-billing-header"] ?? "")
 
         const captured: CapturedRequest = {
           model,
