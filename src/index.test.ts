@@ -279,6 +279,15 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     assert.equal(headers.get("x-api-key"), null)
     assert.equal(headers.get("x-custom"), "keep-me")
     assert.ok(headers.get("anthropic-beta")?.includes("custom-beta"))
+    assert.ok(
+      headers.get("anthropic-beta")?.includes("advisor-tool-2026-03-01"),
+    )
+    assert.equal(
+      headers.get("anthropic-dangerous-direct-browser-access"),
+      "true",
+    )
+    assert.equal(headers.get("x-stainless-lang"), "js")
+    assert.equal(headers.get("x-stainless-runtime"), "node")
     assert.equal(
       headers.get("x-anthropic-billing-header"),
       null,
@@ -371,6 +380,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         headers.get("user-agent")?.includes("9.9.9"),
         `Expected user-agent to include 9.9.9, got: ${headers.get("user-agent")}`,
       )
+      assert.ok(headers.get("user-agent")?.includes("sdk-cli"))
     } finally {
       delete process.env.ANTHROPIC_CLI_VERSION
     }
@@ -411,9 +421,27 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         billing.includes("cc_version=9.9.9"),
         `Expected billing header to include 9.9.9, got: ${billing}`,
       )
+      assert.ok(
+        billing.includes("cc_entrypoint=sdk-cli"),
+        `Expected billing header to include sdk-cli, got: ${billing}`,
+      )
     } finally {
       delete process.env.ANTHROPIC_CLI_VERSION
     }
+  })
+
+  it("buildRequestHeaders preserves provided stainless headers", () => {
+    const headers = helpers.buildRequestHeaders(
+      "https://api.anthropic.com/v1/messages",
+      {
+        headers: {
+          "x-stainless-runtime": "custom-runtime",
+        },
+      },
+      "token",
+      "claude-sonnet-4-6",
+    )
+    assert.equal(headers.get("x-stainless-runtime"), "custom-runtime")
   })
 
   it("fetchWithRetry retries on 429 and succeeds", async () => {
@@ -677,7 +705,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
       })
 
-      assert.equal(forwardedInput, originalInput)
+      assert.equal(forwardedInput, `${originalInput}?beta=true`)
     } finally {
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
