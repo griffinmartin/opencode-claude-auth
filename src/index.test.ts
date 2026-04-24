@@ -504,6 +504,57 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     assert.ok(elapsed >= 900, `Expected at least 900ms delay, got ${elapsed}ms`)
   })
 
+  it("fetchWithRetry returns immediately when retry-after exceeds max delay cap", async () => {
+    // A retry-after of 31s (31,000ms) exceeds the 30,000ms cap and signals a
+    // quota/usage-limit reset, not a transient rate limit. The function must
+    // return the error response immediately rather than waiting and hanging.
+    const start = Date.now()
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      return Promise.resolve(
+        new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "31" },
+        }),
+      )
+    }) as unknown as typeof fetch
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      {},
+      3,
+      mockFetch,
+    )
+    const elapsed = Date.now() - start
+    assert.equal(res.status, 429)
+    assert.equal(callCount, 1, "should not retry when delay exceeds cap")
+    assert.ok(elapsed < 5000, `Expected immediate return, got ${elapsed}ms`)
+  })
+
+  it("fetchWithRetry still retries when retry-after is within the delay cap", async () => {
+    let callCount = 0
+    const mockFetch = (() => {
+      callCount++
+      if (callCount === 1) {
+        return Promise.resolve(
+          new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "1" },
+          }),
+        )
+      }
+      return Promise.resolve(new Response("ok", { status: 200 }))
+    }) as unknown as typeof fetch
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      {},
+      3,
+      mockFetch,
+    )
+    assert.equal(res.status, 200)
+    assert.equal(callCount, 2, "should retry when delay is within cap")
+  })
+
   it("fetchWithRetry falls back to default delay when retry-after is non-numeric", async () => {
     const start = Date.now()
     let callCount = 0

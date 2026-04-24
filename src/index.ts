@@ -72,6 +72,11 @@ const sessionId = crypto.randomUUID()
 
 type FetchFn = typeof fetch
 
+// Maximum delay before we give up retrying and surface the error.
+// A retry-after longer than this signals a quota/usage-limit reset (hours away)
+// rather than a transient rate limit — retrying would hang indefinitely.
+const MAX_RETRY_DELAY_MS = 30_000
+
 export async function fetchWithRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -84,6 +89,17 @@ export async function fetchWithRetry(
       const retryAfter = res.headers.get("retry-after")
       const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN
       const delay = Number.isNaN(parsed) ? (i + 1) * 2000 : parsed * 1000
+      // If delay exceeds the cap, the server is signalling a quota/usage-limit
+      // reset far in the future. Return immediately so the error surfaces to
+      // the user rather than silently hanging until the reset time.
+      if (delay > MAX_RETRY_DELAY_MS) {
+        log("fetch_rate_limited_quota", {
+          status: res.status,
+          retryAfter: retryAfter ?? "none",
+          delayMs: delay,
+        })
+        return res
+      }
       log("fetch_rate_limited", {
         status: res.status,
         attempt: i + 1,
