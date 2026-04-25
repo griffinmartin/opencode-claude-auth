@@ -75,7 +75,17 @@ type FetchFn = typeof fetch
 // Maximum delay before we give up retrying and surface the error.
 // A retry-after longer than this signals a quota/usage-limit reset (hours away)
 // rather than a transient rate limit — retrying would hang indefinitely.
-const MAX_RETRY_DELAY_MS = 30_000
+// Override with OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS for longer retry windows.
+const DEFAULT_MAX_RETRY_DELAY_MS = 30_000
+
+function getMaxRetryDelayMs(): number {
+  const env = process.env.OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS
+  if (env) {
+    const parsed = parseInt(env, 10)
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed
+  }
+  return DEFAULT_MAX_RETRY_DELAY_MS
+}
 
 export async function fetchWithRetry(
   input: RequestInfo | URL,
@@ -92,7 +102,7 @@ export async function fetchWithRetry(
       // If delay exceeds the cap, the server is signalling a quota/usage-limit
       // reset far in the future. Return immediately so the error surfaces to
       // the user rather than silently hanging until the reset time.
-      if (delay > MAX_RETRY_DELAY_MS) {
+      if (delay > getMaxRetryDelayMs()) {
         log("fetch_rate_limited_quota", {
           status: res.status,
           retryAfter: retryAfter ?? "none",
