@@ -239,7 +239,21 @@ export function refreshViaOAuth(
   }
 }
 
-function refreshViaCli(configDir?: string): boolean {
+function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
+  if (requireConfigDir && !configDir) {
+    log("refresh_cli_skipped", {
+      source: "cli",
+      reason: "configDir unknown for suffixed account",
+    })
+    return false
+  }
+
+  const env = {
+    ...process.env,
+    TERM: "dumb",
+    ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
+  }
+
   const maxAttempts = 2
   for (let i = 0; i < maxAttempts; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1, configDir })
@@ -247,11 +261,7 @@ function refreshViaCli(configDir?: string): boolean {
       execSync("claude -p . --model haiku", {
         timeout: 60_000,
         encoding: "utf-8",
-        env: {
-          ...process.env,
-          TERM: "dumb",
-          ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
-        },
+        env,
         stdio: "ignore",
         cwd: tmpdir(),
       })
@@ -304,8 +314,14 @@ export function refreshIfNeeded(
   }
 
   log("refresh_fallback_cli", { source: target.source })
-  const cliSucceeded = refreshViaCli(target.configDir)
+  const isSuffixedAccount =
+    target.source !== PRIMARY_SERVICE &&
+    target.source.startsWith(PRIMARY_SERVICE + "-")
+  const cliSucceeded = refreshViaCli(target.configDir, isSuffixedAccount)
   if (!cliSucceeded) {
+    const fallback = tryFallbackAccount(target.source)
+    if (fallback) return fallback
+
     log("refresh_exhausted", {
       source: target.source,
       hadCredentials: false,
@@ -317,7 +333,7 @@ export function refreshIfNeeded(
   let refreshed = refreshAccount(target.source, target.configDir)
   if (
     (!refreshed || refreshed.expiresAt <= Date.now() + 60_000) &&
-    target.source.startsWith(PRIMARY_SERVICE + "-")
+    isSuffixedAccount
   ) {
     const primaryRefreshed = refreshAccount(PRIMARY_SERVICE)
     if (primaryRefreshed && primaryRefreshed.expiresAt > Date.now() + 60_000) {
@@ -335,6 +351,23 @@ export function refreshIfNeeded(
     hadCredentials: !!refreshed,
     expiresAt: refreshed?.expiresAt,
   })
+  return null
+}
+
+function tryFallbackAccount(excludeSource: string): ClaudeCredentials | null {
+  const now = Date.now()
+  for (const account of allAccounts) {
+    if (account.source === excludeSource) continue
+    if (account.credentials.expiresAt <= now + 60_000) continue
+    const fresh = refreshAccount(account.source, account.configDir)
+    if (fresh && fresh.expiresAt > now + 60_000) {
+      log("refresh_fallback_account", {
+        failedSource: excludeSource,
+        usedSource: account.source,
+      })
+      return fresh
+    }
+  }
   return null
 }
 

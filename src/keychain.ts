@@ -224,17 +224,16 @@ export function keychainSuffixForDir(dir: string): string {
   return createHash("sha256").update(dir).digest("hex").slice(0, 8)
 }
 
-function discoverConfigDirsForKeychain(
-  keychainSuffixes: Set<string>,
-): Map<string, string> {
-  const result = new Map<string, string>()
+let suffixToDirCache: Map<string, string> | null = null
+
+function buildSuffixToDirCache(needed: Set<string>): Map<string, string> {
+  if (suffixToDirCache) return suffixToDirCache
+
+  const cache = new Map<string, string>()
 
   const tryDir = (dir: string) => {
-    if (result.size === keychainSuffixes.size) return
     const suffix = keychainSuffixForDir(dir)
-    if (keychainSuffixes.has(suffix) && !result.has(suffix)) {
-      result.set(suffix, dir)
-    }
+    if (needed.has(suffix) && !cache.has(suffix)) cache.set(suffix, dir)
   }
 
   if (process.env.CLAUDE_CONFIG_DIR) {
@@ -249,11 +248,29 @@ function discoverConfigDirsForKeychain(
       const dir = join(home, entry.name)
       if (!existsSync(join(dir, ".claude.json"))) continue
       tryDir(dir)
+      if (cache.size === needed.size) break
     }
   } catch {
-    // Non-fatal: if $HOME can't be read, only CLAUDE_CONFIG_DIR can be used.
+    //
   }
 
+  suffixToDirCache = cache
+  return cache
+}
+
+export function clearSuffixToDirCache(): void {
+  suffixToDirCache = null
+}
+
+function discoverConfigDirsForKeychain(
+  keychainSuffixes: Set<string>,
+): Map<string, string> {
+  const cache = buildSuffixToDirCache(keychainSuffixes)
+  const result = new Map<string, string>()
+  for (const suffix of keychainSuffixes) {
+    const dir = cache.get(suffix)
+    if (dir) result.set(suffix, dir)
+  }
   return result
 }
 
