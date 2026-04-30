@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.0...v1.5.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* restore Claude subscription auth parity for Claude Code 2.1.112 ([#207](https://github.com/griffinmartin/opencode-claude-auth/issues/207)) ([572f94c](https://github.com/griffinmartin/opencode-claude-auth/commit/572f94c3869eb2d17c87f2d6f6f8e87d05b21af5))
+
 ## [1.5.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.10...v1.5.0) (2026-04-16)
 
 
