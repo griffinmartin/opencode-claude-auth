@@ -10,14 +10,16 @@ Self-contained Anthropic auth provider for OpenCode using your Claude Code crede
 
 The plugin registers its own auth provider with a custom fetch handler that intercepts all Anthropic API requests. It reads OAuth tokens from the macOS Keychain (or `~/.claude/.credentials.json` on other platforms), caches them in memory with a 30-second TTL, and handles the full request lifecycle — no builtin Anthropic auth plugin required. On macOS, multiple Claude Code accounts are detected automatically and can be switched via `opencode auth login`.
 
-It also syncs credentials to OpenCode's `auth.json` as a fallback (on Windows, it writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json` to cover all installation methods). If a token is near expiry, it refreshes directly via Anthropic's OAuth endpoint (zero LLM tokens consumed), falling back to the Claude CLI if the direct refresh fails. Background re-sync runs every 5 minutes.
+It also syncs credentials to OpenCode's `auth.json` as a fallback (on Windows, it writes to `%USERPROFILE%\.local\share\opencode\auth.json`, `%LOCALAPPDATA%\opencode\auth.json`, and `%APPDATA%\opencode\auth.json` to cover all installation methods — OpenCode itself reads from the Roaming `%APPDATA%` location). If a token is near expiry, it refreshes directly via Anthropic's OAuth endpoint (zero LLM tokens consumed), falling back to the Claude CLI if the direct refresh fails. Background re-sync runs every 5 minutes.
+
+On Windows, when Claude Code is launched from Claude Desktop, `claude auth login` never writes credentials to disk because Claude Desktop sets `CLAUDE_CODE_OAUTH_TOKEN` in the child environment and the CLI considers the session already authenticated. The plugin detects this case and reads the token directly from the environment as a last-resort credentials source.
 
 ## Prerequisites
 
 - Claude Code installed and authenticated (run `claude` at least once)
 - OpenCode installed
 
-macOS is preferred (uses Keychain). Linux and Windows work via the credentials file fallback.
+macOS is preferred (uses Keychain). Linux and Windows work via the credentials file fallback. On Windows, if Claude Code is launched from Claude Desktop, the plugin can also fall back to the `CLAUDE_CODE_OAUTH_TOKEN` env var that Claude Desktop sets for child processes.
 
 ## Installation
 
@@ -180,13 +182,14 @@ This reads your stored credentials, calls Anthropic's OAuth token endpoint, and 
 
 All configurable parameters can be overridden via environment variables. If Anthropic changes something before we publish an update, set an env var and keep working:
 
-| Variable                      | Description                                                                | Default                                                                                                 |
-| ----------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_CLI_VERSION`       | Claude CLI version for user-agent and billing headers                      | `2.1.80`                                                                                                |
-| `ANTHROPIC_USER_AGENT`        | Full User-Agent string (overrides CLI version)                             | `claude-cli/{version} (external, cli)`                                                                  |
-| `ANTHROPIC_BETA_FLAGS`        | Comma-separated beta feature flags                                         | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
-| `ANTHROPIC_ENABLE_1M_CONTEXT` | Enable 1M token context window for 4.6+ models (requires Max subscription) | `false`                                                                                                 |
-| `CLAUDE_AUTH_DEBUG`           | Enable diagnostic logging (`1` for default path, or a custom file path)    | disabled                                                                                                |
+| Variable                      | Description                                                                                                                                                                                                                           | Default                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_CLI_VERSION`       | Claude CLI version for user-agent and billing headers                                                                                                                                                                                 | `2.1.80`                                                                                                |
+| `ANTHROPIC_USER_AGENT`        | Full User-Agent string (overrides CLI version)                                                                                                                                                                                        | `claude-cli/{version} (external, cli)`                                                                  |
+| `ANTHROPIC_BETA_FLAGS`        | Comma-separated beta feature flags                                                                                                                                                                                                    | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
+| `ANTHROPIC_ENABLE_1M_CONTEXT` | Enable 1M token context window for 4.6+ models (requires Max subscription)                                                                                                                                                            | `false`                                                                                                 |
+| `CLAUDE_AUTH_DEBUG`           | Enable diagnostic logging (`1` for default path, or a custom file path)                                                                                                                                                               | disabled                                                                                                |
+| `CLAUDE_CODE_OAUTH_TOKEN`     | Read-only fallback credential source on Windows when Claude Code is launched from Claude Desktop. The plugin reads this if `~/.claude/.credentials.json` is absent. Set automatically by Claude Desktop; not intended for manual use. | unset                                                                                                   |
 
 Example:
 
@@ -206,7 +209,8 @@ export ANTHROPIC_ENABLE_1M_CONTEXT=true  # requires Claude Max
 - On macOS, enumerates all `Claude Code-credentials*` Keychain entries and labels them by subscription tier
 - Provides an account switcher via `opencode auth login` when multiple accounts are found; persists selection to `~/.local/share/opencode/claude-account-source.txt`
 - Syncs credentials to `auth.json` on startup and every 5 minutes as a fallback (sync never triggers refresh; refresh is lazy, only on API requests)
-- On Windows, writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json`
+- On Windows, writes to `%USERPROFILE%\.local\share\opencode\auth.json`, `%LOCALAPPDATA%\opencode\auth.json`, and `%APPDATA%\opencode\auth.json` (OpenCode reads from the Roaming `%APPDATA%` path)
+- On Windows, if Claude Code was launched from Claude Desktop and no on-disk credentials file exists, falls back to reading the OAuth token from `CLAUDE_CODE_OAUTH_TOKEN`. This source has no refresh token; expiry is decoded from the JWT `exp` claim (defaulting to ~10 hours if decode fails). When this token expires, the plugin returns null immediately rather than invoking the CLI fallback (which cannot help)
 - Retries API requests on 429 (rate limit) and 529 (overloaded) with exponential backoff, respecting `retry-after` headers
 - When a token is within 60 seconds of expiry, refreshes directly via `POST https://claude.ai/v1/oauth/token` (no LLM tokens consumed). Falls back to `claude` CLI if the direct refresh fails. New tokens are written back to Keychain (macOS) or credentials file (Linux/Windows) to keep stored credentials in sync with rotated refresh tokens
 - If credentials aren't OAuth-based, the auth loader returns `{}` and falls through to API key auth
