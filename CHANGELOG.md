@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.2...v1.5.3) (2026-04-30)
+
+
+### Bug Fixes
+
+* increase max buffer for reading keychain dump ([#201](https://github.com/griffinmartin/opencode-claude-auth/issues/201)) ([2f97161](https://github.com/griffinmartin/opencode-claude-auth/commit/2f97161d36810ee0d9c7be6de95c66bf844eee2f))
+
 ## [1.5.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.1...v1.5.2) (2026-04-30)
 
 
