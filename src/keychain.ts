@@ -164,8 +164,11 @@ function listClaudeKeychainServices(): string[] {
     }
     log("keychain_list", { servicesFound: ordered })
     return ordered
-  } catch {
-    log("keychain_list", { error: "Failed to list keychein services" })
+  } catch (err) {
+    log("keychain_list", {
+      error: "Failed to list keychain services",
+      message: err instanceof Error ? err.message : String(err),
+    })
     return [PRIMARY_SERVICE]
   }
 }
