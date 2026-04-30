@@ -1,9 +1,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
+import {
+  getAuthJsonPaths,
+  parseOAuthResponse,
+  refreshViaOAuth,
+} from "./credentials.ts"
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -475,5 +479,299 @@ describe("parseOAuthResponse", () => {
 
   it("returns null for empty string", () => {
     assert.equal(parseOAuthResponse("", currentRefresh, now), null)
+  })
+})
+
+function withPlatform(value: NodeJS.Platform, fn: () => void): void {
+  const original = process.platform
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  })
+  try {
+    fn()
+  } finally {
+    Object.defineProperty(process, "platform", {
+      value: original,
+      configurable: true,
+    })
+  }
+}
+
+function withEnvVars(
+  vars: Record<string, string | undefined>,
+  fn: () => void,
+): void {
+  const originals: Record<string, string | undefined> = {}
+  for (const key of Object.keys(vars)) {
+    originals[key] = process.env[key]
+    const v = vars[key]
+    if (v === undefined) delete process.env[key]
+    else process.env[key] = v
+  }
+  try {
+    fn()
+  } finally {
+    for (const key of Object.keys(originals)) {
+      const orig = originals[key]
+      if (typeof orig === "string") process.env[key] = orig
+      else delete process.env[key]
+    }
+  }
+}
+
+describe("getAuthJsonPaths", () => {
+  const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
+
+  it("returns only the XDG path on non-Windows platforms", () => {
+    withPlatform("darwin", () => {
+      assert.deepEqual(getAuthJsonPaths(), [xdgPath])
+    })
+    withPlatform("linux", () => {
+      assert.deepEqual(getAuthJsonPaths(), [xdgPath])
+    })
+  })
+
+  it("returns XDG + Local + Roaming AppData paths on Windows when both env vars are set", () => {
+    withPlatform("win32", () => {
+      withEnvVars(
+        {
+          LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
+          APPDATA: "C:\\Users\\test\\AppData\\Roaming",
+        },
+        () => {
+          const paths = getAuthJsonPaths()
+          assert.equal(paths.length, 3)
+          assert.equal(paths[0], xdgPath)
+          assert.equal(
+            paths[1],
+            join("C:\\Users\\test\\AppData\\Local", "opencode", "auth.json"),
+          )
+          assert.equal(
+            paths[2],
+            join("C:\\Users\\test\\AppData\\Roaming", "opencode", "auth.json"),
+          )
+        },
+      )
+    })
+  })
+
+  it("includes both Local and Roaming Windows paths (regression: Roaming was previously missing)", () => {
+    // Bug 2 from PR #200: OpenCode reads from %APPDATA% (Roaming), but the
+    // plugin previously only wrote to %LOCALAPPDATA%. Both must be present.
+    withPlatform("win32", () => {
+      withEnvVars(
+        {
+          LOCALAPPDATA: "C:\\local",
+          APPDATA: "C:\\roaming",
+        },
+        () => {
+          const paths = getAuthJsonPaths()
+          const hasLocal = paths.some((p) => p.startsWith("C:\\local"))
+          const hasRoaming = paths.some((p) => p.startsWith("C:\\roaming"))
+          assert.ok(hasLocal, "should include %LOCALAPPDATA% path")
+          assert.ok(hasRoaming, "should include %APPDATA% (Roaming) path")
+        },
+      )
+    })
+  })
+
+  it("falls back to homedir-derived AppData paths when env vars are unset on Windows", () => {
+    withPlatform("win32", () => {
+      withEnvVars({ LOCALAPPDATA: undefined, APPDATA: undefined }, () => {
+        const paths = getAuthJsonPaths()
+        assert.equal(paths.length, 3)
+        assert.equal(paths[0], xdgPath)
+        assert.equal(
+          paths[1],
+          join(homedir(), "AppData", "Local", "opencode", "auth.json"),
+        )
+        assert.equal(
+          paths[2],
+          join(homedir(), "AppData", "Roaming", "opencode", "auth.json"),
+        )
+      })
+    })
+  })
+})
+
+async function loadCredentialsWithCountingEnvKeychain(
+  envCreds: {
+    accessToken: string
+    refreshToken: string
+    expiresAt: number
+  } | null,
+): Promise<{
+  credentialsModule: {
+    refreshIfNeeded: (account: {
+      label: string
+      source: string
+      credentials: {
+        accessToken: string
+        refreshToken: string
+        expiresAt: number
+      }
+    }) => {
+      accessToken: string
+      refreshToken: string
+      expiresAt: number
+    } | null
+  }
+  keychainModule: { __getRefreshCount: () => number }
+}> {
+  const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-envref-"))
+  const tempKeychain = join(tempDir, "keychain.ts")
+  const tempBetas = join(tempDir, "betas.ts")
+  const tempLogger = join(tempDir, "logger.ts")
+  const tempCredentials = join(tempDir, "credentials.ts")
+  const sourceCredentials = await readFile(
+    new URL("./credentials.ts", import.meta.url),
+    "utf8",
+  )
+  const rewritten = sourceCredentials.replace(
+    /from\s+["']\.\/(\w+)\.js["']/g,
+    'from "./$1.ts"',
+  )
+
+  await writeFile(
+    tempLogger,
+    `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+    "utf8",
+  )
+
+  // Stub keychain: refreshAccount returns the configured envCreds for "env",
+  // null otherwise. Counts every call so the test can assert the env
+  // short-circuit prevented a second call from the CLI fallback.
+  await writeFile(
+    tempKeychain,
+    `let refreshCount = 0
+const envCreds = ${JSON.stringify(envCreds)}
+export function readAllClaudeAccounts() { return [] }
+export function refreshAccount(source) {
+  refreshCount += 1
+  if (source === "env") return envCreds
+  return null
+}
+export function writeBackCredentials() { return false }
+export function buildAccountLabels(creds) { return creds.map((_, i) => \`A\${i+1}\`) }
+export function __getRefreshCount() { return refreshCount }
+`,
+    "utf8",
+  )
+
+  await writeFile(
+    tempBetas,
+    `export function resetExcludedBetas() {}\n`,
+    "utf8",
+  )
+  await writeFile(tempCredentials, rewritten, "utf8")
+
+  const [credentialsModule, keychainModule] = await Promise.all([
+    import(pathToFileURL(tempCredentials).href),
+    import(pathToFileURL(tempKeychain).href),
+  ])
+
+  return {
+    credentialsModule: credentialsModule as {
+      refreshIfNeeded: (account: {
+        label: string
+        source: string
+        credentials: {
+          accessToken: string
+          refreshToken: string
+          expiresAt: number
+        }
+      }) => {
+        accessToken: string
+        refreshToken: string
+        expiresAt: number
+      } | null
+    },
+    keychainModule: keychainModule as { __getRefreshCount: () => number },
+  }
+}
+
+describe("refreshIfNeeded (env source short-circuit)", () => {
+  it("returns null immediately when env token is also expired (skips CLI fallback)", async () => {
+    const now = Date.now()
+    // Stub refreshAccount("env") returns an already-expired credential.
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingEnvKeychain({
+        accessToken: "expired-env-token",
+        refreshToken: "",
+        expiresAt: now - 60_000, // expired
+      })
+
+    const account = {
+      label: "Claude (env)",
+      source: "env",
+      credentials: {
+        accessToken: "old-env-token",
+        refreshToken: "", // empty: skips OAuth refresh path
+        expiresAt: now - 1_000, // expired -> triggers refreshIfNeeded body
+      },
+    }
+
+    const result = credentialsModule.refreshIfNeeded(account)
+    assert.equal(result, null)
+
+    // Critical assertion: the env block calls refreshAccount exactly once.
+    // If the env short-circuit is removed, control falls through to the CLI
+    // fallback which calls refreshAccount AGAIN (line 323 in credentials.ts),
+    // making this count 2. So count===1 proves the short-circuit engaged
+    // and refreshViaCli() was skipped.
+    assert.equal(
+      keychainModule.__getRefreshCount(),
+      1,
+      "env-source path should call refreshAccount exactly once and skip CLI fallback",
+    )
+  })
+
+  it("returns refreshed credentials when env var has been rotated to a fresh token", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingEnvKeychain({
+        accessToken: "fresh-env-token",
+        refreshToken: "",
+        expiresAt: now + 3_600_000, // 1h in the future
+      })
+
+    const account = {
+      label: "Claude (env)",
+      source: "env",
+      credentials: {
+        accessToken: "old-env-token",
+        refreshToken: "",
+        expiresAt: now - 1_000, // expired -> triggers refreshIfNeeded body
+      },
+    }
+
+    const result = credentialsModule.refreshIfNeeded(account)
+    assert.ok(result, "should return refreshed credentials")
+    assert.equal(result.accessToken, "fresh-env-token")
+    // Account credentials should have been updated in-place.
+    assert.equal(account.credentials.accessToken, "fresh-env-token")
+    assert.equal(keychainModule.__getRefreshCount(), 1)
+  })
+
+  it("returns null when CLAUDE_CODE_OAUTH_TOKEN has been unset entirely", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingEnvKeychain(null)
+
+    const account = {
+      label: "Claude (env)",
+      source: "env",
+      credentials: {
+        accessToken: "old-env-token",
+        refreshToken: "",
+        expiresAt: now - 1_000,
+      },
+    }
+
+    assert.equal(credentialsModule.refreshIfNeeded(account), null)
+    // Still exactly one call — env block hits, gets null, returns null.
+    // Does NOT fall through to the CLI fallback that would call refreshAccount again.
+    assert.equal(keychainModule.__getRefreshCount(), 1)
   })
 })

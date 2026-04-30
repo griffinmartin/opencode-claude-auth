@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
   buildAccountLabels,
+  refreshAccount,
   updateCredentialBlob,
   writeBackCredentials,
 } from "./keychain.ts"
@@ -498,6 +499,103 @@ describe("updateCredentialBlob", () => {
   })
 })
 
+// Helper: build a JWT with the given payload claims. Signature is irrelevant
+// — readEnvToken only decodes the payload, it does not verify.
+function makeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(
+    JSON.stringify({ alg: "none", typ: "JWT" }),
+  ).toString("base64url")
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url")
+  return `${header}.${body}.sig`
+}
+
+function withEnvToken(value: string | undefined, fn: () => void): void {
+  const original = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  if (value === undefined) {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  } else {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = value
+  }
+  try {
+    fn()
+  } finally {
+    if (typeof original === "string") {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = original
+    } else {
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    }
+  }
+}
+
+describe("readEnvToken (via refreshAccount('env'))", () => {
+  it("decodes the exp claim from a valid JWT into expiresAt (ms)", () => {
+    const expSeconds = Math.floor(Date.now() / 1000) + 3_600
+    withEnvToken(makeJwt({ exp: expSeconds, sub: "user-1" }), () => {
+      const result = refreshAccount("env")
+      assert.ok(result, "should return credentials when env var is set")
+      assert.equal(result.expiresAt, expSeconds * 1000)
+    })
+  })
+
+  it("returns the env var verbatim as accessToken with empty refreshToken", () => {
+    const token = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3_600 })
+    withEnvToken(token, () => {
+      const result = refreshAccount("env")
+      assert.ok(result)
+      assert.equal(result.accessToken, token)
+      assert.equal(result.refreshToken, "")
+    })
+  })
+
+  it("falls back to ~10h default when JWT payload is malformed (not base64)", () => {
+    const before = Date.now()
+    withEnvToken("not.a.jwt", () => {
+      const result = refreshAccount("env")
+      assert.ok(result)
+      // 10h default = 36_000_000 ms; allow generous tolerance for test scheduling
+      const after = Date.now()
+      assert.ok(
+        result.expiresAt >= before + 36_000_000 - 5_000 &&
+          result.expiresAt <= after + 36_000_000 + 5_000,
+        `expected ~10h default, got expiresAt=${result.expiresAt} relative to now`,
+      )
+    })
+  })
+
+  it("falls back to ~10h default when token is a single segment with no payload", () => {
+    const before = Date.now()
+    withEnvToken("opaque-token-no-dots", () => {
+      const result = refreshAccount("env")
+      assert.ok(result)
+      const after = Date.now()
+      assert.ok(
+        result.expiresAt >= before + 36_000_000 - 5_000 &&
+          result.expiresAt <= after + 36_000_000 + 5_000,
+      )
+    })
+  })
+
+  it("falls back to ~10h default when payload JSON is missing the exp claim", () => {
+    const before = Date.now()
+    const tokenNoExp = makeJwt({ sub: "user-1" }) // no exp
+    withEnvToken(tokenNoExp, () => {
+      const result = refreshAccount("env")
+      assert.ok(result)
+      const after = Date.now()
+      assert.ok(
+        result.expiresAt >= before + 36_000_000 - 5_000 &&
+          result.expiresAt <= after + 36_000_000 + 5_000,
+      )
+    })
+  })
+
+  it("returns null when CLAUDE_CODE_OAUTH_TOKEN is not set", () => {
+    withEnvToken(undefined, () => {
+      assert.equal(refreshAccount("env"), null)
+    })
+  })
+})
+
 describe("writeBackCredentials (file source)", () => {
   it("reads, updates, and writes back credentials to file", async () => {
     const originalHome = process.env.HOME
@@ -634,6 +732,27 @@ describe("writeBackCredentials (file source)", () => {
         delete process.env.HOME
       }
       rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("writeBackCredentials (env source)", () => {
+  it("returns false because env-var credentials are read-only", () => {
+    const originalToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "header.payload.sig"
+    try {
+      const result = writeBackCredentials("env", {
+        accessToken: "at",
+        refreshToken: "rt",
+        expiresAt: Date.now() + 600_000,
+      })
+      assert.equal(result, false)
+    } finally {
+      if (typeof originalToken === "string") {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = originalToken
+      } else {
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      }
     }
   })
 })

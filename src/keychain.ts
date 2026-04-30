@@ -210,8 +210,12 @@ function readEnvToken(): ClaudeCredentials | null {
         expiresAt = payload.exp * 1000
       }
     }
-  } catch {
-    // JWT decode failed — use default expiry
+  } catch (err) {
+    // JWT decode failed — use default expiry, but record why so failures
+    // aren't silent.
+    log("env_token_decode_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    })
   }
 
   log("env_token_read", { success: true, expiresAt })

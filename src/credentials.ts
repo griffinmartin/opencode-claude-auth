@@ -95,7 +95,7 @@ export function saveAccountSource(source: string): void {
   }
 }
 
-function getAuthJsonPaths(): string[] {
+export function getAuthJsonPaths(): string[] {
   const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
   if (process.platform === "win32") {
     // Write to both Local and Roaming AppData on Windows.
@@ -313,7 +313,10 @@ export function refreshIfNeeded(
       target.credentials = refreshed
       return refreshed
     }
-    log("refresh_exhausted", { source: target.source, reason: "env_token_expired" })
+    log("refresh_exhausted", {
+      source: target.source,
+      reason: "env_token_expired",
+    })
     return null
   }
 
