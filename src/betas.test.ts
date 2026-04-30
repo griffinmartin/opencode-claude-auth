@@ -88,7 +88,11 @@ describe("betas", () => {
   })
 
   it("getModelOverride does not set disableEffort for non-haiku models", () => {
-    for (const model of ["claude-sonnet-4-6", "claude-opus-4-6"]) {
+    for (const model of [
+      "claude-sonnet-4-6",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+    ]) {
       const override = getModelOverride(model)
       assert.ok(
         !override?.disableEffort,
@@ -122,6 +126,7 @@ describe("betas", () => {
       const models = [
         "claude-sonnet-4-6",
         "claude-opus-4-6",
+        "claude-opus-4-7",
         "claude-sonnet-4-5-20250514",
         "claude-opus-4-5-20250514",
         "claude-opus-4-20250514",
@@ -153,6 +158,12 @@ describe("betas", () => {
       assert.ok(
         opus.includes("context-1m-2025-08-07"),
         "opus 4.6 should get 1M beta when opted in",
+      )
+
+      const opus47 = getModelBetas("claude-opus-4-7")
+      assert.ok(
+        opus47.includes("context-1m-2025-08-07"),
+        "opus 4.7 should get 1M beta when opted in",
       )
     } finally {
       delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
@@ -187,6 +198,7 @@ describe("betas", () => {
   it("supports1mContext identifies eligible models", () => {
     assert.ok(supports1mContext("claude-sonnet-4-6"), "sonnet 4.6 supports 1M")
     assert.ok(supports1mContext("claude-opus-4-6"), "opus 4.6 supports 1M")
+    assert.ok(supports1mContext("claude-opus-4-7"), "opus 4.7 supports 1M")
     assert.ok(
       !supports1mContext("claude-sonnet-4-5-20250514"),
       "sonnet 4.5 does not support 1M",
@@ -267,6 +279,25 @@ describe("betas", () => {
       "should not match other errors",
     )
     assert.ok(!isLongContextError(""), "should not match empty string")
+  })
+
+  it("isLongContextError detects out-of-extra-usage error (Max subscription quota)", () => {
+    assert.ok(
+      isLongContextError("You're out of extra usage"),
+      "should detect out-of-extra-usage error",
+    )
+    assert.ok(
+      isLongContextError(
+        "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+      ),
+      "should detect full out-of-extra-usage message",
+    )
+    assert.ok(
+      isLongContextError(
+        '{"error": {"message": "You\'re out of extra usage. Add more at claude.ai/settings/usage and keep going."}}',
+      ),
+      "should detect out-of-extra-usage error in JSON",
+    )
   })
 
   it("getModelBetas uses ANTHROPIC_BETA_FLAGS when set", () => {

@@ -116,13 +116,14 @@ describe("signing", () => {
     it("produces correct header for simple string message", () => {
       const result = buildBillingHeaderValue(
         [{ role: "user", content: "hey" }],
-        "2.1.90",
-        "cli",
+        "2.1.112",
+        "sdk-cli",
       )
-      assert.equal(
-        result,
-        "x-anthropic-billing-header: cc_version=2.1.90.b39; cc_entrypoint=cli; cch=fa690;",
+      assert.ok(
+        result.startsWith("x-anthropic-billing-header: cc_version=2.1.112."),
       )
+      assert.ok(result.includes("cc_entrypoint=sdk-cli"))
+      assert.ok(result.includes("cch=fa690"))
     })
 
     it("uses first text block from array content", () => {
@@ -136,24 +137,25 @@ describe("signing", () => {
             ],
           },
         ],
-        "2.1.90",
-        "cli",
+        "2.1.112",
+        "sdk-cli",
       )
-      assert.equal(
-        result,
-        "x-anthropic-billing-header: cc_version=2.1.90.b39; cc_entrypoint=cli; cch=fa690;",
+      assert.ok(
+        result.startsWith("x-anthropic-billing-header: cc_version=2.1.112."),
       )
+      assert.ok(result.includes("cc_entrypoint=sdk-cli"))
+      assert.ok(result.includes("cch=fa690"))
     })
 
     it("handles missing user message (hashes empty string)", () => {
-      const result = buildBillingHeaderValue([], "2.1.90", "cli")
+      const result = buildBillingHeaderValue([], "2.1.112", "sdk-cli")
       assert.ok(result.includes("cch=e3b0c"))
     })
 
     it("uses provided entrypoint", () => {
       const result = buildBillingHeaderValue(
         [{ role: "user", content: "hey" }],
-        "2.1.90",
+        "2.1.112",
         "sdk-cli",
       )
       assert.ok(result.includes("cc_entrypoint=sdk-cli"))

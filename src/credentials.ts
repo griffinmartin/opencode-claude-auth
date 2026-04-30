@@ -147,6 +147,11 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
 }
 
 export function syncAuthJson(creds: ClaudeCredentials): void {
+  // Each target path is independent: a failure on one path (e.g. a locked
+  // %APPDATA% file on Windows) must not abort the remaining writes. Failures
+  // are logged per-path and otherwise swallowed so the caller (plugin init,
+  // 5-min timer, account-switch authorize) is not torn down by a single bad
+  // sync target.
   for (const authPath of getAuthJsonPaths()) {
     try {
       syncToPath(authPath, creds)
@@ -157,7 +162,6 @@ export function syncAuthJson(creds: ClaudeCredentials): void {
         success: false,
         error: err instanceof Error ? err.message : String(err),
       })
-      throw err
     }
   }
 }

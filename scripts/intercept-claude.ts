@@ -60,6 +60,8 @@ const ALL_MODELS = [
 // ---------------------------------------------------------------------------
 interface CapturedRequest {
   model: string
+  method: string
+  path: string
   headers: Record<string, string>
   bodyKeys: string[]
   betas: string[]
@@ -122,13 +124,28 @@ function interceptModel(model: string): Promise<CapturedRequest | null> {
           // body may not be JSON
         }
 
+        const billingHeader = Array.isArray(parsed.system)
+          ? (parsed.system
+              .map((entry) => {
+                if (typeof entry === "string") return entry
+                if (entry && typeof entry === "object" && "text" in entry) {
+                  return typeof entry.text === "string" ? entry.text : ""
+                }
+                return ""
+              })
+              .find((text) => text.startsWith("x-anthropic-billing-header")) ??
+            "")
+          : (headers["x-anthropic-billing-header"] ?? "")
+
         const captured: CapturedRequest = {
           model,
+          method: req.method ?? "",
+          path: req.url ?? "",
           headers,
           bodyKeys: Object.keys(parsed).sort(),
           betas,
           userAgent: headers["user-agent"] ?? "",
-          billingHeader: headers["x-anthropic-billing-header"] ?? "",
+          billingHeader,
           thinking: parsed.thinking,
           metadata: parsed.metadata,
           outputConfig: parsed.output_config,
@@ -146,8 +163,10 @@ function interceptModel(model: string): Promise<CapturedRequest | null> {
           res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers)
           proxyRes.pipe(res)
           proxyRes.on("end", () => {
-            clearTimeout(timer)
-            finish(captured)
+            if (req.method === "POST" && req.url?.startsWith("/v1/messages")) {
+              clearTimeout(timer)
+              finish(captured)
+            }
           })
         })
 

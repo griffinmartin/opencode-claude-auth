@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.5.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.1...v1.5.2) (2026-04-30)
+
+
+### Bug Fixes
+
+* detect out-of-extra-usage error and cap retry-after delay ([#211](https://github.com/griffinmartin/opencode-claude-auth/issues/211)) ([88a114e](https://github.com/griffinmartin/opencode-claude-auth/commit/88a114efd273d3f32908a31494363adce30cd9de))
+
+## [1.5.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.0...v1.5.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* restore Claude subscription auth parity for Claude Code 2.1.112 ([#207](https://github.com/griffinmartin/opencode-claude-auth/issues/207)) ([572f94c](https://github.com/griffinmartin/opencode-claude-auth/commit/572f94c3869eb2d17c87f2d6f6f8e87d05b21af5))
+
+## [1.5.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.10...v1.5.0) (2026-04-16)
+
+
+### Features
+
+* add Claude Opus 4.7 model support ([#203](https://github.com/griffinmartin/opencode-claude-auth/issues/203)) ([cc96338](https://github.com/griffinmartin/opencode-claude-auth/commit/cc963387b7a6d95c9dbdd1782c2e594b5aa3d6ba))
+
 ## [1.4.10](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.4.9...v1.4.10) (2026-04-14)
 
 

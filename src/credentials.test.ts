@@ -4,11 +4,19 @@ import {
   getAuthJsonPaths,
   parseOAuthResponse,
   refreshViaOAuth,
+  syncAuthJson,
 } from "./credentials.ts"
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 
 async function loadCredentialsWithCountingKeychain(
@@ -592,6 +600,53 @@ describe("getAuthJsonPaths", () => {
         )
       })
     })
+  })
+})
+
+describe("syncAuthJson error handling", () => {
+  it("does not throw when a target path is unwritable (continues to next path)", async () => {
+    // Force the XDG path to be unwritable by pre-creating a *directory*
+    // at the target file path. writeFileSync then fails with EISDIR.
+    // The contract is: syncAuthJson logs the failure and continues so a
+    // single bad sync target cannot tear down plugin init or the 5-min
+    // sync timer (relevant on Windows where there are now three target
+    // paths and any one of them might be locked by AV / on a network
+    // share / etc.).
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-syncerr-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const xdgPath = join(tempHome, ".local", "share", "opencode", "auth.json")
+      mkdirSync(dirname(xdgPath), { recursive: true })
+      // Pre-create a directory at the target file path. Any subsequent
+      // writeFileSync(authPath, ...) will fail with EISDIR.
+      mkdirSync(xdgPath, { recursive: true })
+
+      assert.doesNotThrow(() => {
+        syncAuthJson({
+          accessToken: "tok",
+          refreshToken: "ref",
+          expiresAt: Date.now() + 600_000,
+        })
+      })
+
+      // Sanity-check the directory is still a directory (i.e. write
+      // really did fail and was not silently allowed through).
+      assert.ok(
+        existsSync(xdgPath) && statSync(xdgPath).isDirectory(),
+        "target path should still be a directory; write should have failed",
+      )
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
   })
 })
 

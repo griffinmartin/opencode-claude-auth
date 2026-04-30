@@ -63,14 +63,59 @@ function getCliVersion(): string {
 function getUserAgent(): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, cli)`
+    `claude-cli/${getCliVersion()} (external, sdk-cli)`
   )
+}
+
+function getStainlessHeaders(): Record<string, string> {
+  return {
+    "x-stainless-arch": process.arch === "arm64" ? "arm64" : process.arch,
+    "x-stainless-lang": "js",
+    "x-stainless-os":
+      process.platform === "darwin" ? "MacOS" : process.platform,
+    "x-stainless-package-version": "0.81.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": process.version,
+    "x-stainless-timeout": "600",
+  }
+}
+
+function buildRequestUrl(input: RequestInfo | URL): string | URL {
+  const raw =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url
+
+  const url = new URL(raw)
+  if (url.pathname === "/v1/messages" && !url.searchParams.has("beta")) {
+    url.searchParams.set("beta", "true")
+  }
+
+  return typeof input === "string" ? url.toString() : url
 }
 
 // Stable per-process session ID, matching Claude Code's X-Claude-Code-Session-Id
 const sessionId = crypto.randomUUID()
 
 type FetchFn = typeof fetch
+
+// Maximum delay before we give up retrying and surface the error.
+// A retry-after longer than this signals a quota/usage-limit reset (hours away)
+// rather than a transient rate limit — retrying would hang indefinitely.
+// Override with OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS for longer retry windows.
+const DEFAULT_MAX_RETRY_DELAY_MS = 30_000
+
+function getMaxRetryDelayMs(): number {
+  const env = process.env.OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS
+  if (env) {
+    const parsed = parseInt(env, 10)
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed
+  }
+  return DEFAULT_MAX_RETRY_DELAY_MS
+}
 
 export async function fetchWithRetry(
   input: RequestInfo | URL,
@@ -84,6 +129,17 @@ export async function fetchWithRetry(
       const retryAfter = res.headers.get("retry-after")
       const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN
       const delay = Number.isNaN(parsed) ? (i + 1) * 2000 : parsed * 1000
+      // If delay exceeds the cap, the server is signalling a quota/usage-limit
+      // reset far in the future. Return immediately so the error surfaces to
+      // the user rather than silently hanging until the reset time.
+      if (delay > getMaxRetryDelayMs()) {
+        log("fetch_rate_limited_quota", {
+          status: res.status,
+          retryAfter: retryAfter ?? "none",
+          delayMs: delay,
+        })
+        return res
+      }
       log("fetch_rate_limited", {
         status: res.status,
         attempt: i + 1,
@@ -146,10 +202,14 @@ export function buildRequestHeaders(
   headers.set("authorization", `Bearer ${accessToken}`)
   headers.set("anthropic-version", "2023-06-01")
   headers.set("anthropic-beta", mergedBetas.join(","))
+  headers.set("anthropic-dangerous-direct-browser-access", "true")
   headers.set("x-app", "cli")
   headers.set("user-agent", getUserAgent())
   headers.set("x-client-request-id", crypto.randomUUID())
   headers.set("X-Claude-Code-Session-Id", sessionId)
+  for (const [key, value] of Object.entries(getStainlessHeaders())) {
+    if (!headers.has(key)) headers.set(key, value)
+  }
   headers.delete("x-api-key")
 
   return headers
@@ -291,6 +351,7 @@ const plugin: Plugin = async () => {
 
             // Get excluded betas for this model (from previous failed requests)
             const excluded = getExcludedBetas(modelId)
+            const requestUrl = buildRequestUrl(input)
             const headers = buildRequestHeaders(
               input,
               requestInit,
@@ -307,7 +368,7 @@ const plugin: Plugin = async () => {
               .filter(Boolean)
             log("fetch_headers_built", { headerKeys, betas, modelId })
 
-            let response = await fetchWithRetry(input, {
+            let response = await fetchWithRetry(requestUrl, {
               ...requestInit,
               body,
               headers,
@@ -332,7 +393,7 @@ const plugin: Plugin = async () => {
                   modelId,
                   excluded,
                 )
-                response = await fetchWithRetry(input, {
+                response = await fetchWithRetry(requestUrl, {
                   ...requestInit,
                   body,
                   headers: retryHeaders,
@@ -385,7 +446,7 @@ const plugin: Plugin = async () => {
                 newExcluded,
               )
 
-              response = await fetchWithRetry(input, {
+              response = await fetchWithRetry(requestUrl, {
                 ...requestInit,
                 body,
                 headers: newHeaders,
@@ -466,7 +527,9 @@ const plugin: Plugin = async () => {
             const sourceDescription =
               chosen.source === "file"
                 ? "credentials file (~/.claude/.credentials.json)"
-                : "macOS Keychain"
+                : chosen.source === "env"
+                  ? "CLAUDE_CODE_OAUTH_TOKEN environment variable"
+                  : "macOS Keychain"
 
             return {
               url: "",
