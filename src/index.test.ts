@@ -532,42 +532,42 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
   })
 
   it("fetchWithRetry respects OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS env override", async () => {
-    process.env.OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS = "60000"
-    const start = Date.now()
+    // Override the cap below the natural retry-after delay so the env var
+    // demonstrably changes behaviour: a `retry-after: 1` produces a 1000ms
+    // delay, which exceeds the 500ms override cap, so the function must
+    // bail immediately. Without the override the default 30s cap would
+    // permit the retry and elapsed would be ~1000ms — the gap is what
+    // proves the env var took effect.
+    process.env.OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS = "500"
     let callCount = 0
     const mockFetch = (() => {
       callCount++
-      if (callCount === 1) {
-        return Promise.resolve(
-          new Response("rate limited", {
-            status: 429,
-            headers: { "retry-after": "31" },
-          }),
-        )
-      }
-      return Promise.resolve(new Response("ok", { status: 200 }))
+      return Promise.resolve(
+        new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "1" },
+        }),
+      )
     }) as unknown as typeof fetch
     try {
-      // 31s retry-after is below the 60s env override, so it should retry
-      // (we don't actually wait 31s — the mock succeeds on second call,
-      // but the delay would have been scheduled; we just verify it didn't
-      // short-circuit immediately by checking callCount after a tiny wait)
-      const resPromise = helpers.fetchWithRetry(
+      const start = Date.now()
+      const res = await helpers.fetchWithRetry(
         "https://example.com",
         {},
         3,
         mockFetch,
       )
-      // The function is mid-sleep; callCount should still be 1
-      assert.equal(callCount, 1)
-      // Abort the test cleanly — we've proven it didn't return early
-      // by confirming callCount didn't jump to 2 synchronously
-      resPromise.catch(() => {})
+      const elapsed = Date.now() - start
+      assert.equal(res.status, 429)
+      assert.equal(
+        callCount,
+        1,
+        "should not retry when delay exceeds env-override cap",
+      )
+      assert.ok(elapsed < 500, `expected immediate return, got ${elapsed}ms`)
     } finally {
       delete process.env.OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS
     }
-    const elapsed = Date.now() - start
-    assert.ok(elapsed < 1000, "env-override check itself should be fast")
   })
 
   it("fetchWithRetry still retries when retry-after is within the delay cap", async () => {
