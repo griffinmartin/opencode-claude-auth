@@ -95,6 +95,20 @@ Select "Switch Claude Code account" and pick the account you want to use. Your s
 
 If only one account is found, the switcher is hidden and the plugin uses it directly.
 
+### Parallel instances with different accounts
+
+To run multiple OpenCode instances simultaneously, each using a different Claude account, set `XDG_DATA_HOME` per instance so each persists its account selection independently:
+
+```bash
+# Work instance
+XDG_DATA_HOME=~/.local/work opencode
+
+# Personal instance (parallel, different account)
+XDG_DATA_HOME=~/.local/personal CLAUDE_CONFIG_DIR=~/.claude/personal opencode
+```
+
+Each instance writes its `claude-account-source.txt` and `auth.json` to its own data directory, avoiding conflicts. The plugin matches OpenCode's own XDG-based path resolution.
+
 ## Troubleshooting
 
 | Problem                                             | Solution                                                                                                                                  |
@@ -164,7 +178,9 @@ All configurable parameters can be overridden via environment variables. If Anth
 | `OPENCODE_CLAUDE_AUTH_REFRESH_WAIT_MS`     | Max ms a single request waits through a transient token-refresh rate-limit (429) before returning a retryable error instead of a hard "run `claude`".                                                                                                                             | `45000`                                                            |
 | `OPENCODE_CLAUDE_AUTH_REFRESH_COOLDOWN_MS` | Base per-account cooldown after a rate-limited refresh, before the plugin retries the token endpoint. Escalates with consecutive failures and is jittered; capped at 60s.                                                                                                         | `15000`                                                            |
 | `OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_TTL_MS` | TTL for the cross-process refresh lock. A held lock older than this is treated as stale (crashed holder) and taken over.                                                                                                                                                          | `20000`                                                            |
-| `OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR`    | Directory for the advisory cross-process refresh lock files.                                                                                                                                                                                                                      | OpenCode data dir (`~/.local/share/opencode`)                      |
+| `OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR`    | Directory for the advisory cross-process refresh lock files.                                                                                                                                                                                                                      | OpenCode data dir (`$XDG_DATA_HOME/opencode`)                      |
+| `OPENCODE_ACCOUNT_SOURCE_FILE`             | Absolute path to the file recording which Claude account is active. Overrides the data-dir location outright; use it to pin one instance's account selection to a specific file.                                                                                                  | `$XDG_DATA_HOME/opencode/claude-account-source.txt`                |
+| `XDG_DATA_HOME`                            | Base directory for plugin data files (account source, `auth.json`, debug log, refresh locks). Matches OpenCode's own XDG resolution, so parallel instances can keep separate state.                                                                                               | `~/.local/share`                                                   |
 
 Example:
 
