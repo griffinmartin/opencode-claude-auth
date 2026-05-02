@@ -1287,6 +1287,179 @@ Today's date: 2026-04-09
       const result = repairToolPairs(messages)
       assert.deepEqual(result, messages)
     })
+
+    it("removes globally-paired but non-adjacent tool_use/tool_result (compaction)", () => {
+      // Simulates post-/compact: tool_use and tool_result both survive
+      // but an intermediate message (compaction summary) separates them.
+      // Anthropic requires the tool_result in the NEXT message — global
+      // presence is not enough.
+      const messages = [
+        { role: "user", content: "compaction summary" },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_a", name: "search" },
+            { type: "tool_use", id: "toolu_b", name: "read" },
+          ],
+        },
+        // compaction inserts this text message between tool_use and tool_result
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "intermediate" }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_a", content: "res_a" },
+            { type: "tool_result", tool_use_id: "toolu_b", content: "res_b" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      // Messages with non-adjacent pairs are cleaned up:
+      // msg[1] (tool_use only → empty) and msg[3] (tool_result only → empty)
+      // are removed. msg[0] (compaction summary, string content) and
+      // msg[2] (intermediate text) survive.
+      const allBlocks = result.flatMap((m) =>
+        Array.isArray(m.content) ? m.content : [],
+      )
+      const toolBlocks = allBlocks.filter(
+        (b: Record<string, unknown>) =>
+          b.type === "tool_use" || b.type === "tool_result",
+      )
+      assert.equal(
+        toolBlocks.length,
+        0,
+        "No tool blocks should survive non-adjacent pairing",
+      )
+      assert.equal(result.length, 2)
+    })
+
+    it("preserves text blocks when removing non-adjacent tool_use", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me check that." },
+            { type: "tool_use", id: "toolu_a", name: "search" },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "compaction summary" }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_a", content: "result" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      // tool_use removed (non-adjacent); its tool_result at msg[2] is
+      // orphaned → msg[2] emptied → removed. msg[0] (text survives) and
+      // msg[1] (compaction summary) survive.
+      assert.equal(result.length, 2)
+      const firstContent = result[0].content as Array<Record<string, unknown>>
+      assert.equal(firstContent.length, 1)
+      assert.equal(firstContent[0].type, "text")
+      assert.equal(firstContent[0].text, "Let me check that.")
+    })
+
+    it("handles mix of adjacent and non-adjacent pairs", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_adj", name: "search" },
+            { type: "tool_use", id: "toolu_nonadj", name: "read" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_adj", content: "ok" },
+          ],
+        },
+        // separator — breaks adjacency for toolu_nonadj
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "still working" }],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_nonadj",
+              content: "late",
+            },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      // Messages 0, 1, and 2 survive; message 3 is removed because its
+      // tool_result content becomes empty after orphan cleanup
+      assert.equal(result.length, 3)
+      // Adjacent pair survives
+      const firstBlocks = result[0].content as Array<Record<string, unknown>>
+      assert.equal(firstBlocks.length, 1)
+      assert.equal(firstBlocks[0].id, "toolu_adj")
+      // Non-adjacent tool_use and its tool_result are removed
+      const allIds = result.flatMap((m) =>
+        Array.isArray(m.content)
+          ? m.content.map(
+              (b: Record<string, unknown>) => b.id || b["tool_use_id"],
+            )
+          : [],
+      )
+      assert.ok(!allIds.includes("toolu_nonadj"))
+    })
+
+    it("keeps adjacent pair even when user message has extra text", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_a", name: "search" }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "here are the results" },
+            { type: "tool_result", tool_use_id: "toolu_a", content: "res_a" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, messages)
+    })
+
+    it("removes both tool_use and its non-adjacent tool_result even across multiple separators", () => {
+      const messages = [
+        { role: "user", content: "initial question" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_a", name: "search" }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "sep 1" }] },
+        { role: "user", content: [{ type: "text", text: "sep 2" }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_a", content: "res" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      const allBlocks = result.flatMap((m) =>
+        Array.isArray(m.content) ? m.content : [],
+      )
+      const toolBlocks = allBlocks.filter(
+        (b: Record<string, unknown>) =>
+          b.type === "tool_use" || b.type === "tool_result",
+      )
+      assert.equal(toolBlocks.length, 0)
+    })
   })
 
   it("transformBody removes orphaned tool_use blocks from messages", () => {

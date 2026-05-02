@@ -230,16 +230,33 @@ type Message = {
 }
 
 export function repairToolPairs(messages: Message[]): Message[] {
-  // Collect all tool_use ids and tool_result tool_use_ids
-  const toolUseIds = new Set<string>()
+  // Collect all tool_use ids and track which ones pass the Anthropic adjacency
+  // invariant: a tool_use at messages[i] requires a matching tool_result in
+  // messages[i+1] (the very next message). Global presence is NOT sufficient —
+  // Anthropic rejects non-adjacent pairs with "Each tool_use block must have a
+  // corresponding tool_result block in the next message."
+  const allToolUseIds = new Set<string>()
+  const adjacentToolUses = new Set<string>()
   const toolResultIds = new Set<string>()
 
-  for (const message of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
     if (!Array.isArray(message.content)) continue
     for (const block of message.content) {
       const id = block["id"]
       if (block.type === "tool_use" && typeof id === "string") {
-        toolUseIds.add(id)
+        allToolUseIds.add(id)
+        // Anthropic adjacency check: tool_result must be in the next message
+        const nextMessage = messages[i + 1]
+        if (nextMessage && Array.isArray(nextMessage.content)) {
+          if (
+            nextMessage.content.some(
+              (b) => b.type === "tool_result" && b["tool_use_id"] === id,
+            )
+          ) {
+            adjacentToolUses.add(id)
+          }
+        }
       }
       const toolUseId = block["tool_use_id"]
       if (block.type === "tool_result" && typeof toolUseId === "string") {
@@ -248,14 +265,22 @@ export function repairToolPairs(messages: Message[]): Message[] {
     }
   }
 
-  // Find orphaned IDs
+  // Orphaned tool_uses: globally missing result OR result exists but not adjacent
   const orphanedUses = new Set<string>()
-  for (const id of toolUseIds) {
-    if (!toolResultIds.has(id)) orphanedUses.add(id)
+  for (const id of allToolUseIds) {
+    if (!toolResultIds.has(id) || !adjacentToolUses.has(id)) {
+      orphanedUses.add(id)
+    }
   }
+
+  // Orphaned tool_results: no matching tool_use OR paired tool_use is being
+  // removed (avoids leaving behind orphaned results when their tool_use is
+  // adyacent-failed)
   const orphanedResults = new Set<string>()
   for (const id of toolResultIds) {
-    if (!toolUseIds.has(id)) orphanedResults.add(id)
+    if (!allToolUseIds.has(id) || orphanedUses.has(id)) {
+      orphanedResults.add(id)
+    }
   }
 
   // Early return if nothing to fix
