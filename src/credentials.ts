@@ -273,6 +273,16 @@ export function refreshIfNeeded(
   const target = account ?? getActiveAccount()
   if (!target) return null
 
+  // Pick up external updates to .credentials.json (e.g. switch_claude_account
+  // on Windows). Bounded by getCachedCredentials's 30s TTL: fires at most
+  // ~2x/min under load. macOS keychain sources stay on the in-memory path;
+  // their state is mutated only by our own writeBackCredentials, so no
+  // external-update vector exists for them.
+  if (target.source === "file") {
+    const onDisk = refreshAccount(target.source)
+    if (onDisk) target.credentials = onDisk
+  }
+
   const creds = target.credentials
   if (creds.expiresAt > Date.now() + 60_000) return creds
 

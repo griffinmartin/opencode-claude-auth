@@ -7,24 +7,29 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
+type Creds = {
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+}
+
 async function loadCredentialsWithCountingKeychain(
   initialExpiresAt: number,
 ): Promise<{
   credentialsModule: {
-    getCachedCredentials: () => {
-      accessToken: string
-      refreshToken: string
-      expiresAt: number
-    } | null
-    getCredentialsForSync: () => {
-      accessToken: string
-      refreshToken: string
-      expiresAt: number
-    } | null
+    getCachedCredentials: () => Creds | null
+    getCredentialsForSync: () => Creds | null
+    refreshIfNeeded: (account?: {
+      label: string
+      source: string
+      credentials: Creds
+    }) => Creds | null
     initAccounts: (accounts: unknown[]) => void
   }
   keychainModule: {
     __getReadCount: () => number
+    __getWriteCount: () => number
+    __setCredentials: (c: Creds) => void
   }
 }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-creds-"))
@@ -50,6 +55,7 @@ async function loadCredentialsWithCountingKeychain(
   await writeFile(
     tempKeychain,
     `let readCount = 0
+let writeCount = 0
 let credentials = {
   accessToken: "token",
   refreshToken: "refresh",
@@ -66,10 +72,21 @@ export function refreshAccount(source) {
   return credentials
 }
 
-export function writeBackCredentials() { return true }
+export function writeBackCredentials() {
+  writeCount += 1
+  return true
+}
 
 export function __getReadCount() {
   return readCount
+}
+
+export function __getWriteCount() {
+  return writeCount
+}
+
+export function __setCredentials(c) {
+  credentials = c
 }
 `,
     "utf8",
@@ -89,19 +106,20 @@ export function __getReadCount() {
 
   return {
     credentialsModule: credentialsModule as {
-      getCachedCredentials: () => {
-        accessToken: string
-        refreshToken: string
-        expiresAt: number
-      } | null
-      getCredentialsForSync: () => {
-        accessToken: string
-        refreshToken: string
-        expiresAt: number
-      } | null
+      getCachedCredentials: () => Creds | null
+      getCredentialsForSync: () => Creds | null
+      refreshIfNeeded: (account?: {
+        label: string
+        source: string
+        credentials: Creds
+      }) => Creds | null
       initAccounts: (accounts: unknown[]) => void
     },
-    keychainModule: keychainModule as { __getReadCount: () => number },
+    keychainModule: keychainModule as {
+      __getReadCount: () => number
+      __getWriteCount: () => number
+      __setCredentials: (c: Creds) => void
+    },
   }
 }
 
@@ -256,6 +274,94 @@ describe("credential caching", () => {
         readCountAfter,
         readCountBefore,
         "should not trigger keychain read",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("refreshIfNeeded reloads file-source credentials from disk on every call", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      const account = {
+        label: "Account 1",
+        source: "file",
+        credentials: {
+          accessToken: "old-token",
+          refreshToken: "old-refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      }
+
+      // External writer (e.g. switch_claude_account) replaces .credentials.json
+      keychainModule.__setCredentials({
+        accessToken: "new-token",
+        refreshToken: "new-refresh",
+        expiresAt: now + 10 * 60_000,
+      })
+
+      const result = credentialsModule.refreshIfNeeded(account)
+
+      assert.ok(result)
+      assert.equal(
+        result.accessToken,
+        "new-token",
+        "should return on-disk creds, not the stale in-memory copy",
+      )
+      assert.equal(
+        account.credentials.accessToken,
+        "new-token",
+        "account.credentials should be updated in place so future calls see the new tokens",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("refreshIfNeeded skips OAuth refresh writeback when on-disk file source is fresh", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      // In-memory copy is expiring within the 60s threshold (would normally
+      // trigger the OAuth-refresh + writeBackCredentials path).
+      const account = {
+        label: "Account 1",
+        source: "file",
+        credentials: {
+          accessToken: "stale-token",
+          refreshToken: "stale-refresh",
+          expiresAt: now + 30_000,
+        },
+      }
+
+      // External writer already replaced the file with fresh creds.
+      keychainModule.__setCredentials({
+        accessToken: "fresh-token",
+        refreshToken: "fresh-refresh",
+        expiresAt: now + 10 * 60_000,
+      })
+
+      const writeCountBefore = keychainModule.__getWriteCount()
+      const result = credentialsModule.refreshIfNeeded(account)
+      const writeCountAfter = keychainModule.__getWriteCount()
+
+      assert.ok(result)
+      assert.equal(result.accessToken, "fresh-token")
+      assert.equal(
+        writeCountAfter,
+        writeCountBefore,
+        "writeBackCredentials must not run when on-disk creds are already fresh; otherwise the stale in-memory refreshToken would be spliced into the new account's JSON blob",
       )
     } finally {
       Date.now = originalNow
