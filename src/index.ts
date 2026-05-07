@@ -322,11 +322,17 @@ const plugin: Plugin = async () => {
         const before = output.system.slice(0, combinedIdx)
         const after = output.system.slice(combinedIdx + 1)
         output.system.length = 0
-        if (!hasIdentityPrefix) output.system.push(SYSTEM_IDENTITY_PREFIX)
+        // Always insert the identity prefix exactly once at the front, then
+        // strip exact-equal duplicates from every section. Previously this
+        // branch only re-added the prefix when `!hasIdentityPrefix`, but the
+        // unconditional `before.filter` could remove the only existing copy
+        // (when it sat in `before`), leaving output.system without it and
+        // breaking Anthropic OAuth validation.
+        output.system.push(SYSTEM_IDENTITY_PREFIX)
         output.system.push(
           ...before.filter((e) => e !== SYSTEM_IDENTITY_PREFIX),
-          ...split.filter(Boolean),
-          ...after,
+          ...split.filter(Boolean).filter((e) => e !== SYSTEM_IDENTITY_PREFIX),
+          ...after.filter((e) => e !== SYSTEM_IDENTITY_PREFIX),
         )
         return
       }

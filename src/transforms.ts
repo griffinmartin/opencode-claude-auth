@@ -275,7 +275,7 @@ export function repairToolPairs(messages: Message[]): Message[] {
 
   // Orphaned tool_results: no matching tool_use OR paired tool_use is being
   // removed (avoids leaving behind orphaned results when their tool_use is
-  // adyacent-failed)
+  // adjacent-failed)
   const orphanedResults = new Set<string>()
   for (const id of toolResultIds) {
     if (!allToolUseIds.has(id) || orphanedUses.has(id)) {
@@ -413,7 +413,11 @@ export function transformBody(
     const keptSystem: SystemEntry[] = []
     const movedTexts: string[] = []
     for (const entry of parsed.system) {
-      const txt = typeof entry === "string" ? entry : (entry.text ?? "")
+      // Guard against non-string `entry.text` (e.g. structured content blocks
+      // or malformed entries). Falling through to a non-string value would
+      // throw on .startsWith / .length and abort the whole transform.
+      const rawText = typeof entry === "string" ? entry : entry.text
+      const txt = typeof rawText === "string" ? rawText : ""
       if (txt.startsWith(BILLING_PREFIX) || txt.startsWith(SYSTEM_IDENTITY)) {
         keptSystem.push(entry)
       } else if (txt.length > 0 && isOpenCodeBrandedEntry(txt)) {
