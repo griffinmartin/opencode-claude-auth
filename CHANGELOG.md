@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.3...v1.5.4) (2026-05-15)
+
+
+### Bug Fixes
+
+* reload .credentials.json on cache miss to detect external updates ([#220](https://github.com/griffinmartin/opencode-claude-auth/issues/220)) ([6ff5dc7](https://github.com/griffinmartin/opencode-claude-auth/commit/6ff5dc76536cd0fbc5dd1b1a456cba968e642787))
+
 ## [1.5.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.2...v1.5.3) (2026-04-30)
 
 
