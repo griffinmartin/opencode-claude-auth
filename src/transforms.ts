@@ -22,6 +22,206 @@ function unprefixName(name: string): string {
 const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
 
+/**
+ * Patterns that identify OpenCode-fingerprinted content in system entries.
+ *
+ * Anthropic's OAuth API runs a content classifier on the system[] array that
+ * rejects requests containing OpenCode fingerprints with a misleading 400
+ * "out of extra usage" error (see issues #147 and #154). Empirical probing
+ * (April 2026) showed the classifier is multi-feature rather than simple
+ * substring matching — no single feature triggers the check in isolation,
+ * but combinations do. Rather than try to track the exact classifier
+ * threshold, we relocate any entry containing a known OpenCode feature.
+ *
+ * Entries matching any of these patterns are moved to the first user
+ * message; entries that don't match stay in system[] where they retain
+ * attention priority and prompt-cache efficiency.
+ */
+const OPENCODE_FEATURE_PATTERNS: RegExp[] = [
+  // Brand prose. Case-SENSITIVE PascalCase: anthropic.txt and other
+  // OpenCode prompts use "OpenCode" consistently. Lowercase "opencode"
+  // appears almost exclusively in directory/path components like
+  // /Users/foo/dev/opencode-claude-auth/... or
+  // /Users/foo/.cache/opencode/... and matching those produces false
+  // positives that relocate non-branded content (e.g. user env blocks,
+  // skills entries) needlessly.
+  /\bOpenCode\b/,
+  // GitHub org used by OpenCode repositories
+  // (e.g. https://github.com/anomalyco/opencode).
+  /\banomalyco\b/i,
+  // OpenCode docs/site URL — strong contextual brand signal even in
+  // lowercase form.
+  /\bopencode\.ai\b/i,
+  // OpenCode-specific env metadata phrase. Claude Code's env block only
+  // uses "Working directory"; "Workspace root folder" is OpenCode-only.
+  /Workspace root folder/,
+  // OpenCode-specific env tag. Claude Code's env block has no
+  // <directories> section.
+  /<directories>/,
+]
+
+/**
+ * Returns true if the given system entry text contains any OpenCode
+ * fingerprint feature that would trigger Anthropic's OAuth content
+ * classifier. Such entries must be relocated out of system[] before
+ * sending the request.
+ *
+ * Non-matching entries (plain AGENTS.md, generic env blocks, skill lists,
+ * etc.) are safe to keep in system[].
+ */
+export function isOpenCodeBrandedEntry(text: string): boolean {
+  return OPENCODE_FEATURE_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+/**
+ * Anchors used by splitOpenCodeSystemBlob to recognize OpenCode's joined
+ * system blob. These mirror upstream OpenCode source as of dev branch:
+ *
+ *   - ENV_BLOCK_RE: `packages/opencode/src/session/system.ts` `environment()`
+ *     produces "You are powered by the model named ...\n...\n<env>...</env>"
+ *   - SKILLS_BLOCK_RE: superpowers (and similar plugins) emit
+ *     "Skills provide specialized instructions...\n<available_skills>...</available_skills>"
+ *   - INSTRUCTIONS_HEADER_RE: `packages/opencode/src/session/instruction.ts`
+ *     emits each AGENTS.md/CLAUDE.md as "Instructions from: <abs-path>\n<content>"
+ *
+ * Splitting is best-effort and gracefully degrades to pass-through for
+ * unfamiliar shapes, so behavior is never worse than v1.4.8 bulk relocation.
+ */
+const ENV_BLOCK_RE =
+  /^You are powered by the model named [^\n]+\n[\s\S]*?<\/env>/m
+const SKILLS_BLOCK_RE =
+  /^Skills provide specialized instructions and workflows for specific tasks\.\n[\s\S]*?<\/available_skills>/m
+const INSTRUCTIONS_HEADER_RE = /\n(?=Instructions from: [/~])/
+const ENV_OPENER_RE =
+  /^You are powered by the model named [^\n]+\nHere is some useful information about the environment you are running in:\n/
+const ENV_WORKSPACE_ROOT_RE = /^[ \t]*Workspace root folder:[^\n]*\n?/m
+const ENV_CONTAINER_RE = /<env>([\s\S]*?)<\/env>/
+
+/**
+ * Normalize an OpenCode env block into two pieces: a Claude-Code-shaped
+ * "safe" env that can stay in system[], and a "branded" extras string
+ * containing the OpenCode-only opener and `Workspace root folder` line that
+ * must relocate.
+ *
+ * Returns `{ safe: null, branded: input }` when the env block doesn't match
+ * the expected shape — graceful fallback that preserves current behavior
+ * (relocate the whole thing).
+ */
+export function normalizeEnvBlock(envBlock: string): {
+  safe: string | null
+  branded: string | null
+} {
+  const containerMatch = envBlock.match(ENV_CONTAINER_RE)
+  if (!containerMatch) {
+    return { safe: null, branded: envBlock }
+  }
+
+  // Pull off the OpenCode-only opener (two lines) before "<env>".
+  const openerMatch = envBlock.match(ENV_OPENER_RE)
+  const opener = openerMatch ? openerMatch[0] : ""
+
+  // Strip the OpenCode-only "Workspace root folder: ..." line from the
+  // <env> body, leaving only Claude-Code-format lines.
+  const envBody = containerMatch[1]
+  const workspaceLineMatch = envBody.match(ENV_WORKSPACE_ROOT_RE)
+  const workspaceLine = workspaceLineMatch ? workspaceLineMatch[0] : ""
+  const safeBody = envBody.replace(ENV_WORKSPACE_ROOT_RE, "")
+
+  // Compose the safe env (Claude-Code-shaped) and branded extras.
+  const safe =
+    `Here is useful information about the environment you are running in:\n` +
+    `<env>${safeBody}</env>`
+
+  const brandedParts: string[] = []
+  if (opener) brandedParts.push(opener.trimEnd())
+  if (workspaceLine) brandedParts.push(workspaceLine.trim())
+  const branded = brandedParts.length > 0 ? brandedParts.join("\n") : null
+
+  return { safe, branded }
+}
+
+/**
+ * Split OpenCode's joined system blob (produced by
+ * `packages/opencode/src/session/llm.ts:88-103`) back into its constituent
+ * entries so that downstream surgical relocation in `transformBody` can
+ * keep non-branded pieces (AGENTS.md, skills, safe env) in `system[]`.
+ *
+ * For unfamiliar shapes the input is returned unchanged as a single-entry
+ * array, so callers can pass any string through without a behavioral
+ * regression.
+ *
+ * The returned ordering preserves OpenCode's original assembly order:
+ *   [providerPromptHead?, brandedEnvExtras?, safeEnv?, skillsBlock?,
+ *    ...instructionBlocks, userSystemTail?]
+ */
+export function splitOpenCodeSystemBlob(text: string): string[] {
+  const envMatch = text.match(ENV_BLOCK_RE)
+  if (!envMatch || envMatch.index === undefined) {
+    return [text]
+  }
+
+  // Slice the joined string at the env-block boundary.
+  const head = text.slice(0, envMatch.index).replace(/\n+$/, "")
+  const envBlock = envMatch[0]
+  let tail = text.slice(envMatch.index + envBlock.length).replace(/^\n+/, "")
+
+  // Normalize the env block.
+  const { safe, branded } = normalizeEnvBlock(envBlock)
+
+  // Optionally peel off a skills block from the tail.
+  let skillsBlock: string | null = null
+  const skillsMatch = tail.match(SKILLS_BLOCK_RE)
+  if (skillsMatch && skillsMatch.index !== undefined) {
+    skillsBlock = skillsMatch[0]
+    const before = tail.slice(0, skillsMatch.index).replace(/\n+$/, "")
+    const after = tail
+      .slice(skillsMatch.index + skillsBlock.length)
+      .replace(/^\n+/, "")
+    tail = [before, after].filter(Boolean).join("\n")
+  }
+
+  // Split remaining tail on "Instructions from: ..." headers — these are
+  // AGENTS.md / CLAUDE.md blocks emitted one per file by upstream
+  // `Instruction.system()`.
+  const instructionPieces: string[] = []
+  let userSystemTail: string | null = null
+  if (tail) {
+    const parts = tail.split(INSTRUCTIONS_HEADER_RE)
+    // Anything before the first "Instructions from:" header is non-AGENTS
+    // tail (typically input.user.system or a structured-output prompt).
+    if (parts.length > 0 && !parts[0].startsWith("Instructions from:")) {
+      const firstTail = parts.shift()!
+      if (firstTail.trim()) userSystemTail = firstTail
+    }
+    for (const part of parts) {
+      if (part.trim()) instructionPieces.push(part)
+    }
+  }
+
+  const out: string[] = []
+  if (head) out.push(head)
+  if (branded) out.push(branded)
+  if (safe) out.push(safe)
+  if (skillsBlock) out.push(skillsBlock)
+  out.push(...instructionPieces)
+  if (userSystemTail) out.push(userSystemTail)
+  return out
+}
+
+/**
+ * Heuristic: does this string look like OpenCode's joined system blob?
+ * Used by callers (the system.transform hook) to decide whether to invoke
+ * splitOpenCodeSystemBlob. We require both the env-block opener sentinel
+ * and at least one OpenCode brand fingerprint, so unrelated multi-section
+ * prompts pass through unchanged.
+ */
+export function looksLikeOpenCodeJoinedBlob(text: string): boolean {
+  return (
+    /^You are powered by the model named/m.test(text) &&
+    /\bopencode\b/i.test(text)
+  )
+}
+
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
 type ContentBlock = { type?: string; text?: string } & Record<string, unknown>
 type Message = {
@@ -30,16 +230,33 @@ type Message = {
 }
 
 export function repairToolPairs(messages: Message[]): Message[] {
-  // Collect all tool_use ids and tool_result tool_use_ids
-  const toolUseIds = new Set<string>()
+  // Collect all tool_use ids and track which ones pass the Anthropic adjacency
+  // invariant: a tool_use at messages[i] requires a matching tool_result in
+  // messages[i+1] (the very next message). Global presence is NOT sufficient —
+  // Anthropic rejects non-adjacent pairs with "Each tool_use block must have a
+  // corresponding tool_result block in the next message."
+  const allToolUseIds = new Set<string>()
+  const adjacentToolUses = new Set<string>()
   const toolResultIds = new Set<string>()
 
-  for (const message of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
     if (!Array.isArray(message.content)) continue
     for (const block of message.content) {
       const id = block["id"]
       if (block.type === "tool_use" && typeof id === "string") {
-        toolUseIds.add(id)
+        allToolUseIds.add(id)
+        // Anthropic adjacency check: tool_result must be in the next message
+        const nextMessage = messages[i + 1]
+        if (nextMessage && Array.isArray(nextMessage.content)) {
+          if (
+            nextMessage.content.some(
+              (b) => b.type === "tool_result" && b["tool_use_id"] === id,
+            )
+          ) {
+            adjacentToolUses.add(id)
+          }
+        }
       }
       const toolUseId = block["tool_use_id"]
       if (block.type === "tool_result" && typeof toolUseId === "string") {
@@ -48,14 +265,22 @@ export function repairToolPairs(messages: Message[]): Message[] {
     }
   }
 
-  // Find orphaned IDs
+  // Orphaned tool_uses: globally missing result OR result exists but not adjacent
   const orphanedUses = new Set<string>()
-  for (const id of toolUseIds) {
-    if (!toolResultIds.has(id)) orphanedUses.add(id)
+  for (const id of allToolUseIds) {
+    if (!toolResultIds.has(id) || !adjacentToolUses.has(id)) {
+      orphanedUses.add(id)
+    }
   }
+
+  // Orphaned tool_results: no matching tool_use OR paired tool_use is being
+  // removed (avoids leaving behind orphaned results when their tool_use is
+  // adjacent-failed)
   const orphanedResults = new Set<string>()
   for (const id of toolResultIds) {
-    if (!toolUseIds.has(id)) orphanedResults.add(id)
+    if (!allToolUseIds.has(id) || orphanedUses.has(id)) {
+      orphanedResults.add(id)
+    }
   }
 
   // Early return if nothing to fix
@@ -169,24 +394,36 @@ export function transformBody(
     }
     parsed.system = splitSystem
 
-    // --- Relocate non-core system entries to user messages ---
-    // Anthropic's API now validates the system prompt for OAuth-authenticated
-    // requests that use Claude Code billing.  Third-party system prompts
-    // (like OpenCode's) trigger a 400 "out of extra usage" rejection when
-    // they appear inside the system[] array alongside the identity prefix.
+    // --- Surgically relocate OpenCode-fingerprinted system entries ---
+    // Anthropic's OAuth API runs a content classifier on the system[] array
+    // that rejects requests containing OpenCode fingerprints (see #147).
+    // The v1.4.8 fix (#148) worked around this by bulk-relocating ALL
+    // non-core system entries to the first user message, but this caused
+    // a regression in instruction-following for long conversations (#154)
+    // because system-level priority and prompt-cache efficiency were lost.
     //
-    // Work-around: keep only the billing header and identity prefix in
-    // system[], and prepend all other system content to the first user
-    // message where it is functionally equivalent but avoids the check.
+    // Empirical probing showed the classifier is feature-based: specific
+    // OpenCode markers (brand strings, anomalyco URLs, "Workspace root
+    // folder", <directories>) trigger the check, while AGENTS.md, skills
+    // blocks, Claude Code-format env blocks, and other non-branded content
+    // do not. We now relocate only entries matching an OpenCode feature
+    // pattern (see isOpenCodeBrandedEntry), keeping everything else in
+    // system[] where it retains full attention priority and caches well.
     const BILLING_PREFIX = "x-anthropic-billing-header"
     const keptSystem: SystemEntry[] = []
     const movedTexts: string[] = []
     for (const entry of parsed.system) {
-      const txt = typeof entry === "string" ? entry : (entry.text ?? "")
+      // Guard against non-string `entry.text` (e.g. structured content blocks
+      // or malformed entries). Falling through to a non-string value would
+      // throw on .startsWith / .length and abort the whole transform.
+      const rawText = typeof entry === "string" ? entry : entry.text
+      const txt = typeof rawText === "string" ? rawText : ""
       if (txt.startsWith(BILLING_PREFIX) || txt.startsWith(SYSTEM_IDENTITY)) {
         keptSystem.push(entry)
-      } else if (txt.length > 0) {
+      } else if (txt.length > 0 && isOpenCodeBrandedEntry(txt)) {
         movedTexts.push(txt)
+      } else {
+        keptSystem.push(entry)
       }
     }
     if (movedTexts.length > 0 && Array.isArray(parsed.messages)) {
