@@ -82,6 +82,38 @@ The plugin checks these in order:
 1. macOS Keychain (all `Claude Code-credentials*` entries — multiple accounts are detected automatically)
 2. `~/.claude/.credentials.json` (fallback, works on all platforms)
 
+## Custom base URL / Proxy support
+
+You can route Anthropic API requests through a proxy or custom endpoint by configuring the `baseURL` option in your `opencode.json`:
+
+```json
+{
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "https://your-proxy.example.com/v1",
+        "headers": {
+          "X-Custom-Header": "value"
+        }
+      }
+    }
+  },
+  "plugin": ["opencode-claude-auth@latest"]
+}
+```
+
+The plugin respects the following priority (highest to lowest):
+
+1. `provider.anthropic.options.baseURL` from `opencode.json`
+2. `ANTHROPIC_BASE_URL` environment variable
+3. Default: `https://api.anthropic.com/v1`
+
+Any custom headers you define in `provider.anthropic.options.headers` are automatically forwarded to all API requests. This is useful for:
+
+- Using an HTTP proxy or API gateway
+- Adding authentication headers (e.g., `X-Gateway-Key`)
+- Routing through a load balancer or monitoring proxy
+
 ## Multiple accounts (macOS)
 
 If you have [multiple Claude Code accounts](https://gist.github.com/KMJ-007/0979814968722051620461ab2aa01bf2) authenticated on macOS, the plugin detects all of them from the Keychain automatically. Each account is labeled by its subscription tier (Claude Pro, Claude Max, etc.).
@@ -182,6 +214,7 @@ All configurable parameters can be overridden via environment variables. If Anth
 
 | Variable                            | Description                                                                                                                                                                            | Default                                                                                                 |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_BASE_URL`                | Custom base URL for Anthropic API requests (e.g., proxy or custom endpoint). Takes precedence over config file.                                                                        | `https://api.anthropic.com/v1`                                                                          |
 | `ANTHROPIC_CLI_VERSION`             | Claude CLI version for user-agent and billing headers                                                                                                                                  | `2.1.80`                                                                                                |
 | `ANTHROPIC_USER_AGENT`              | Full User-Agent string (overrides CLI version)                                                                                                                                         | `claude-cli/{version} (external, cli)`                                                                  |
 | `ANTHROPIC_BETA_FLAGS`              | Comma-separated beta feature flags                                                                                                                                                     | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |

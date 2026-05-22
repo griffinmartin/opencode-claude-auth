@@ -318,9 +318,14 @@ const plugin: Plugin = async () => {
           modelCount: Object.keys(provider.models).length,
         })
 
+        const effectiveBaseURL =
+          provider.options?.baseURL ||
+          process.env.ANTHROPIC_BASE_URL ||
+          "https://api.anthropic.com/v1"
+
         return {
           apiKey: "",
-          baseURL: "https://api.anthropic.com/v1",
+          baseURL: effectiveBaseURL,
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             const latest = getCachedCredentials()
             if (!latest) {

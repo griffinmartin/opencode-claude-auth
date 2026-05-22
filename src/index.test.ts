@@ -1201,3 +1201,285 @@ describe("refreshIfNeeded — token expiry", () => {
     )
   })
 })
+
+describe("custom baseURL support via provider.options.baseURL and ANTHROPIC_BASE_URL env", () => {
+  it("uses default baseURL when no config or env var is set", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalEnv = process.env.ANTHROPIC_BASE_URL
+
+    delete process.env.ANTHROPIC_BASE_URL
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-baseurl-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
+
+    let forwardedInput: RequestInfo | URL | undefined
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        forwardedInput = input
+        return new Response("ok")
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      await authConfig.fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+      })
+
+      assert.equal(
+        String(forwardedInput),
+        "https://api.anthropic.com/v1/messages?beta=true",
+        "Should use default baseURL when no override is set",
+      )
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalEnv === "string") {
+        process.env.ANTHROPIC_BASE_URL = originalEnv
+      } else {
+        delete process.env.ANTHROPIC_BASE_URL
+      }
+    }
+  })
+
+  it("uses provider.options.baseURL when provided", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-baseurl-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async () => new Response("ok")) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+
+      const customProvider = {
+        models: { "claude-haiku-4-5": { cost: 0 } },
+        options: { baseURL: "https://proxy.example.com/v1" },
+      } as unknown as { models: Record<string, { cost?: unknown }> }
+
+      const authConfigWithBaseURL = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        customProvider,
+      )
+
+      assert.equal(
+        (authConfigWithBaseURL as { baseURL?: string }).baseURL,
+        "https://proxy.example.com/v1",
+        "Should use provider.options.baseURL when provided",
+      )
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("uses ANTHROPIC_BASE_URL env var when set and no provider.options.baseURL", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalEnv = process.env.ANTHROPIC_BASE_URL
+
+    process.env.ANTHROPIC_BASE_URL = "https://gateway.example.com/anthropic/v1"
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-baseurl-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async () => new Response("ok")) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      assert.equal(
+        (authConfig as { baseURL?: string }).baseURL,
+        "https://gateway.example.com/anthropic/v1",
+        "Should use ANTHROPIC_BASE_URL when env var is set",
+      )
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalEnv === "string") {
+        process.env.ANTHROPIC_BASE_URL = originalEnv
+      } else {
+        delete process.env.ANTHROPIC_BASE_URL
+      }
+    }
+  })
+
+  it("prioritizes provider.options.baseURL over ANTHROPIC_BASE_URL env var", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalEnv = process.env.ANTHROPIC_BASE_URL
+
+    process.env.ANTHROPIC_BASE_URL = "https://gateway.example.com/anthropic/v1"
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-baseurl-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async () => new Response("ok")) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+
+      const customProvider = {
+        models: { "claude-haiku-4-5": { cost: 0 } },
+        options: { baseURL: "https://config-priority.example.com/v1" },
+      } as unknown as { models: Record<string, { cost?: unknown }> }
+
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        customProvider,
+      )
+
+      assert.equal(
+        (authConfig as { baseURL?: string }).baseURL,
+        "https://config-priority.example.com/v1",
+        "Should prioritize provider.options.baseURL over ANTHROPIC_BASE_URL",
+      )
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalEnv === "string") {
+        process.env.ANTHROPIC_BASE_URL = originalEnv
+      } else {
+        delete process.env.ANTHROPIC_BASE_URL
+      }
+    }
+  })
+
+  it("does not double the /v1 path segment", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalEnv = process.env.ANTHROPIC_BASE_URL
+
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.example.com/v1"
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-baseurl-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({ unref() {} })) as unknown as typeof setInterval
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async () => new Response("ok")) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const baseURL = (authConfig as { baseURL?: string }).baseURL
+      assert.ok(
+        baseURL && !baseURL.includes("/v1/v1"),
+        `baseURL should not contain doubled /v1 path: ${baseURL}`,
+      )
+      assert.equal(
+        baseURL,
+        "https://proxy.example.com/v1",
+        "baseURL should be correctly set from ANTHROPIC_BASE_URL env var",
+      )
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (typeof originalEnv === "string") {
+        process.env.ANTHROPIC_BASE_URL = originalEnv
+      } else {
+        delete process.env.ANTHROPIC_BASE_URL
+      }
+    }
+  })
+})
