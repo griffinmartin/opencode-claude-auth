@@ -63,13 +63,18 @@ function getActiveAccount(): ClaudeAccount | null {
 }
 
 function getAccountStateFile(): string {
-  return join(
-    homedir(),
-    ".local",
-    "share",
-    "opencode",
-    "claude-account-source.txt",
-  )
+  return join(getOpencodeDataDir(), "claude-account-source.txt")
+}
+
+function getOpencodeDataDir(): string {
+  if (process.platform === "win32") {
+    return join(homedir(), ".local", "share", "opencode")
+  }
+  const xdgDataHome = process.env.XDG_DATA_HOME
+  if (xdgDataHome && xdgDataHome.trim().length > 0) {
+    return join(xdgDataHome, "opencode")
+  }
+  return join(homedir(), ".local", "share", "opencode")
 }
 
 export function loadPersistedAccountSource(): string | null {
@@ -96,7 +101,7 @@ export function saveAccountSource(source: string): void {
 }
 
 function getAuthJsonPaths(): string[] {
-  const xdgPath = join(homedir(), ".local", "share", "opencode", "auth.json")
+  const xdgPath = join(getOpencodeDataDir(), "auth.json")
   if (process.platform === "win32") {
     const appData =
       process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
