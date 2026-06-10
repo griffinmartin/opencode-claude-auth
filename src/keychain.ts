@@ -15,6 +15,15 @@ export interface ClaudeAccount {
   label: string
   source: string
   credentials: ClaudeCredentials
+  description?: string
+}
+
+interface KeychainEntry {
+  service: string
+  label?: string
+  comment?: string
+  description?: string
+  account?: string
 }
 
 const PRIMARY_SERVICE = "Claude Code-credentials"
@@ -135,7 +144,44 @@ function readKeychainService(serviceName: string): string | null {
   }
 }
 
-function listClaudeKeychainServices(): string[] {
+export function parseKeychainDump(dump: string): KeychainEntry[] {
+  const entries: KeychainEntry[] = []
+  // Each item block begins with `class: "genp"` (or other class).
+  const blocks = dump.split(/^class:\s*"genp"\s*$/m).slice(1)
+  for (const block of blocks) {
+    // Stop at the next `class:` or `keychain:` boundary.
+    const end = block.search(/^(?:class:|keychain:)/m)
+    const body = end === -1 ? block : block.slice(0, end)
+
+    const read = (re: RegExp): string | undefined => {
+      const m = re.exec(body)
+      if (!m) return undefined
+      const v = m[1]
+      return v === "<NULL>" ? undefined : v
+    }
+
+    const service = read(/^\s*"svce"<blob>="([^"]*)"\s*$/m)
+    if (!service) continue
+
+    entries.push({
+      service,
+      label: read(/^\s*0x00000007 <blob>="([^"]*)"\s*$/m),
+      comment: read(/^\s*"icmt"<blob>="([^"]*)"\s*$/m),
+      description: read(/^\s*"desc"<blob>="([^"]*)"\s*$/m),
+      account: read(/^\s*"acct"<blob>="([^"]*)"\s*$/m),
+    })
+  }
+  return entries
+}
+
+export function deriveKeychainDescription(
+  entry: KeychainEntry,
+): string | undefined {
+  const comment = entry.comment?.trim()
+  return comment ? comment : undefined
+}
+
+function listClaudeKeychainEntries(): KeychainEntry[] {
   try {
     const dump = execSync("security dump-keychain", {
       timeout: 5000,
@@ -143,33 +189,35 @@ function listClaudeKeychainServices(): string[] {
       encoding: "utf-8",
     })
 
-    const services: string[] = []
-    const seen = new Set<string>()
+    const all = parseKeychainDump(dump)
+    const claude = all.filter((e) => e.service.startsWith(PRIMARY_SERVICE))
 
-    const re = /"Claude Code-credentials(?:-[0-9a-f]+)?"/g
-    let m = re.exec(dump)
-    while (m !== null) {
-      const svc = m[0].slice(1, -1)
-      if (!seen.has(svc)) {
-        seen.add(svc)
-        services.push(svc)
-      }
-      m = re.exec(dump)
+    // Dedup by service while preserving order, primary first.
+    const byService = new Map<string, KeychainEntry>()
+    for (const e of claude) {
+      if (!byService.has(e.service)) byService.set(e.service, e)
     }
 
-    const ordered: string[] = []
-    if (seen.has(PRIMARY_SERVICE)) ordered.push(PRIMARY_SERVICE)
-    for (const svc of services) {
-      if (svc !== PRIMARY_SERVICE) ordered.push(svc)
+    const ordered: KeychainEntry[] = []
+    const primary = byService.get(PRIMARY_SERVICE)
+    if (primary) ordered.push(primary)
+    for (const [svc, e] of byService) {
+      if (svc !== PRIMARY_SERVICE) ordered.push(e)
     }
-    log("keychain_list", { servicesFound: ordered })
+
+    log("keychain_list", {
+      servicesFound: ordered.map((e) => e.service),
+      withDescription: ordered
+        .filter((e) => deriveKeychainDescription(e))
+        .map((e) => e.service),
+    })
     return ordered
   } catch (err) {
     log("keychain_list", {
       error: "Failed to list keychain services",
       message: err instanceof Error ? err.message : String(err),
     })
-    return [PRIMARY_SERVICE]
+    return [{ service: PRIMARY_SERVICE }]
   }
 }
 
@@ -216,16 +264,23 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     return [{ label, source: "file", credentials: creds }]
   }
 
-  const services = listClaudeKeychainServices()
-  const rawAccounts: Array<{ source: string; credentials: ClaudeCredentials }> =
-    []
+  const entries = listClaudeKeychainEntries()
+  const rawAccounts: Array<{
+    source: string
+    credentials: ClaudeCredentials
+    description?: string
+  }> = []
 
-  for (const svc of services) {
-    const raw = readKeychainService(svc)
+  for (const entry of entries) {
+    const raw = readKeychainService(entry.service)
     if (!raw) continue
     const creds = parseCredentials(raw)
     if (!creds) continue
-    rawAccounts.push({ source: svc, credentials: creds })
+    rawAccounts.push({
+      source: entry.service,
+      credentials: creds,
+      description: deriveKeychainDescription(entry),
+    })
   }
 
   if (rawAccounts.length === 0) {
@@ -233,11 +288,28 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     if (creds) rawAccounts.push({ source: "file", credentials: creds })
   }
 
-  const labels = buildAccountLabels(rawAccounts.map((a) => a.credentials))
+  // Build base labels (e.g. "Claude Pro") without disambiguating numbers.
+  const baseLabels = rawAccounts.map((a) => {
+    const sub = a.credentials.subscriptionType
+    if (sub) return `Claude ${sub.charAt(0).toUpperCase() + sub.slice(1)}`
+    return "Claude"
+  })
+
+  // Only fall back to numeric suffixes for entries without a Keychain comment.
+  const numberedLabels = buildAccountLabels(
+    rawAccounts.map((a) => a.credentials),
+  )
+
   return rawAccounts.map((a, i) => ({
-    label: labels[i],
+    // Append the user-set Keychain comment after the plan so the UI shows
+    // e.g. "Claude Pro - Claude Sub Duncan". Without a comment, fall back to
+    // the disambiguated label (e.g. "Claude Max 2").
+    label: a.description
+      ? `${baseLabels[i]} - ${a.description}`
+      : numberedLabels[i],
     source: a.source,
     credentials: a.credentials,
+    description: a.description,
   }))
 }
 

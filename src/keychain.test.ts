@@ -6,6 +6,8 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
   buildAccountLabels,
+  deriveKeychainDescription,
+  parseKeychainDump,
   updateCredentialBlob,
   writeBackCredentials,
 } from "./keychain.ts"
@@ -495,6 +497,192 @@ describe("updateCredentialBlob", () => {
       }),
       null,
     )
+  })
+})
+
+describe("parseKeychainDump", () => {
+  // Mirrors the real format emitted by `security dump-keychain` on macOS.
+  // Includes: a primary Claude entry, a renamed/comment-tagged entry whose
+  // 0x00000007 label and `svce` differ, a non-Claude item that must be
+  // ignored, and a mix of <NULL> attributes.
+  const KEYCHAIN_DUMP = `keychain: "/Users/test/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="Claude Code-credentials"
+    0x00000008 <blob>=<NULL>
+    "acct"<blob>="testuser"
+    "cdat"<timedate>=0x32303230303130313030303030305A00  "20200101000000Z\\000"
+    "crtr"<uint32>=<NULL>
+    "desc"<blob>=<NULL>
+    "icmt"<blob>=<NULL>
+    "mdat"<timedate>=0x32303230303130313030303030305A00  "20200101000000Z\\000"
+    "svce"<blob>="Claude Code-credentials"
+    "type"<uint32>=<NULL>
+keychain: "/Users/test/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="Claude Code-credentials-12345678"
+    0x00000008 <blob>=<NULL>
+    "acct"<blob>="testuser"
+    "cdat"<timedate>=0x32303230303130313030303030305A00  "20200101000000Z\\000"
+    "desc"<blob>=<NULL>
+    "icmt"<blob>="Jack Test"
+    "svce"<blob>="Claude Code-credentials-12345678"
+    "type"<uint32>=<NULL>
+keychain: "/Users/test/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="Example"
+    "acct"<blob>="some-db"
+    "desc"<blob>="application password"
+    "icmt"<blob>=<NULL>
+    "svce"<blob>="com.example.Example"
+keychain: "/Users/test/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="Claude Code-credentials-23456789"
+    "acct"<blob>="testuser"
+    "desc"<blob>=<NULL>
+    "icmt"<blob>=<NULL>
+    "svce"<blob>="Claude Code-credentials-23456789"
+    "type"<uint32>=<NULL>
+`
+
+  it("parses every genp item in the dump", () => {
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    assert.equal(entries.length, 4)
+  })
+
+  it("extracts the svce attribute as service", () => {
+    const services = parseKeychainDump(KEYCHAIN_DUMP).map((e) => e.service)
+    assert.deepEqual(services, [
+      "Claude Code-credentials",
+      "Claude Code-credentials-12345678",
+      "com.example.Example",
+      "Claude Code-credentials-23456789",
+    ])
+  })
+
+  it("extracts the 0x00000007 attribute as label", () => {
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    assert.equal(entries[0].label, "Claude Code-credentials")
+    assert.equal(entries[1].label, "Claude Code-credentials-12345678")
+    assert.equal(entries[2].label, "Example")
+  })
+
+  it("extracts the icmt attribute as comment", () => {
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    assert.equal(entries[1].comment, "Jack Test")
+  })
+
+  it("extracts the acct attribute as account", () => {
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    assert.equal(entries[0].account, "testuser")
+    assert.equal(entries[2].account, "some-db")
+  })
+
+  it("converts <NULL> attribute values to undefined", () => {
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    assert.equal(entries[0].comment, undefined)
+    assert.equal(entries[0].description, undefined)
+    assert.equal(entries[3].comment, undefined)
+  })
+
+  it("extracts a non-null desc attribute", () => {
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    assert.equal(entries[2].description, "application password")
+  })
+
+  it("skips items that have no svce attribute", () => {
+    const dump = `class: "genp"
+attributes:
+    "acct"<blob>="orphan"
+    "svce"<blob>=<NULL>
+class: "genp"
+attributes:
+    "acct"<blob>="ok"
+    "svce"<blob>="real"
+`
+    const entries = parseKeychainDump(dump)
+    assert.equal(entries.length, 1)
+    assert.equal(entries[0].service, "real")
+  })
+
+  it("returns an empty array for an empty dump", () => {
+    assert.deepEqual(parseKeychainDump(""), [])
+  })
+
+  it("returns an empty array when no genp items are present", () => {
+    assert.deepEqual(
+      parseKeychainDump(`keychain: "x"\nversion: 512\nclass: "inet"\n`),
+      [],
+    )
+  })
+
+  it("captures items whose svce differs from the human label", () => {
+    // The 12345678 item is invisible to the legacy hex-only regex but visible
+    // through svce-based parsing — that's the whole reason we rewrote it.
+    const entries = parseKeychainDump(KEYCHAIN_DUMP)
+    const acc23456789 = entries.find(
+      (e) => e.service === "Claude Code-credentials-23456789",
+    )
+    assert.ok(acc23456789, "23456789 entry should be parsed")
+    assert.equal(acc23456789.label, "Claude Code-credentials-23456789")
+    assert.equal(acc23456789.comment, undefined)
+  })
+})
+
+describe("deriveKeychainDescription", () => {
+  it("returns the comment when present", () => {
+    assert.equal(
+      deriveKeychainDescription({
+        service: "Claude Code-credentials-12345678",
+        comment: "Claude Sub 12345678",
+      }),
+      "Claude Sub 12345678",
+    )
+  })
+
+  it("trims surrounding whitespace from the comment", () => {
+    assert.equal(
+      deriveKeychainDescription({
+        service: "svc",
+        comment: "   spaced description   ",
+      }),
+      "spaced description",
+    )
+  })
+
+  it("returns undefined for an empty or whitespace-only comment", () => {
+    assert.equal(
+      deriveKeychainDescription({ service: "svc", comment: "" }),
+      undefined,
+    )
+    assert.equal(
+      deriveKeychainDescription({ service: "svc", comment: "   " }),
+      undefined,
+    )
+  })
+
+  it("returns undefined when comment is absent, ignoring label and desc", () => {
+    // We deliberately do NOT fall back to label or desc — the icmt field is
+    // the only user-meaningful annotation in practice.
+    assert.equal(
+      deriveKeychainDescription({
+        service: "Claude Code-credentials-12345678",
+        label: "Claude Code-credentials-12345678",
+        description: "application password",
+      }),
+      undefined,
+    )
+  })
+
+  it("returns undefined for a fully empty entry", () => {
+    assert.equal(deriveKeychainDescription({ service: "svc" }), undefined)
   })
 })
 
