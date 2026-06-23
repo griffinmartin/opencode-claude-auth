@@ -217,6 +217,7 @@ export function buildRequestHeaders(
 }
 
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
+const PROACTIVE_REFRESH_THRESHOLD_MS = 60 * 60 * 1000 // 1 hour before expiry
 
 const plugin: Plugin = async () => {
   initLogger()
@@ -261,11 +262,39 @@ const plugin: Plugin = async () => {
       )
     }
 
-    // Keep auth.json synced with current credentials (no refresh triggered)
+    // Keep auth.json synced and proactively refresh before expiry.
+    // If the token expires within PROACTIVE_REFRESH_THRESHOLD_MS (1 hour),
+    // call getCachedCredentials() which triggers an OAuth refresh.
+    // This prevents the "run `claude` to re-authenticate" message from
+    // appearing mid-session when the token silently expires.
     const syncTimer = setInterval(() => {
       try {
-        const creds = getCredentialsForSync()
-        if (creds) syncAuthJson(creds)
+        const account = accounts[0]
+        const expiresIn = account?.credentials?.expiresAt
+          ? account.credentials.expiresAt - Date.now()
+          : Infinity
+
+        if (expiresIn < PROACTIVE_REFRESH_THRESHOLD_MS) {
+          // Token expiring soon — trigger a full refresh
+          log("proactive_refresh_triggered", {
+            expiresInMs: expiresIn,
+            thresholdMs: PROACTIVE_REFRESH_THRESHOLD_MS,
+          })
+          const creds = getCachedCredentials()
+          if (creds) {
+            syncAuthJson(creds)
+            log("proactive_refresh_success", {})
+          } else {
+            log("proactive_refresh_failed", {})
+            console.warn(
+              "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
+            )
+          }
+        } else {
+          // Token still fresh — just sync without refreshing
+          const creds = getCredentialsForSync()
+          if (creds) syncAuthJson(creds)
+        }
       } catch {
         // Non-fatal
       }
