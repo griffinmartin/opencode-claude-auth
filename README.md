@@ -104,7 +104,7 @@ If only one account is found, the switcher is hidden and the plugin uses it dire
 | Keychain access denied                              | Grant access when macOS prompts you                                                                                |
 | Keychain read timed out                             | Restart Keychain Access (can happen on macOS Tahoe)                                                                |
 | "Credentials are unavailable or expired"            | Run `claude` to refresh your Claude Code credentials                                                               |
-| "Extra usage is required for long context requests" | Your conversation exceeded 200k tokens. See [Long context (1M)](#long-context-1m) below                            |
+| "Extra usage is required for long context requests" | Your plan doesn't cover long context extra usage. See [Long context (1M)](#long-context-1m) below                  |
 | Plugin not updating to latest version               | Delete the cached package: `rm -rf ~/.cache/opencode/packages/opencode-claude-auth@latest/` then restart OpenCode  |
 
 ### Diagnostic logging
@@ -131,9 +131,9 @@ unset CLAUDE_AUTH_DEBUG
 
 ## Long context (1M)
 
-The plugin never sends the `context-1m-2025-08-07` beta header, so the API caps context at 200k tokens.
+1M token context is supported natively — the API no longer requires a beta flag for it, so the plugin doesn't send the legacy `context-1m-2025-08-07` header.
 
-If you add the beta manually via `ANTHROPIC_BETA_FLAGS` and your plan doesn't cover long context billing, requests fail with "Extra usage is required for long context requests" — the plugin retries without the offending flag.
+If your plan doesn't cover long context billing, requests beyond the standard window fail with "Extra usage is required for long context requests". When a long context error is caused by a beta flag (e.g. one added via `ANTHROPIC_BETA_FLAGS`), the plugin retries without the offending flag.
 
 ## Validating OAuth refresh
 

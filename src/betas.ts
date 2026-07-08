@@ -71,9 +71,8 @@ export function getModelBetas(
 ): string[] {
   let betas = [...getRequiredBetas()]
 
-  // context-1m is never sent automatically. Without it, the API enforces a
-  // 200k context limit. Users who want 1M context can add the beta manually
-  // via ANTHROPIC_BETA_FLAGS (requires a plan that covers extra usage).
+  // The legacy context-1m-2025-08-07 beta is never sent — the API supports
+  // 1M context natively without it.
 
   // Apply per-model overrides (e.g. haiku excludes claude-code-20250219)
   const override = getModelOverride(modelId)
