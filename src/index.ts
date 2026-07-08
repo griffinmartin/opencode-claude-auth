@@ -12,7 +12,6 @@ import {
   LONG_CONTEXT_BETAS,
 } from "./betas.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
-import { applyOpencodeConfig } from "./plugin-config.ts"
 import {
   getCachedCredentials,
   getCredentialsForSync,
@@ -45,7 +44,6 @@ export {
   refreshAccountsList,
   type ClaudeCredentials,
 } from "./credentials.ts"
-export { isEnable1mContext, type PluginSettings } from "./plugin-config.ts"
 export {
   buildBillingHeaderValue,
   computeCch,
@@ -278,9 +276,6 @@ const plugin: Plugin = async () => {
   }
 
   return {
-    config: async (opencodeConfig) => {
-      applyOpencodeConfig(opencodeConfig)
-    },
     "experimental.chat.system.transform": async (input, output) => {
       if (input.model?.providerID !== "anthropic") {
         return

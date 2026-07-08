@@ -1,40 +1,26 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import {
-  getModelBetas,
-  isLongContextError,
-  supports1mContext,
-} from "./betas.ts"
+import { getModelBetas, isLongContextError } from "./betas.ts"
 import { config, getModelOverride } from "./model-config.ts"
 
 describe("betas", () => {
   it("getModelBetas includes all baseBetas from config for sonnet 4.6", () => {
-    const saved = process.env.ANTHROPIC_ENABLE_1M_CONTEXT
-    delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
-    try {
-      const sonnetBetas = getModelBetas("claude-sonnet-4-6")
-      for (const beta of config.baseBetas) {
+    const sonnetBetas = getModelBetas("claude-sonnet-4-6")
+    for (const beta of config.baseBetas) {
+      assert.ok(
+        sonnetBetas.includes(beta),
+        `sonnet 4.6 should include base beta: ${beta}`,
+      )
+    }
+    // Model-specific overrides should also be applied
+    const override = getModelOverride("claude-sonnet-4-6")
+    if (override?.add) {
+      for (const beta of override.add) {
         assert.ok(
           sonnetBetas.includes(beta),
-          `sonnet 4.6 should include base beta: ${beta}`,
+          `sonnet 4.6 should include override beta: ${beta}`,
         )
       }
-      // Model-specific overrides should also be applied
-      const override = getModelOverride("claude-sonnet-4-6")
-      if (override?.add) {
-        for (const beta of override.add) {
-          assert.ok(
-            sonnetBetas.includes(beta),
-            `sonnet 4.6 should include override beta: ${beta}`,
-          )
-        }
-      }
-      assert.ok(
-        !sonnetBetas.includes("context-1m-2025-08-07"),
-        "context-1m should NOT be auto-added",
-      )
-    } finally {
-      if (saved !== undefined) process.env.ANTHROPIC_ENABLE_1M_CONTEXT = saved
     }
   })
 
@@ -119,101 +105,6 @@ describe("betas", () => {
     }
   })
 
-  it("getModelBetas does not auto-add context-1m for any model by default", () => {
-    const saved = process.env.ANTHROPIC_ENABLE_1M_CONTEXT
-    delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
-    try {
-      const models = [
-        "claude-sonnet-4-6",
-        "claude-opus-4-6",
-        "claude-opus-4-7",
-        "claude-sonnet-4-5-20250514",
-        "claude-opus-4-5-20250514",
-        "claude-opus-4-20250514",
-        "sonnet",
-        "opus",
-      ]
-      for (const model of models) {
-        const betas = getModelBetas(model)
-        assert.ok(
-          !betas.includes("context-1m-2025-08-07"),
-          `${model} should not get 1M beta by default`,
-        )
-      }
-    } finally {
-      if (saved !== undefined) process.env.ANTHROPIC_ENABLE_1M_CONTEXT = saved
-    }
-  })
-
-  it("getModelBetas adds context-1m when ANTHROPIC_ENABLE_1M_CONTEXT=true for 4.6+ models", () => {
-    process.env.ANTHROPIC_ENABLE_1M_CONTEXT = "true"
-    try {
-      const sonnet = getModelBetas("claude-sonnet-4-6")
-      assert.ok(
-        sonnet.includes("context-1m-2025-08-07"),
-        "sonnet 4.6 should get 1M beta when opted in",
-      )
-
-      const opus = getModelBetas("claude-opus-4-6")
-      assert.ok(
-        opus.includes("context-1m-2025-08-07"),
-        "opus 4.6 should get 1M beta when opted in",
-      )
-
-      const opus47 = getModelBetas("claude-opus-4-7")
-      assert.ok(
-        opus47.includes("context-1m-2025-08-07"),
-        "opus 4.7 should get 1M beta when opted in",
-      )
-    } finally {
-      delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
-    }
-  })
-
-  it("getModelBetas does not add context-1m with opt-in for pre-4.6 models", () => {
-    process.env.ANTHROPIC_ENABLE_1M_CONTEXT = "true"
-    try {
-      const sonnet45 = getModelBetas("claude-sonnet-4-5-20250514")
-      assert.ok(
-        !sonnet45.includes("context-1m-2025-08-07"),
-        "sonnet 4.5 should not get 1M beta even when opted in",
-      )
-
-      const opus45 = getModelBetas("claude-opus-4-5-20250514")
-      assert.ok(
-        !opus45.includes("context-1m-2025-08-07"),
-        "opus 4.5 should not get 1M beta even when opted in",
-      )
-
-      const bare = getModelBetas("sonnet")
-      assert.ok(
-        !bare.includes("context-1m-2025-08-07"),
-        "bare alias should not get 1M beta even when opted in",
-      )
-    } finally {
-      delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
-    }
-  })
-
-  it("supports1mContext identifies eligible models", () => {
-    assert.ok(supports1mContext("claude-sonnet-4-6"), "sonnet 4.6 supports 1M")
-    assert.ok(supports1mContext("claude-opus-4-6"), "opus 4.6 supports 1M")
-    assert.ok(supports1mContext("claude-opus-4-7"), "opus 4.7 supports 1M")
-    assert.ok(
-      !supports1mContext("claude-sonnet-4-5-20250514"),
-      "sonnet 4.5 does not support 1M",
-    )
-    assert.ok(
-      !supports1mContext("claude-opus-4-20250514"),
-      "opus 4 with date suffix does not support 1M",
-    )
-    assert.ok(!supports1mContext("sonnet"), "bare alias does not support 1M")
-    assert.ok(
-      !supports1mContext("claude-haiku-4-5"),
-      "haiku does not support 1M",
-    )
-  })
-
   it("getModelBetas filters out excluded betas when provided", () => {
     const betaToExclude = config.baseBetas[config.baseBetas.length - 1]
     const betaToKeep = config.baseBetas[0]
@@ -231,24 +122,19 @@ describe("betas", () => {
   })
 
   it("getModelBetas filters out multiple excluded betas", () => {
-    process.env.ANTHROPIC_ENABLE_1M_CONTEXT = "true"
-    try {
-      const excluded = new Set(config.longContextBetas)
-      const betas = getModelBetas("claude-sonnet-4-6", excluded)
+    const excluded = new Set(config.longContextBetas)
+    const betas = getModelBetas("claude-sonnet-4-6", excluded)
 
-      for (const ex of config.longContextBetas) {
-        assert.ok(
-          !betas.includes(ex),
-          `excluded beta ${ex} should be filtered out`,
-        )
-      }
+    for (const ex of config.longContextBetas) {
       assert.ok(
-        betas.includes(config.baseBetas[0]),
-        `non-excluded beta ${config.baseBetas[0]} should remain`,
+        !betas.includes(ex),
+        `excluded beta ${ex} should be filtered out`,
       )
-    } finally {
-      delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     }
+    assert.ok(
+      betas.includes(config.baseBetas[0]),
+      `non-excluded beta ${config.baseBetas[0]} should remain`,
+    )
   })
 
   it("isLongContextError detects the specific error messages", () => {
@@ -306,28 +192,25 @@ describe("betas", () => {
       const betas = getModelBetas("claude-sonnet-4-6")
       assert.ok(betas.includes("custom-beta-1"), "Expected custom-beta-1")
       assert.ok(betas.includes("custom-beta-2"), "Expected custom-beta-2")
-      assert.ok(
-        !betas.includes("context-1m-2025-08-07"),
-        "context-1m should not be auto-added even with custom flags",
-      )
     } finally {
       delete process.env.ANTHROPIC_BETA_FLAGS
     }
   })
 
-  it("getModelBetas adds context-1m with ANTHROPIC_BETA_FLAGS and opt-in combined", () => {
-    process.env.ANTHROPIC_BETA_FLAGS = "custom-beta-1"
-    process.env.ANTHROPIC_ENABLE_1M_CONTEXT = "true"
+  it("getModelBetas override exclusion removes duplicate occurrences", () => {
+    // Regenerated configs can list the same beta twice; excluding it must
+    // remove every occurrence, not just the first.
+    process.env.ANTHROPIC_BETA_FLAGS =
+      "interleaved-thinking-2025-05-14,custom-beta-1,interleaved-thinking-2025-05-14"
     try {
-      const betas = getModelBetas("claude-sonnet-4-6")
-      assert.ok(betas.includes("custom-beta-1"), "Expected custom beta")
+      const betas = getModelBetas("claude-haiku-4-5")
       assert.ok(
-        betas.includes("context-1m-2025-08-07"),
-        "Expected 1M beta with opt-in",
+        !betas.includes("interleaved-thinking-2025-05-14"),
+        "haiku should exclude every occurrence of interleaved-thinking",
       )
+      assert.ok(betas.includes("custom-beta-1"), "unrelated beta should remain")
     } finally {
       delete process.env.ANTHROPIC_BETA_FLAGS
-      delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     }
   })
 })

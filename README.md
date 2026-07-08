@@ -55,25 +55,22 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 
 ## Supported models
 
-15 supported models. Run `pnpm run test:models` to verify against your account.
+12 supported models. Run `pnpm run test:models` to verify against your account.
 
 | Model                      |
 | -------------------------- |
+| claude-fable-5             |
 | claude-haiku-4-5           |
 | claude-haiku-4-5-20251001  |
-| claude-opus-4-0            |
-| claude-opus-4-1            |
-| claude-opus-4-1-20250805   |
-| claude-opus-4-20250514     |
 | claude-opus-4-5            |
 | claude-opus-4-5-20251101   |
 | claude-opus-4-6            |
 | claude-opus-4-7            |
-| claude-sonnet-4-0          |
-| claude-sonnet-4-20250514   |
+| claude-opus-4-8            |
 | claude-sonnet-4-5          |
 | claude-sonnet-4-5-20250929 |
 | claude-sonnet-4-6          |
+| claude-sonnet-5            |
 
 ## Credential sources
 
@@ -134,36 +131,9 @@ unset CLAUDE_AUTH_DEBUG
 
 ## Long context (1M)
 
-The `context-1m-2025-08-07` beta header is not sent by default. Without it, the API caps context at 200k tokens.
+The plugin never sends the `context-1m-2025-08-07` beta header, so the API caps context at 200k tokens.
 
-To enable 1M context (requires Claude Max or a plan with extra usage coverage), use **either** of these methods:
-
-**Option A: Config file** (recommended — no environment setup needed)
-
-Add `enable1mContext` to any agent in your `opencode.json` (project-level or `~/.config/opencode/opencode.json`). Setting it in any one agent enables 1M context globally for all supported models — you don't need to set it for each agent:
-
-```json
-{
-  "plugin": ["opencode-claude-auth@latest"],
-  "agent": {
-    "build": {
-      "enable1mContext": true
-    }
-  }
-}
-```
-
-**Option B: Environment variable**
-
-```bash
-export ANTHROPIC_ENABLE_1M_CONTEXT=true
-```
-
-If both are set, the environment variable takes priority.
-
-The Claude CLI itself treats 1M context as opt-in (via a `[1m]` model suffix). Sending the beta without a plan that covers long context charges causes "Extra usage is required for long context requests" errors. Versions before 0.8.0 sent this beta automatically for 4.6+ models, which broke things for Pro users ([#64](https://github.com/griffinmartin/opencode-claude-auth/issues/64)).
-
-If a long context error still occurs (e.g. from a beta flag added via `ANTHROPIC_BETA_FLAGS`), the plugin retries without the offending flag.
+If you add the beta manually via `ANTHROPIC_BETA_FLAGS` and your plan doesn't cover long context billing, requests fail with "Extra usage is required for long context requests" — the plugin retries without the offending flag.
 
 ## Validating OAuth refresh
 
@@ -185,7 +155,6 @@ All configurable parameters can be overridden via environment variables. If Anth
 | `ANTHROPIC_CLI_VERSION`             | Claude CLI version for user-agent and billing headers                                                                                                                                  | `2.1.80`                                                                                                |
 | `ANTHROPIC_USER_AGENT`              | Full User-Agent string (overrides CLI version)                                                                                                                                         | `claude-cli/{version} (external, cli)`                                                                  |
 | `ANTHROPIC_BETA_FLAGS`              | Comma-separated beta feature flags                                                                                                                                                     | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05` |
-| `ANTHROPIC_ENABLE_1M_CONTEXT`       | Enable 1M token context window for 4.6+ models (requires Max subscription)                                                                                                             | `false`                                                                                                 |
 | `CLAUDE_AUTH_DEBUG`                 | Enable diagnostic logging (`1` for default path, or a custom file path)                                                                                                                | disabled                                                                                                |
 | `OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS` | Max ms the plugin waits when honouring a 429/529 `retry-after` header. Beyond this cap the response surfaces immediately so OpenCode doesn't appear to hang on hour-long quota resets. | `30000`                                                                                                 |
 
@@ -193,7 +162,6 @@ Example:
 
 ```bash
 export ANTHROPIC_CLI_VERSION=2.2.0
-export ANTHROPIC_ENABLE_1M_CONTEXT=true  # requires Claude Max
 ```
 
 ## How it works (technical)

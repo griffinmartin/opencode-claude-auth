@@ -1,5 +1,4 @@
 import { config, getModelOverride } from "./model-config.ts"
-import { isEnable1mContext } from "./plugin-config.ts"
 
 // Beta flags to try removing in order when "long context" errors occur
 export const LONG_CONTEXT_BETAS = config.longContextBetas
@@ -66,48 +65,27 @@ export function getNextBetaToExclude(modelId: string): string | null {
   return null // All long-context betas already excluded
 }
 
-export function supports1mContext(modelId: string): boolean {
-  const lower = modelId.toLowerCase()
-  if (!lower.includes("opus") && !lower.includes("sonnet")) return false
-  const versionMatch = lower.match(/(opus|sonnet)-(\d+)-(\d+)/)
-  if (!versionMatch) return false
-  const major = parseInt(versionMatch[2], 10)
-  const minor = parseInt(versionMatch[3], 10)
-  // Date suffixes like 20250514 are not minor versions — treat as x.0
-  const effectiveMinor = minor > 99 ? 0 : minor
-  return major > 4 || (major === 4 && effectiveMinor >= 6)
-}
-
 export function getModelBetas(
   modelId: string,
   excluded?: Set<string>,
 ): string[] {
-  const betas = [...getRequiredBetas()]
+  let betas = [...getRequiredBetas()]
 
-  // context-1m is OPT-IN only, matching the official Claude CLI behavior.
-  // The CLI only sends this beta when the model ID has a [1m] suffix.
-  // Without it, the API enforces a 200k context limit. Sending the beta
-  // without a subscription that covers long context billing causes
-  // "Extra usage is required for long context requests" errors.
-  //
-  // Users who want 1M context should set ANTHROPIC_ENABLE_1M_CONTEXT=true
-  // (requires a Claude Max subscription or a plan that covers extra usage).
-  if (isEnable1mContext() && supports1mContext(modelId)) {
-    betas.push(config.longContextBetas[0])
-  }
+  // context-1m is never sent automatically. Without it, the API enforces a
+  // 200k context limit. Users who want 1M context can add the beta manually
+  // via ANTHROPIC_BETA_FLAGS (requires a plan that covers extra usage).
 
   // Apply per-model overrides (e.g. haiku excludes claude-code-20250219)
   const override = getModelOverride(modelId)
   if (override) {
-    if (override.exclude) {
-      for (const ex of override.exclude) {
-        const idx = betas.indexOf(ex)
-        if (idx !== -1) betas.splice(idx, 1)
-      }
+    const { exclude, add } = override
+    if (exclude) {
+      // Remove every occurrence — regenerated configs can contain duplicates
+      betas = betas.filter((beta) => !exclude.includes(beta))
     }
-    if (override.add) {
-      for (const add of override.add) {
-        if (!betas.includes(add)) betas.push(add)
+    if (add) {
+      for (const beta of add) {
+        if (!betas.includes(beta)) betas.push(beta)
       }
     }
   }
