@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.4...v2.0.0) (2026-07-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove 1M context opt-in feature ([#240](https://github.com/griffinmartin/opencode-claude-auth/issues/240))
+
+### Features
+
+* remove 1M context opt-in feature ([#240](https://github.com/griffinmartin/opencode-claude-auth/issues/240)) ([88b0f79](https://github.com/griffinmartin/opencode-claude-auth/commit/88b0f793b84b08e60558c42bea8b3d142a70d9d9))
+
 ## [1.5.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.3...v1.5.4) (2026-05-15)
 
 
