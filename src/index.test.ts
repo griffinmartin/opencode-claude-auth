@@ -806,6 +806,91 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       }
     }
   })
+
+  it("auth fetch returns quota errors without writing over the terminal UI", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const originalWarn = console.warn
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    const errorBody = JSON.stringify({
+      type: "error",
+      error: {
+        type: "rate_limit_error",
+        message:
+          "This request would exceed your account's rate limit. Please try again later.",
+      },
+    })
+    let fetchCount = 0
+    const warnings: unknown[][] = []
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+      globalThis.fetch = (async () => {
+        fetchCount += 1
+        return new Response(errorBody, {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "11218",
+          },
+        })
+      }) as typeof fetch
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args)
+      }
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      assert.equal(typeof typedPlugin.auth?.loader, "function")
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            model: "claude-opus-4-8",
+            messages: [],
+          }),
+        },
+      )
+
+      assert.equal(response.status, 429)
+      assert.equal(response.headers.get("retry-after"), "11218")
+      assert.equal(await response.text(), errorBody)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      assert.equal(fetchCount, 1)
+      assert.deepEqual(warnings, [])
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      console.warn = originalWarn
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
 })
 
 describe("auth hook — account resolution", () => {

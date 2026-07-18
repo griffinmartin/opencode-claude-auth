@@ -448,7 +448,7 @@ const plugin: Plugin = async () => {
               })
             }
 
-            // Log non-200 responses at warn level so they're visible in OpenCode
+            // Record non-200 responses without writing over OpenCode's terminal UI.
             if (!response.ok) {
               const status = response.status
               const cloned = response.clone()
@@ -464,9 +464,6 @@ const plugin: Plugin = async () => {
                       parsed.error?.message ?? parsed.error?.type ?? errorBody
                   } catch {}
                   log("fetch_error_response", { status, modelId, message })
-                  console.warn(
-                    `opencode-claude-auth: API ${status} for ${modelId}: ${message}`,
-                  )
                 })
                 .catch(() => {})
             }
