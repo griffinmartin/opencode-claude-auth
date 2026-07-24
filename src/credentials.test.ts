@@ -548,6 +548,20 @@ describe("parseOAuthResponse", () => {
     assert.equal(result.expiresAt, now + 28800 * 1000)
   })
 
+  it("truncates fractional expires_in to integer milliseconds", () => {
+    const expiresIn = 28_800.000_901_1
+    const raw = JSON.stringify({
+      access_token: "sk-ant-oat01-new",
+      expires_in: expiresIn,
+    })
+
+    const result = parseOAuthResponse(raw, currentRefresh, now)
+
+    assert.ok(result)
+    assert.equal(result.expiresAt, Math.trunc(now + expiresIn * 1000))
+    assert.equal(Number.isInteger(result.expiresAt), true)
+  })
+
   it("returns null when access_token is missing", () => {
     const raw = JSON.stringify({ refresh_token: "rt", expires_in: 3600 })
     assert.equal(parseOAuthResponse(raw, currentRefresh, now), null)

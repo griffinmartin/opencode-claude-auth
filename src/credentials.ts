@@ -183,7 +183,7 @@ export function parseOAuthResponse(
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token ?? currentRefreshToken,
-    expiresAt: now + (data.expires_in ?? 36_000) * 1000,
+    expiresAt: Math.trunc(now + (data.expires_in ?? 36_000) * 1000),
   }
 }
 
