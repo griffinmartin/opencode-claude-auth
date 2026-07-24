@@ -17,11 +17,9 @@ import {
   transformResponseStream,
 } from "./transforms.ts"
 import {
-  forceRefreshActiveAccount,
   getCachedCredentials,
   getCredentialsForSync,
-  invalidateCredentialCache,
-  reloadActiveAccount,
+  reloadCredentialsFromSource,
   syncAuthJson,
   initAccounts,
   setActiveAccountSource,
@@ -380,28 +378,11 @@ const plugin: Plugin = async () => {
               retryAttempt: 0,
             })
 
-            // On 401, force a credential refresh and retry once.
-            // This handles the common case of token expiry mid-session.
+            // On 401, bypass the in-memory cache to pick up credentials rotated by
+            // another client, then retry once only when the access token changed.
             if (response.status === 401) {
               log("fetch_401_retry", { modelId })
-              // The server rejected a token that may still look valid
-              // locally: bypass the 30s cache and re-read the active
-              // account's source (single keychain read, no full rescan) so
-              // an externally refreshed token (e.g. by the claude CLI) is
-              // picked up.
-              invalidateCredentialCache()
-              reloadActiveAccount()
-              // When refreshed is null, refreshIfNeeded already exhausted the
-              // OAuth (+ CLI) refresh paths — skipping the force-refresh
-              // below is intentional, not a missed recovery.
-              let refreshed = getCachedCredentials()
-              if (refreshed && refreshed.accessToken === latest.accessToken) {
-                // The source still holds the rejected token (revoked, the
-                // claude CLI hasn't refreshed it): try one direct OAuth
-                // refresh before giving up. Bounded to a single attempt per
-                // 401 response.
-                refreshed = forceRefreshActiveAccount() ?? refreshed
-              }
+              const refreshed = reloadCredentialsFromSource()
               if (refreshed && refreshed.accessToken !== latest.accessToken) {
                 const retryHeaders = buildRequestHeaders(
                   input,
