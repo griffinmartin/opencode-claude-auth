@@ -440,3 +440,39 @@ export function getCachedCredentials(): ClaudeCredentials | null {
   accountCacheMap.set(account.source, { creds: fresh, cachedAt: now })
   return fresh
 }
+
+export function reloadCredentialsFromSource(): ClaudeCredentials | null {
+  const account = getActiveAccount()
+  if (!account) return null
+
+  const now = Date.now()
+  let reloaded: ClaudeCredentials | null
+  try {
+    reloaded = refreshAccount(account.source)
+  } catch {
+    accountCacheMap.delete(account.source)
+    log("credentials_source_reload", {
+      source: account.source,
+      success: false,
+      reason: "read_error",
+    })
+    return null
+  }
+  if (!reloaded || reloaded.expiresAt <= now + 60_000) {
+    accountCacheMap.delete(account.source)
+    log("credentials_source_reload", {
+      source: account.source,
+      success: false,
+      reason: reloaded ? "expiring" : "unavailable",
+    })
+    return null
+  }
+
+  account.credentials = reloaded
+  accountCacheMap.set(account.source, { creds: reloaded, cachedAt: now })
+  log("credentials_source_reload", {
+    source: account.source,
+    success: true,
+  })
+  return reloaded
+}
