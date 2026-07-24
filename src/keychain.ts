@@ -19,7 +19,7 @@ export interface ClaudeAccount {
 
 const PRIMARY_SERVICE = "Claude Code-credentials"
 
-function parseCredentials(raw: string): ClaudeCredentials | null {
+export function parseCredentials(raw: string): ClaudeCredentials | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -65,7 +65,7 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
   return {
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
-    expiresAt: creds.expiresAt,
+    expiresAt: Math.trunc(creds.expiresAt),
     subscriptionType:
       typeof creds.subscriptionType === "string"
         ? creds.subscriptionType
