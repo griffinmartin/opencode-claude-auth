@@ -230,7 +230,8 @@ function buildSuffixToDirCache(needed: Set<string>): Map<string, string> {
   const hasAllNeeded = (cache: Map<string, string>) =>
     [...needed].every((suffix) => cache.has(suffix))
 
-  if (suffixToDirCache && hasAllNeeded(suffixToDirCache)) return suffixToDirCache
+  if (suffixToDirCache && hasAllNeeded(suffixToDirCache))
+    return suffixToDirCache
 
   const cache = suffixToDirCache ?? new Map<string, string>()
 
