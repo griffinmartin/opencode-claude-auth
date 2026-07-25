@@ -31,6 +31,7 @@ async function loadCredentialsWithCountingKeychain(
       credentials: Creds
     }) => Creds | null
     initAccounts: (accounts: unknown[]) => void
+    invalidateCredentialCache: () => void
   }
   keychainModule: {
     __getReadCount: () => number
@@ -120,6 +121,7 @@ export function __setCredentials(c) {
         credentials: Creds
       }) => Creds | null
       initAccounts: (accounts: unknown[]) => void
+      invalidateCredentialCache: () => void
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
@@ -325,6 +327,57 @@ describe("credential caching", () => {
         "new-token",
         "account.credentials should be updated in place so future calls see the new tokens",
       )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("invalidateCredentialCache forces the next read to bypass the 30s TTL", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      const account = {
+        label: "Account 1",
+        source: "file",
+        credentials: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([account])
+
+      // Prime the cache
+      const first = credentialsModule.getCachedCredentials()
+      assert.ok(first)
+
+      // Server-side rotation: on-disk credentials change, but the local
+      // copy still looks valid so the cache would serve it for 30s.
+      keychainModule.__setCredentials({
+        accessToken: "rotated-token",
+        refreshToken: "rotated-refresh",
+        expiresAt: now + 10 * 60_000,
+      })
+
+      const cached = credentialsModule.getCachedCredentials()
+      assert.ok(cached)
+      assert.equal(
+        cached.accessToken,
+        "token",
+        "within TTL the stale token is served from cache",
+      )
+
+      // After invalidation (e.g. a 401 from the API), the next read must
+      // go back to the source instead of serving the rejected token.
+      credentialsModule.invalidateCredentialCache()
+      const fresh = credentialsModule.getCachedCredentials()
+      assert.ok(fresh)
+      assert.equal(fresh.accessToken, "rotated-token")
     } finally {
       Date.now = originalNow
     }

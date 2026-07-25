@@ -334,6 +334,20 @@ export function getCredentialsForSync(): ClaudeCredentials | null {
   return null
 }
 
+/**
+ * Drop the active account's cached credentials so the next
+ * getCachedCredentials() call re-reads from the source, bypassing the
+ * 30s TTL. Used when the API rejects a token (401) that still looks
+ * valid locally.
+ */
+export function invalidateCredentialCache(): void {
+  const account = getActiveAccount()
+  if (account) {
+    accountCacheMap.delete(account.source)
+    log("cache_invalidated", { source: account.source })
+  }
+}
+
 export function getCachedCredentials(): ClaudeCredentials | null {
   const account = getActiveAccount()
   if (!account) return null

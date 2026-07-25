@@ -145,7 +145,10 @@ async function loadHelpersWithCountingKeychain(
   initialExpiresAt: number,
 ): Promise<{
   helpersModule: typeof import("./index.ts")
-  keychainModule: { __getReadCount: () => number }
+  keychainModule: {
+    __getReadCount: () => number
+    __setCredentials: (c: ClaudeCredentials) => void
+  }
 }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cache-"))
   const tempKeychain = join(tempDir, "keychain.ts")
@@ -179,6 +182,10 @@ export function buildAccountLabels(creds) {
 export function __getReadCount() {
   return readCount
 }
+
+export function __setCredentials(c) {
+  credentials = c
+}
 `,
     "utf8",
   )
@@ -190,7 +197,10 @@ export function __getReadCount() {
 
   return {
     helpersModule,
-    keychainModule: keychainModule as { __getReadCount: () => number },
+    keychainModule: keychainModule as {
+      __getReadCount: () => number
+      __setCredentials: (c: ClaudeCredentials) => void
+    },
   }
 }
 
@@ -795,6 +805,85 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       })
 
       assert.equal(forwardedInput, `${originalInput}?beta=true`)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch retries a 401 with credentials re-read from the source", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let fetchCount = 0
+    const authHeaders: (string | null)[] = []
+
+    try {
+      const { helpersModule, keychainModule } =
+        await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+      globalThis.fetch = (async (
+        _input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        fetchCount += 1
+        authHeaders.push(new Headers(init?.headers).get("authorization"))
+        if (fetchCount === 1) {
+          return new Response("unauthorized", { status: 401 })
+        }
+        return new Response("ok", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      assert.equal(typeof typedPlugin.auth?.loader, "function")
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      // The server starts rejecting the current token even though it still
+      // looks valid locally (e.g. revoked mid-session). An external refresh
+      // has already written a new token to the source.
+      keychainModule.__setCredentials({
+        accessToken: "rotated-token",
+        refreshToken: "rotated-refresh",
+        expiresAt: Date.now() + 10 * 60_000,
+      })
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(fetchCount, 2, "should retry once after the 401")
+      assert.equal(response.status, 200)
+      assert.equal(
+        authHeaders[1],
+        "Bearer rotated-token",
+        "retry must use credentials re-read from the source, not the cached rejected token",
+      )
     } finally {
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
