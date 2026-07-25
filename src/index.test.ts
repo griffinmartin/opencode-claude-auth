@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs"
+import { spawn } from "node:child_process"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
@@ -128,7 +129,10 @@ const SOURCE_FILES = [
   "logger.ts",
 ] as const
 
-async function copySourceFiles(tempDir: string): Promise<void> {
+async function copySourceFiles(
+  tempDir: string,
+  opts?: { oauthTokenUrl?: string },
+): Promise<void> {
   await Promise.all(
     SOURCE_FILES.map(async (file) => {
       let source = await readFile(new URL(`./${file}`, import.meta.url), "utf8")
@@ -136,6 +140,14 @@ async function copySourceFiles(tempDir: string): Promise<void> {
         /from\s+["']\.\/([\w-]+)\.js["']/g,
         'from "./$1.ts"',
       )
+      if (opts?.oauthTokenUrl && file === "credentials.ts") {
+        // Point the OAuth refresh subprocess at a local test server so the
+        // real refreshViaOAuth path runs offline.
+        source = source.replace(
+          "https://claude.ai/v1/oauth/token",
+          opts.oauthTokenUrl,
+        )
+      }
       await writeFile(join(tempDir, file), source, "utf8")
     }),
   )
@@ -143,6 +155,7 @@ async function copySourceFiles(tempDir: string): Promise<void> {
 
 async function loadHelpersWithCountingKeychain(
   initialExpiresAt: number,
+  opts?: { oauthTokenUrl?: string },
 ): Promise<{
   helpersModule: typeof import("./index.ts")
   keychainModule: {
@@ -153,7 +166,7 @@ async function loadHelpersWithCountingKeychain(
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cache-"))
   const tempKeychain = join(tempDir, "keychain.ts")
 
-  await copySourceFiles(tempDir)
+  await copySourceFiles(tempDir, opts)
   await writeFile(
     tempKeychain,
     `let readCount = 0
@@ -888,6 +901,105 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch falls back to OAuth refresh on 401 when the source still has the rejected token", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    // Local OAuth token endpoint: the real refreshViaOAuth subprocess posts
+    // here instead of claude.ai (URL rewritten in the copied source). The
+    // server must live in a separate process because refreshViaOAuth uses
+    // execFileSync, which blocks this process's event loop — an in-process
+    // server could never respond.
+    const serverScript = `
+      const s = require("node:http").createServer((q, r) => {
+        r.setHeader("content-type", "application/json")
+        r.end(JSON.stringify({
+          access_token: "oauth-refreshed-token",
+          refresh_token: "oauth-refreshed-refresh",
+          expires_in: 36000,
+        }))
+      })
+      s.listen(0, "127.0.0.1", () => console.log(s.address().port))
+    `
+    const oauthServer = spawn(process.execPath, ["-e", serverScript], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    const port = await new Promise<string>((resolve) => {
+      oauthServer.stdout!.once("data", (d) => resolve(String(d).trim()))
+    })
+    const oauthTokenUrl = `http://127.0.0.1:${port}/v1/oauth/token`
+
+    let fetchCount = 0
+    const authHeaders: (string | null)[] = []
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+        { oauthTokenUrl },
+      )
+      // Keychain keeps returning the same (server-rejected) token: no
+      // external refresh has happened, so only OAuth can self-heal.
+      globalThis.fetch = (async (
+        _input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        fetchCount += 1
+        authHeaders.push(new Headers(init?.headers).get("authorization"))
+        if (fetchCount === 1) {
+          return new Response("unauthorized", { status: 401 })
+        }
+        return new Response("ok", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      assert.equal(typeof typedPlugin.auth?.loader, "function")
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(fetchCount, 2, "should retry once after the OAuth refresh")
+      assert.equal(response.status, 200)
+      assert.equal(
+        authHeaders[1],
+        "Bearer oauth-refreshed-token",
+        "retry must use the OAuth-refreshed token when the source is stale",
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      oauthServer.kill()
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {

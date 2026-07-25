@@ -17,6 +17,7 @@ import {
   transformResponseStream,
 } from "./transforms.ts"
 import {
+  forceRefreshActiveAccount,
   getCachedCredentials,
   getCredentialsForSync,
   invalidateCredentialCache,
@@ -390,7 +391,14 @@ const plugin: Plugin = async () => {
               // picked up.
               invalidateCredentialCache()
               reloadActiveAccount()
-              const refreshed = getCachedCredentials()
+              let refreshed = getCachedCredentials()
+              if (refreshed && refreshed.accessToken === latest.accessToken) {
+                // The source still holds the rejected token (revoked, the
+                // claude CLI hasn't refreshed it): try one direct OAuth
+                // refresh before giving up. Bounded to a single attempt per
+                // 401 response.
+                refreshed = forceRefreshActiveAccount() ?? refreshed
+              }
               if (refreshed && refreshed.accessToken !== latest.accessToken) {
                 const retryHeaders = buildRequestHeaders(
                   input,

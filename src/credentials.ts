@@ -362,6 +362,34 @@ export function reloadActiveAccount(): void {
 }
 
 /**
+ * Refresh the active account's credentials via OAuth even though they
+ * still look valid locally. Used on 401 when the source still holds the
+ * rejected token (revoked, the claude CLI hasn't refreshed it yet).
+ * On success the account, its source, and the cache are all updated.
+ * The refresh function is injectable for tests.
+ */
+export function forceRefreshActiveAccount(
+  refresh: (refreshToken: string) => ClaudeCredentials | null = refreshViaOAuth,
+): ClaudeCredentials | null {
+  const account = getActiveAccount()
+  if (!account?.credentials.refreshToken) return null
+
+  const oauthCreds = refresh(account.credentials.refreshToken)
+  if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
+    account.credentials = oauthCreds
+    writeBackCredentials(account.source, oauthCreds)
+    accountCacheMap.set(account.source, {
+      creds: oauthCreds,
+      cachedAt: Date.now(),
+    })
+    return oauthCreds
+  }
+
+  log("force_refresh_failed", { source: account.source })
+  return null
+}
+
+/**
  * Drop the active account's cached credentials so the next
  * getCachedCredentials() call re-reads from the source, bypassing the
  * 30s TTL. Used when the API rejects a token (401) that still looks

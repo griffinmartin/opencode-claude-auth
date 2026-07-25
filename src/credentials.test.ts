@@ -34,6 +34,9 @@ async function loadCredentialsWithCountingKeychain(
     invalidateCredentialCache: () => void
     refreshAccountsList: () => unknown[]
     reloadActiveAccount: () => void
+    forceRefreshActiveAccount: (
+      refresh?: (refreshToken: string) => Creds | null,
+    ) => Creds | null
   }
   keychainModule: {
     __getReadCount: () => number
@@ -133,6 +136,9 @@ export function __setAccounts(list) {
       invalidateCredentialCache: () => void
       refreshAccountsList: () => unknown[]
       reloadActiveAccount: () => void
+      forceRefreshActiveAccount: (
+        refresh?: (refreshToken: string) => Creds | null,
+      ) => Creds | null
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
@@ -404,6 +410,75 @@ describe("credential caching", () => {
     credentialsModule.reloadActiveAccount()
 
     assert.equal(account.credentials.accessToken, "rotated")
+  })
+
+  it("forceRefreshActiveAccount swaps in OAuth-refreshed credentials and writes back", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "rejected-token",
+        refreshToken: "refresh-token",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    const newCreds = {
+      accessToken: "oauth-refreshed",
+      refreshToken: "new-refresh",
+      expiresAt: now + 10 * 60_000,
+    }
+    const seenRefreshTokens: string[] = []
+    const writesBefore = keychainModule.__getWriteCount()
+
+    const result = credentialsModule.forceRefreshActiveAccount((token) => {
+      seenRefreshTokens.push(token)
+      return newCreds
+    })
+
+    assert.ok(result)
+    assert.equal(result.accessToken, "oauth-refreshed")
+    assert.deepEqual(seenRefreshTokens, ["refresh-token"])
+    assert.equal(account.credentials.accessToken, "oauth-refreshed")
+    assert.equal(
+      keychainModule.__getWriteCount(),
+      writesBefore + 1,
+      "refreshed credentials must be written back to the source",
+    )
+    const cached = credentialsModule.getCachedCredentials()
+    assert.equal(
+      cached?.accessToken,
+      "oauth-refreshed",
+      "cache must serve the refreshed token immediately",
+    )
+  })
+
+  it("forceRefreshActiveAccount returns null and leaves the account untouched on failure", async () => {
+    const now = Date.now()
+    const { credentialsModule } = await loadCredentialsWithCountingKeychain(
+      now + 10 * 60_000,
+    )
+
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "rejected-token",
+        refreshToken: "refresh-token",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    const result = credentialsModule.forceRefreshActiveAccount(() => null)
+
+    assert.equal(result, null)
+    assert.equal(account.credentials.accessToken, "rejected-token")
   })
 
   it("invalidateCredentialCache forces the next read to bypass the 30s TTL", async () => {
