@@ -27,6 +27,11 @@ export const config: ModelConfig = {
     "context-1m-2025-08-07",
     "interleaved-thinking-2025-05-14",
   ],
+  // NOTE: getModelOverride is first-match-wins. The "sonnet" key must stay
+  // ahead of "4-6"/"4-7": it shields claude-sonnet-4-6 from the "4-6"
+  // effort add-override, and its exclude strips effort if a user supplies
+  // it via ANTHROPIC_BETA_FLAGS. Do not remove it as inert — the split is
+  // pinned by the "effort beta" test in betas.test.ts.
   modelOverrides: {
     sonnet: {
       exclude: ["effort-2025-11-24"],
