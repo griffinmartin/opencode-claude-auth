@@ -59,13 +59,9 @@ export function repairToolPairs(messages: Message[]): Message[] {
     return useIndex !== undefined && resultMsgIndex.get(id) === useIndex + 1
   }
 
-  let needsRepair = false
-  for (const id of useMsgIndex.keys()) {
-    if (!isAdjacentPair(id)) needsRepair = true
-  }
-  for (const id of resultMsgIndex.keys()) {
-    if (!isAdjacentPair(id)) needsRepair = true
-  }
+  const needsRepair =
+    [...useMsgIndex.keys()].some((id) => !isAdjacentPair(id)) ||
+    [...resultMsgIndex.keys()].some((id) => !isAdjacentPair(id))
   if (!needsRepair) return messages
 
   // Drop blocks outside adjacent pairs and remove emptied messages
