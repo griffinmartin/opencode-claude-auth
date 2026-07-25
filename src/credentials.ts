@@ -342,6 +342,26 @@ export function getCredentialsForSync(): ClaudeCredentials | null {
 }
 
 /**
+ * Re-read only the active account's credentials from its source (single
+ * keychain service read or credentials file) and update them in place.
+ * Used on 401 so an externally refreshed token is picked up without a
+ * full multi-account keychain rescan.
+ */
+export function reloadActiveAccount(): void {
+  const account = getActiveAccount()
+  if (!account) return
+  try {
+    const fresh = refreshAccount(account.source)
+    if (fresh) account.credentials = fresh
+  } catch (err) {
+    log("account_reload_failed", {
+      source: account.source,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+/**
  * Drop the active account's cached credentials so the next
  * getCachedCredentials() call re-reads from the source, bypassing the
  * 30s TTL. Used when the API rejects a token (401) that still looks

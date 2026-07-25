@@ -33,6 +33,7 @@ async function loadCredentialsWithCountingKeychain(
     initAccounts: (accounts: unknown[]) => void
     invalidateCredentialCache: () => void
     refreshAccountsList: () => unknown[]
+    reloadActiveAccount: () => void
   }
   keychainModule: {
     __getReadCount: () => number
@@ -131,6 +132,7 @@ export function __setAccounts(list) {
       initAccounts: (accounts: unknown[]) => void
       invalidateCredentialCache: () => void
       refreshAccountsList: () => unknown[]
+      reloadActiveAccount: () => void
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
@@ -373,6 +375,35 @@ describe("credential caching", () => {
       credentialsModule.getCachedCredentials(),
       "credentials must remain available after the empty read",
     )
+  })
+
+  it("reloadActiveAccount picks up rotated keychain credentials in place", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    // Keychain source: refreshIfNeeded never re-reads these while the local
+    // copy looks valid, so a 401 needs an explicit source reload.
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "token",
+        refreshToken: "refresh",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    keychainModule.__setCredentials({
+      accessToken: "rotated",
+      refreshToken: "rotated-refresh",
+      expiresAt: now + 10 * 60_000,
+    })
+
+    credentialsModule.reloadActiveAccount()
+
+    assert.equal(account.credentials.accessToken, "rotated")
   })
 
   it("invalidateCredentialCache forces the next read to bypass the 30s TTL", async () => {

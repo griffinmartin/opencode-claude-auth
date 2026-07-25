@@ -20,6 +20,7 @@ import {
   getCachedCredentials,
   getCredentialsForSync,
   invalidateCredentialCache,
+  reloadActiveAccount,
   syncAuthJson,
   initAccounts,
   setActiveAccountSource,
@@ -383,17 +384,12 @@ const plugin: Plugin = async () => {
             if (response.status === 401) {
               log("fetch_401_retry", { modelId })
               // The server rejected a token that may still look valid
-              // locally: bypass the 30s cache and re-read the source so an
-              // externally refreshed token (e.g. by the claude CLI) is
+              // locally: bypass the 30s cache and re-read the active
+              // account's source (single keychain read, no full rescan) so
+              // an externally refreshed token (e.g. by the claude CLI) is
               // picked up.
               invalidateCredentialCache()
-              try {
-                refreshAccountsList()
-              } catch (err) {
-                log("fetch_401_account_reload_failed", {
-                  error: err instanceof Error ? err.message : String(err),
-                })
-              }
+              reloadActiveAccount()
               const refreshed = getCachedCredentials()
               if (refreshed && refreshed.accessToken !== latest.accessToken) {
                 const retryHeaders = buildRequestHeaders(
