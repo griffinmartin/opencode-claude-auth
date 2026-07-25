@@ -227,9 +227,12 @@ export function keychainSuffixForDir(dir: string): string {
 let suffixToDirCache: Map<string, string> | null = null
 
 function buildSuffixToDirCache(needed: Set<string>): Map<string, string> {
-  if (suffixToDirCache) return suffixToDirCache
+  const hasAllNeeded = (cache: Map<string, string>) =>
+    [...needed].every((suffix) => cache.has(suffix))
 
-  const cache = new Map<string, string>()
+  if (suffixToDirCache && hasAllNeeded(suffixToDirCache)) return suffixToDirCache
+
+  const cache = suffixToDirCache ?? new Map<string, string>()
 
   const tryDir = (dir: string) => {
     const suffix = keychainSuffixForDir(dir)
@@ -248,7 +251,7 @@ function buildSuffixToDirCache(needed: Set<string>): Map<string, string> {
       const dir = join(home, entry.name)
       if (!existsSync(join(dir, ".claude.json"))) continue
       tryDir(dir)
-      if (cache.size === needed.size) break
+      if (hasAllNeeded(cache)) break
     }
   } catch {
     //
@@ -315,7 +318,7 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     const creds = readCredentialsFile(configDir)
     if (!creds) return []
     const email = readEmailFromConfigDir(configDir)
-    const [label] = buildAccountLabels([creds], [email], ["file"])
+    const [label] = buildAccountLabels([creds], [email])
     return [{ label, source: "file", configDir, credentials: creds }]
   }
 
@@ -345,7 +348,7 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     const creds = readCredentialsFile(configDir)
     if (!creds) return []
     const email = readEmailFromConfigDir(configDir)
-    const [label] = buildAccountLabels([creds], [email], ["file"])
+    const [label] = buildAccountLabels([creds], [email])
     return [{ label, source: "file", configDir, credentials: creds }]
   }
 

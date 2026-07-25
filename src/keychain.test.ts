@@ -481,6 +481,42 @@ describe("updateCredentialBlob", () => {
     assert.equal(result.claudeAiOauth.subscriptionType, "pro")
   })
 
+  it("updates tokens in root-level format", () => {
+    const existing = JSON.stringify({
+      accessToken: "old-at",
+      refreshToken: "old-rt",
+      expiresAt: 1000,
+    })
+    const newCreds = {
+      accessToken: "new-at",
+      refreshToken: "new-rt",
+      expiresAt: 2000,
+    }
+    const result = JSON.parse(updateCredentialBlob(existing, newCreds)!)
+    assert.equal(result.accessToken, "new-at")
+    assert.equal(result.refreshToken, "new-rt")
+    assert.equal(result.expiresAt, 2000)
+  })
+
+  it("preserves mcpOAuth and other unrelated fields", () => {
+    const existing = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "old-at",
+        refreshToken: "old-rt",
+        expiresAt: 1000,
+      },
+      mcpOAuth: { "neon|abc": { serverName: "neon" } },
+    })
+    const newCreds = {
+      accessToken: "new-at",
+      refreshToken: "new-rt",
+      expiresAt: 2000,
+    }
+    const result = JSON.parse(updateCredentialBlob(existing, newCreds)!)
+    assert.ok(result.mcpOAuth)
+    assert.equal(result.mcpOAuth["neon|abc"].serverName, "neon")
+  })
+
   it("returns null for invalid JSON input", () => {
     assert.equal(
       updateCredentialBlob("not json", {
@@ -564,6 +600,58 @@ describe("writeBackCredentials (file source)", () => {
 
       const mode = statSync(credPath).mode & 0o777
       assert.equal(mode, 0o600)
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("returns false when credentials file does not exist", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-wb-missing-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const result = writeBackCredentials("file", {
+        accessToken: "at",
+        refreshToken: "rt",
+        expiresAt: 1000,
+      })
+      assert.equal(result, false)
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("returns false when credentials file contains invalid JSON", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-wb-invalid-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      writeFileSync(join(claudeDir, ".credentials.json"), "not json {")
+
+      const result = writeBackCredentials("file", {
+        accessToken: "at",
+        refreshToken: "rt",
+        expiresAt: 1000,
+      })
+      assert.equal(result, false)
     } finally {
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
