@@ -354,9 +354,3 @@ export function refreshAccount(source: string): ClaudeCredentials | null {
   if (!raw) return null
   return parseCredentials(raw)
 }
-
-/** @deprecated Use readAllClaudeAccounts() instead */
-export function readClaudeCredentials(): ClaudeCredentials | null {
-  const accounts = readAllClaudeAccounts()
-  return accounts.length > 0 ? accounts[0].credentials : null
-}

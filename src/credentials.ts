@@ -34,10 +34,6 @@ export function initAccounts(accounts: ClaudeAccount[]): void {
   allAccounts = accounts
 }
 
-export function getAccounts(): ClaudeAccount[] {
-  return allAccounts
-}
-
 export function setActiveAccountSource(source: string): void {
   const previous = activeAccountSource
   activeAccountSource = source
