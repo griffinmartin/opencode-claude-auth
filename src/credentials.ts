@@ -320,7 +320,10 @@ export function refreshIfNeeded(
   const cliSucceeded = refreshViaCli(target.configDir, isSuffixedAccount)
   if (!cliSucceeded) {
     const fallback = tryFallbackAccount(target.source)
-    if (fallback) return fallback
+    if (fallback) {
+      target.credentials = fallback
+      return fallback
+    }
 
     log("refresh_exhausted", {
       source: target.source,
