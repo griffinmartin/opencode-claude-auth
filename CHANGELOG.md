@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.2...v2.1.3) (2026-07-25)
+
+
+### Bug Fixes
+
+* honor `CLAUDE_CONFIG_DIR` ([#239](https://github.com/griffinmartin/opencode-claude-auth/issues/239)) ([65e1bb3](https://github.com/griffinmartin/opencode-claude-auth/commit/65e1bb367bd92bbae57e74d6c4d8db0ae91d688f))
+
 ## [2.1.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.1...v2.1.2) (2026-07-25)
 
 
