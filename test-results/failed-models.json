@@ -5,16 +5,22 @@
     "error": "model: claude-opus-4-6-fast",
     "consecutiveFailures": 1
   },
+  "claude-opus-4-8-fast": {
+    "lastTested": "2026-07-08T19:57:56.263Z",
+    "lastPassedAt": null,
+    "error": "model: claude-opus-4-8-fast",
+    "consecutiveFailures": 1
+  },
   "claude-opus-4-7-fast": {
     "lastTested": "2026-07-08T19:57:56.263Z",
     "lastPassedAt": null,
     "error": "model: claude-opus-4-7-fast",
     "consecutiveFailures": 1
   },
-  "claude-opus-4-8-fast": {
-    "lastTested": "2026-07-08T19:57:56.263Z",
+  "claude-opus-5-fast": {
+    "lastTested": "2026-07-25T04:07:31.868Z",
     "lastPassedAt": null,
-    "error": "model: claude-opus-4-8-fast",
+    "error": "model: claude-opus-5-fast",
     "consecutiveFailures": 1
   }
 }
