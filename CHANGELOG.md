@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.1...v2.1.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* update credential handling to prioritize primary service for token refresh ([#99](https://github.com/griffinmartin/opencode-claude-auth/issues/99)) ([9dd33d6](https://github.com/griffinmartin/opencode-claude-auth/commit/9dd33d69cca6de9e09284e99334b7edfb3686a3c))
+
 ## [2.1.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.0...v2.1.1) (2026-07-25)
 
 
