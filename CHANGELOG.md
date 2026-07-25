@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.0.1...v2.1.0) (2026-07-25)
+
+
+### Features
+
+* update model config for Claude CLI 2.1.217, fix 401 credential refresh, repo hygiene ([#248](https://github.com/griffinmartin/opencode-claude-auth/issues/248)) ([ab54ebb](https://github.com/griffinmartin/opencode-claude-auth/commit/ab54ebb85d6812c04c7f2809840dd525f2638058))
+
 ## [2.0.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.0.0...v2.0.1) (2026-07-25)
 
 
