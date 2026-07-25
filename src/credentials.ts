@@ -377,7 +377,11 @@ export function forceRefreshActiveAccount(
   const oauthCreds = refresh(account.credentials.refreshToken)
   if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
     account.credentials = oauthCreds
-    writeBackCredentials(account.source, oauthCreds)
+    if (!writeBackCredentials(account.source, oauthCreds)) {
+      // Session continues from memory/cache; a later source re-read may
+      // resurrect the rejected token and trigger another refresh.
+      log("force_refresh_writeback_failed", { source: account.source })
+    }
     accountCacheMap.set(account.source, {
       creds: oauthCreds,
       cachedAt: Date.now(),

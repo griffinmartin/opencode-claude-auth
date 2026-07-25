@@ -391,6 +391,9 @@ const plugin: Plugin = async () => {
               // picked up.
               invalidateCredentialCache()
               reloadActiveAccount()
+              // When refreshed is null, refreshIfNeeded already exhausted the
+              // OAuth (+ CLI) refresh paths — skipping the force-refresh
+              // below is intentional, not a missed recovery.
               let refreshed = getCachedCredentials()
               if (refreshed && refreshed.accessToken === latest.accessToken) {
                 // The source still holds the rejected token (revoked, the

@@ -937,18 +937,37 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       })
       s.listen(0, "127.0.0.1", () => console.log(s.address().port))
     `
-    const oauthServer = spawn(process.execPath, ["-e", serverScript], {
-      stdio: ["ignore", "pipe", "ignore"],
-    })
-    const port = await new Promise<string>((resolve) => {
-      oauthServer.stdout!.once("data", (d) => resolve(String(d).trim()))
-    })
-    const oauthTokenUrl = `http://127.0.0.1:${port}/v1/oauth/token`
+    let oauthServer: ReturnType<typeof spawn> | undefined
 
     let fetchCount = 0
     const authHeaders: (string | null)[] = []
 
     try {
+      oauthServer = spawn(process.execPath, ["-e", serverScript], {
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+      const server = oauthServer
+      const port = await new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("OAuth stub server did not start within 2s")),
+          2_000,
+        )
+        server.stdout!.once("data", (d) => {
+          clearTimeout(timer)
+          resolve(String(d).trim())
+        })
+        server.once("error", (err) => {
+          clearTimeout(timer)
+          reject(err)
+        })
+        server.once("exit", (code) => {
+          clearTimeout(timer)
+          reject(new Error(`OAuth stub server exited early (code ${code})`))
+        })
+      })
+      assert.match(port, /^\d+$/, "expected a numeric port from the stub")
+      const oauthTokenUrl = `http://127.0.0.1:${port}/v1/oauth/token`
+
       const { helpersModule } = await loadHelpersWithCountingKeychain(
         Date.now() + 10 * 60_000,
         { oauthTokenUrl },
@@ -999,7 +1018,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
-      oauthServer.kill()
+      oauthServer?.kill()
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {
