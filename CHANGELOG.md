@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.0...v2.1.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* enforce tool_result adjacency in repairToolPairs ([#250](https://github.com/griffinmartin/opencode-claude-auth/issues/250)) ([d056c7c](https://github.com/griffinmartin/opencode-claude-auth/commit/d056c7c9d8e34ebb421022005cf16f268b383281))
+* recover after external OAuth credential rotation ([#252](https://github.com/griffinmartin/opencode-claude-auth/issues/252)) ([0242e85](https://github.com/griffinmartin/opencode-claude-auth/commit/0242e858ae45aaea0cae55f00a42287b3e501ea5))
+
 ## [2.1.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.0.1...v2.1.0) (2026-07-25)
 
 
