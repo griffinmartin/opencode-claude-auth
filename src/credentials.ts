@@ -361,18 +361,23 @@ function tryFallbackAccount(excludeSource: string): ClaudeCredentials | null {
   const now = Date.now()
   const candidates = allAccounts.filter((a) => a.source !== excludeSource)
 
-  // Prefer accounts whose in-memory expiry still looks valid (cheap), but
-  // fall back to live-reading the stale-looking ones too: another process
+  // Accounts whose in-memory credentials are still valid can be borrowed
+  // directly — no keychain read needed. A 401 on a borrowed token is
+  // handled by the existing reload-and-retry fetch path.
+  for (const account of candidates) {
+    if (account.credentials.expiresAt > now + 60_000) {
+      log("refresh_fallback_account", {
+        failedSource: excludeSource,
+        usedSource: account.source,
+      })
+      return account.credentials
+    }
+  }
+
+  // Last resort: live-read the stale-looking ones too — another process
   // (e.g. the Claude CLI in a different terminal) may have refreshed their
   // keychain entry since we last read it.
-  const likelyFresh = candidates.filter(
-    (a) => a.credentials.expiresAt > now + 60_000,
-  )
-  const staleLooking = candidates.filter(
-    (a) => a.credentials.expiresAt <= now + 60_000,
-  )
-
-  for (const account of [...likelyFresh, ...staleLooking]) {
+  for (const account of candidates) {
     let fresh: ClaudeCredentials | null = null
     try {
       fresh = refreshAccount(account.source, account.configDir)

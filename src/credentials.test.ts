@@ -639,6 +639,50 @@ describe("credential caching", () => {
     }
   })
 
+  it("fallback uses a valid in-memory account without a keychain read", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "Claude Code-credentials-aabbccdd",
+          credentials: {
+            accessToken: "stale-suffixed",
+            refreshToken: "rt-suffixed",
+            expiresAt: now - 1_000,
+          },
+        },
+        {
+          label: "Account 2",
+          source: "Claude Code-credentials",
+          credentials: {
+            accessToken: "fresh-in-memory",
+            refreshToken: "rt-primary",
+            expiresAt: now + 8 * 60 * 60_000,
+          },
+        },
+      ])
+
+      const readsBefore = keychainModule.__getReadCount()
+      const result = credentialsModule.refreshIfNeeded()
+
+      assert.equal(result?.accessToken, "fresh-in-memory")
+      assert.equal(
+        keychainModule.__getReadCount(),
+        readsBefore,
+        "valid in-memory fallback credentials must not trigger a keychain read",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("reloadActiveAccount picks up rotated keychain credentials in place", async () => {
     const now = Date.now()
     const { credentialsModule, keychainModule } =
