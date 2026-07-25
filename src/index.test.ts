@@ -233,6 +233,66 @@ export function __setCredentials(c) {
   }
 }
 
+/**
+ * Fake keychain with TWO accounts, used to regression-test the proactive
+ * refresh timer's account resolution (bug: it used to read the closure-
+ * captured `accounts[0]` instead of the currently active account after a
+ * switch). Both accounts get `refreshToken: ""` so `refreshViaOAuth()`'s
+ * `if (creds.refreshToken)` guard skips it entirely — no real network call
+ * — and the refresh cascade falls straight through to the CLI fallback
+ * (which fails fast with ENOENT since `claude` isn't installed in test
+ * envs) and finally to the mocked `refreshAccount(source)`, which is what
+ * actually determines success/failure here.
+ */
+async function loadHelpersWithMultiAccountKeychain(opts: {
+  aExpiresAt: number
+  bExpiresAt: number
+  bRefreshResult: "success" | "fail"
+}): Promise<{
+  helpersModule: typeof import("./index.ts")
+}> {
+  const tempDir = await mkdtemp(
+    join(tmpdir(), "opencode-claude-auth-multi-acct-"),
+  )
+  const tempKeychain = join(tempDir, "keychain.ts")
+
+  await copySourceFiles(tempDir)
+  await writeFile(
+    tempKeychain,
+    `let credsA = { accessToken: "token-a", refreshToken: "", expiresAt: ${opts.aExpiresAt} }
+let credsB = { accessToken: "token-b", refreshToken: "", expiresAt: ${opts.bExpiresAt} }
+
+export function readAllClaudeAccounts() {
+  return [
+    { label: "Account 1", source: "acct-a", credentials: credsA },
+    { label: "Account 2", source: "acct-b", credentials: credsB },
+  ]
+}
+
+export function refreshAccount(source) {
+  if (source !== "acct-b") return null
+  ${
+    opts.bRefreshResult === "success"
+      ? `credsB = { accessToken: "token-b-refreshed", refreshToken: "", expiresAt: Date.now() + 10 * 60 * 60 * 1000 }
+  return credsB`
+      : `return null`
+  }
+}
+
+export function writeBackCredentials() { return true }
+export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }
+export const PRIMARY_SERVICE = "Claude Code-credentials"
+`,
+    "utf8",
+  )
+
+  const helpersModule = await import(
+    pathToFileURL(join(tempDir, "index.ts")).href
+  )
+
+  return { helpersModule }
+}
+
 function makeCreds(overrides?: Partial<ClaudeCredentials>): ClaudeCredentials {
   return {
     accessToken: "sk-ant-test-access",
@@ -784,6 +844,162 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
     } finally {
       globalThis.setInterval = originalSetInterval
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("proactive refresh timer targets the ACTIVE account after a switch, not accounts[0]", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalDebug = process.env.CLAUDE_AUTH_DEBUG
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    const debugLogPath = join(tempHome, "debug.log")
+    process.env.HOME = tempHome
+    // Capture the timer's own log ("proactive_refresh_check") so we can
+    // assert which account it resolved to. The CLAUDE_AUTH_DEBUG env
+    // routes logs to a file (see logger.ts).
+    process.env.CLAUDE_AUTH_DEBUG = debugLogPath
+
+    let tickCallback: (() => void) | undefined
+    globalThis.setInterval = ((cb: () => void) => {
+      tickCallback = cb
+      return { unref() {} }
+    }) as unknown as typeof setInterval
+
+    try {
+      const { helpersModule } = await loadHelpersWithMultiAccountKeychain({
+        // accounts[0] ("acct-a") — far from expiry. The pre-fix code used
+        // THIS account's expiry to decide whether to take the proactive
+        // branch at all, regardless of which account is actually active.
+        aExpiresAt: Date.now() + 10 * 60 * 60 * 1000,
+        // Active account after the switch below — within the 1h proactive
+        // window but past the 60s reactive threshold, so authorize()'s own
+        // getCachedCredentials() call must NOT refresh it (isolating the
+        // timer as the only thing that triggers a refresh here).
+        bExpiresAt: Date.now() + 10 * 60 * 1000,
+        bRefreshResult: "success",
+      })
+
+      const plugin = await helpersModule.default({} as never)
+      assert.ok(tickCallback, "Expected setInterval to capture the tick callback")
+
+      const typedPlugin = plugin as {
+        auth?: {
+          methods?: Array<{
+            authorize?: (i: { account?: string }) => Promise<unknown>
+          }>
+        }
+      }
+      await typedPlugin.auth!.methods![0]!.authorize!({ account: "acct-b" })
+
+      // Truncate the log so we only inspect entries produced by the tick.
+      await writeFile(debugLogPath, "", "utf-8")
+
+      // Fire the timer tick manually — this is the only thing that should
+      // trigger a refresh in this scenario.
+      tickCallback!()
+
+      const logs = await readFile(debugLogPath, "utf-8")
+      // The fix: timer's proactive_refresh_check should reference the
+      // ACTIVE account (acct-b), not the closure-captured accounts[0]
+      // (acct-a). With the accounts[0] bug, the log would show
+      // "source":"acct-a" here.
+      const proactiveCheckEntries = logs
+        .split("\n")
+        .filter((line) => line.includes("proactive_refresh_check"))
+      assert.ok(
+        proactiveCheckEntries.length > 0,
+        `Expected proactive_refresh_check log entry, got log: ${logs}`,
+      )
+      assert.ok(
+        proactiveCheckEntries.some((l) => l.includes('"source":"acct-b"')),
+        `Timer should resolve ACTIVE account (acct-b) after switch, not ` +
+          `accounts[0] (acct-a). Log: ${logs}`,
+      )
+      assert.ok(
+        !proactiveCheckEntries.some((l) => l.includes('"source":"acct-a"')),
+        "Timer should NOT be checking accounts[0] after switch. " +
+          `Log: ${logs}`,
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      if (originalDebug === undefined) {
+        delete process.env.CLAUDE_AUTH_DEBUG
+      } else {
+        process.env.CLAUDE_AUTH_DEBUG = originalDebug
+      }
+    }
+  })
+
+  it("proactive refresh timer warns at most once per outage (no spam on repeated failures)", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalWarn = console.warn
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+
+    let tickCallback: (() => void) | undefined
+    globalThis.setInterval = ((cb: () => void) => {
+      tickCallback = cb
+      return { unref() {} }
+    }) as unknown as typeof setInterval
+
+    const warnMessages: string[] = []
+    console.warn = ((...args: unknown[]) => {
+      warnMessages.push(String(args[0]))
+    }) as typeof console.warn
+
+    try {
+      const { helpersModule } = await loadHelpersWithMultiAccountKeychain({
+        // Set acct-a to ALREADY EXPIRED so upstream's tryFallbackAccount
+        // cannot borrow its creds when acct-b's refresh fails. Without
+        // this, the new fallback would return acct-a's still-valid creds
+        // and refreshIfNeeded would return non-null — making the warn
+        // path unreachable and the latch untestable.
+        aExpiresAt: Date.now() - 60_000,
+        bExpiresAt: Date.now() + 10 * 60 * 1000,
+        bRefreshResult: "fail",
+      })
+
+      const plugin = await helpersModule.default({} as never)
+      assert.ok(tickCallback)
+
+      const typedPlugin = plugin as {
+        auth?: {
+          methods?: Array<{
+            authorize?: (i: { account?: string }) => Promise<unknown>
+          }>
+        }
+      }
+      await typedPlugin.auth!.methods![0]!.authorize!({ account: "acct-b" })
+
+      warnMessages.length = 0 // ignore any warnings emitted during init/authorize
+
+      // Simulate 3 consecutive failed sync ticks (15 minutes of downtime).
+      tickCallback!()
+      tickCallback!()
+      tickCallback!()
+
+      const proactiveWarnings = warnMessages.filter((m) =>
+        m.includes("Proactive token refresh failed"),
+      )
+      assert.equal(
+        proactiveWarnings.length,
+        1,
+        `Expected exactly 1 warning across 3 failed ticks (latched), got ${proactiveWarnings.length}`,
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      console.warn = originalWarn
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {

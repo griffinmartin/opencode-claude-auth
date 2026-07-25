@@ -57,7 +57,7 @@ export function refreshAccountsList(): ClaudeAccount[] {
   return allAccounts
 }
 
-function getActiveAccount(): ClaudeAccount | null {
+export function getActiveAccount(): ClaudeAccount | null {
   if (allAccounts.length === 0) return null
   if (activeAccountSource) {
     const found = allAccounts.find((a) => a.source === activeAccountSource)
@@ -279,8 +279,18 @@ function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
   return false
 }
 
+/**
+ * Refreshes the given (or active) account's credentials if they are within
+ * `thresholdMs` of expiry. Defaults to 60s, matching the reactive
+ * per-request refresh path. Callers that want a proactive refresh further
+ * ahead of expiry (e.g. a background timer) should pass a larger threshold —
+ * the account resolution (via getActiveAccount()) stays correct regardless
+ * of threshold, so this always operates on the currently active account
+ * unless one is explicitly passed in.
+ */
 export function refreshIfNeeded(
   account?: ClaudeAccount,
+  thresholdMs = 60_000,
 ): ClaudeCredentials | null {
   const target = account ?? getActiveAccount()
   if (!target) return null
@@ -296,7 +306,7 @@ export function refreshIfNeeded(
   }
 
   const creds = target.credentials
-  if (creds.expiresAt > Date.now() + 60_000) return creds
+  if (creds.expiresAt > Date.now() + thresholdMs) return creds
 
   log("refresh_needed", {
     source: target.source,
