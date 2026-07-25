@@ -1,17 +1,17 @@
 {
-  "version": "1.5.4",
-  "date": "2026-07-08T19:57:56.256Z",
+  "version": "2.0.1",
+  "date": "2026-07-25T04:07:31.867Z",
   "summary": {
     "tested": 14,
-    "passed": 12,
-    "failed": 2,
-    "skipped": 1
+    "passed": 13,
+    "failed": 1,
+    "skipped": 3
   },
   "results": [
     {
-      "model": "claude-opus-4-5",
+      "model": "claude-sonnet-4-6",
       "status": "pass",
-      "timeMs": 2387,
+      "timeMs": 2510,
       "betas": [
         "claude-code-20250219",
         "oauth-2025-04-20",
@@ -20,179 +20,7 @@
         "context-management-2025-06-27",
         "advisor-tool-2026-03-01",
         "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-haiku-4-5-20251001",
-      "status": "pass",
-      "timeMs": 2013,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-sonnet-4-5",
-      "status": "pass",
-      "timeMs": 3205,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-opus-4-7",
-      "status": "pass",
-      "timeMs": 785,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-opus-4-7-fast",
-      "status": "fail",
-      "timeMs": 461,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": "model: claude-opus-4-7-fast"
-    },
-    {
-      "model": "claude-sonnet-5",
-      "status": "pass",
-      "timeMs": 1413,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-opus-4-5-20251101",
-      "status": "pass",
-      "timeMs": 2308,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-opus-4-8",
-      "status": "pass",
-      "timeMs": 6032,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": null
-    },
-    {
-      "model": "claude-opus-4-8-fast",
-      "status": "fail",
-      "timeMs": 247,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
-      ],
-      "excluded": [],
-      "error": "model: claude-opus-4-8-fast"
-    },
-    {
-      "model": "claude-fable-5",
-      "status": "pass",
-      "timeMs": 4204,
-      "betas": [
-        "claude-code-20250219",
-        "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14",
-        "prompt-caching-scope-2026-01-05",
-        "context-management-2025-06-27",
-        "advisor-tool-2026-03-01",
-        "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
+        "extended-cache-ttl-2025-04-11"
       ],
       "excluded": [],
       "error": null
@@ -200,17 +28,16 @@
     {
       "model": "claude-haiku-4-5",
       "status": "pass",
-      "timeMs": 2558,
+      "timeMs": 1953,
       "betas": [
         "claude-code-20250219",
         "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
         "prompt-caching-scope-2026-01-05",
         "context-management-2025-06-27",
         "advisor-tool-2026-03-01",
         "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
+        "extended-cache-ttl-2025-04-11"
       ],
       "excluded": [],
       "error": null
@@ -218,7 +45,7 @@
     {
       "model": "claude-opus-4-6",
       "status": "pass",
-      "timeMs": 2968,
+      "timeMs": 2192,
       "betas": [
         "claude-code-20250219",
         "oauth-2025-04-20",
@@ -228,8 +55,58 @@
         "advisor-tool-2026-03-01",
         "thinking-token-count-2026-05-13",
         "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
+        "effort-2025-11-24"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-fable-5",
+      "status": "pass",
+      "timeMs": 1485,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-4-8",
+      "status": "pass",
+      "timeMs": 1263,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-sonnet-4-5",
+      "status": "pass",
+      "timeMs": 3142,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
       ],
       "excluded": [],
       "error": null
@@ -237,7 +114,7 @@
     {
       "model": "claude-sonnet-4-5-20250929",
       "status": "pass",
-      "timeMs": 3718,
+      "timeMs": 2973,
       "betas": [
         "claude-code-20250219",
         "oauth-2025-04-20",
@@ -246,17 +123,49 @@
         "context-management-2025-06-27",
         "advisor-tool-2026-03-01",
         "thinking-token-count-2026-05-13",
-        "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
+        "extended-cache-ttl-2025-04-11"
       ],
       "excluded": [],
       "error": null
     },
     {
-      "model": "claude-sonnet-4-6",
+      "model": "claude-opus-4-5-20251101",
       "status": "pass",
-      "timeMs": 967,
+      "timeMs": 1839,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "status": "pass",
+      "timeMs": 1740,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-4-7",
+      "status": "pass",
+      "timeMs": 1272,
       "betas": [
         "claude-code-20250219",
         "oauth-2025-04-20",
@@ -266,11 +175,78 @@
         "advisor-tool-2026-03-01",
         "thinking-token-count-2026-05-13",
         "extended-cache-ttl-2025-04-11",
-        "effort-2025-11-24",
-        "interleaved-thinking-2025-05-14"
+        "effort-2025-11-24"
       ],
       "excluded": [],
       "error": null
+    },
+    {
+      "model": "claude-opus-4-5",
+      "status": "pass",
+      "timeMs": 5824,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-sonnet-5",
+      "status": "pass",
+      "timeMs": 1681,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-5",
+      "status": "pass",
+      "timeMs": 1086,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": null
+    },
+    {
+      "model": "claude-opus-5-fast",
+      "status": "fail",
+      "timeMs": 218,
+      "betas": [
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "prompt-caching-scope-2026-01-05",
+        "context-management-2025-06-27",
+        "advisor-tool-2026-03-01",
+        "thinking-token-count-2026-05-13",
+        "extended-cache-ttl-2025-04-11"
+      ],
+      "excluded": [],
+      "error": "model: claude-opus-5-fast"
     }
   ],
   "skipped": [
@@ -279,6 +255,18 @@
       "reason": "Previously unsupported (never passed)",
       "lastTested": "2026-04-16T15:39:56.069Z",
       "lastError": "model: claude-opus-4-6-fast"
+    },
+    {
+      "model": "claude-opus-4-8-fast",
+      "reason": "Previously unsupported (never passed)",
+      "lastTested": "2026-07-08T19:57:56.263Z",
+      "lastError": "model: claude-opus-4-8-fast"
+    },
+    {
+      "model": "claude-opus-4-7-fast",
+      "reason": "Previously unsupported (never passed)",
+      "lastTested": "2026-07-08T19:57:56.263Z",
+      "lastError": "model: claude-opus-4-7-fast"
     }
   ]
 }

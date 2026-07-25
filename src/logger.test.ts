@@ -159,11 +159,11 @@ describe("logger", () => {
 })
 
 describe("redact", () => {
-  it("prefix-redacts accessToken", () => {
+  it("fully redacts accessToken", () => {
     const result = redact({
       accessToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.abc123",
     })
-    assert.equal(result.accessToken, "eyJhbGci...REDACTED")
+    assert.equal(result.accessToken, "REDACTED")
   })
 
   it("fully redacts refreshToken", () => {
@@ -198,12 +198,12 @@ describe("redact", () => {
 
   it("handles short accessToken without crashing", () => {
     const result = redact({ accessToken: "short" })
-    assert.equal(result.accessToken, "short...REDACTED")
+    assert.equal(result.accessToken, "REDACTED")
   })
 
   it("handles empty string values", () => {
     const result = redact({ accessToken: "", refreshToken: "" })
-    assert.equal(result.accessToken, "...REDACTED")
+    assert.equal(result.accessToken, "REDACTED")
     assert.equal(result.refreshToken, "REDACTED")
   })
 

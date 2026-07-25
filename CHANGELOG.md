@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.1.2](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.1...v2.1.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* update credential handling to prioritize primary service for token refresh ([#99](https://github.com/griffinmartin/opencode-claude-auth/issues/99)) ([9dd33d6](https://github.com/griffinmartin/opencode-claude-auth/commit/9dd33d69cca6de9e09284e99334b7edfb3686a3c))
+
+## [2.1.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.0...v2.1.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* enforce tool_result adjacency in repairToolPairs ([#250](https://github.com/griffinmartin/opencode-claude-auth/issues/250)) ([d056c7c](https://github.com/griffinmartin/opencode-claude-auth/commit/d056c7c9d8e34ebb421022005cf16f268b383281))
+* recover after external OAuth credential rotation ([#252](https://github.com/griffinmartin/opencode-claude-auth/issues/252)) ([0242e85](https://github.com/griffinmartin/opencode-claude-auth/commit/0242e858ae45aaea0cae55f00a42287b3e501ea5))
+
+## [2.1.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.0.1...v2.1.0) (2026-07-25)
+
+
+### Features
+
+* update model config for Claude CLI 2.1.217, fix 401 credential refresh, repo hygiene ([#248](https://github.com/griffinmartin/opencode-claude-auth/issues/248)) ([ab54ebb](https://github.com/griffinmartin/opencode-claude-auth/commit/ab54ebb85d6812c04c7f2809840dd525f2638058))
+
+## [2.0.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.0.0...v2.0.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* keep API errors out of terminal UI ([#244](https://github.com/griffinmartin/opencode-claude-auth/issues/244)) ([baf1ffd](https://github.com/griffinmartin/opencode-claude-auth/commit/baf1ffd0b10ebdb5b5bc03464b93def1219de671))
+* normalize fractional credential expiry timestamps ([#246](https://github.com/griffinmartin/opencode-claude-auth/issues/246)) ([686a543](https://github.com/griffinmartin/opencode-claude-auth/commit/686a54395d23388c7c0193d112d4ca973034bbed))
+
 ## [2.0.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.4...v2.0.0) (2026-07-08)
 
 

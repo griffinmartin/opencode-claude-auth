@@ -23,8 +23,8 @@ import { spawn } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { config } from "../dist/model-config.js"
-import { getModelBetas } from "../dist/betas.js"
+import { config } from "../src/model-config.ts"
+import { getModelBetas } from "../src/betas.ts"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -48,6 +48,7 @@ const TIMEOUT_MS = 30_000
 const MODEL_CONFIG_PATH = join(__dirname, "..", "src", "model-config.ts")
 
 const ALL_MODELS = [
+  "claude-opus-4-7",
   "claude-sonnet-4-6",
   "claude-opus-4-6",
   "claude-sonnet-4-5",
@@ -328,9 +329,12 @@ export function updateModelConfig(
 ): void {
   let src = readFileSync(configPath, "utf-8")
 
-  // Update baseBetas array
+  // Update baseBetas array. The CLI can send duplicated beta header
+  // entries; dedupe while preserving first-seen order.
   if (updates.newBaseBetas) {
-    const betasStr = updates.newBaseBetas.map((b) => `    "${b}",`).join("\n")
+    const betasStr = [...new Set(updates.newBaseBetas)]
+      .map((b) => `    "${b}",`)
+      .join("\n")
     src = src.replace(
       /baseBetas:\s*\[[\s\S]*?\]/,
       `baseBetas: [\n${betasStr}\n  ]`,
@@ -384,7 +388,9 @@ export function updateModelConfig(
       ]
 
       // Only write the override if there's something to override
-      if (exclude.length === 0 && add.length === 0) continue
+      if (exclude.length === 0 && add.length === 0 && !existing.disableEffort) {
+        continue
+      }
 
       const parts: string[] = []
       if (exclude.length > 0) {
@@ -394,6 +400,11 @@ export function updateModelConfig(
       }
       if (add.length > 0) {
         parts.push(`      add: [${add.map((a) => `"${a}"`).join(", ")}],`)
+      }
+      // Hand-maintained flags (not derivable from intercepted traffic)
+      // must survive regeneration.
+      if (existing.disableEffort) {
+        parts.push(`      disableEffort: true,`)
       }
 
       const overrideBlock = `    ${overrideKey}: {\n${parts.join("\n")}\n    },`

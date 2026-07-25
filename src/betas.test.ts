@@ -42,13 +42,13 @@ describe("betas", () => {
     }
   })
 
-  it("getModelBetas excludes interleaved-thinking for haiku models", () => {
+  it("getModelBetas excludes effort for haiku models", () => {
     const models = ["claude-haiku-4-5", "claude-haiku-4-5-20251001"]
     for (const model of models) {
       const betas = getModelBetas(model)
       assert.ok(
-        !betas.includes("interleaved-thinking-2025-05-14"),
-        `${model} should not include interleaved-thinking beta`,
+        !betas.includes("effort-2025-11-24"),
+        `${model} should not include effort beta`,
       )
       assert.ok(
         betas.includes("claude-code-20250219"),
@@ -59,6 +59,28 @@ describe("betas", () => {
         `${model} should still include oauth beta`,
       )
     }
+  })
+
+  it("effort beta: sonnet-4-6 omits it, opus-4-6/4-7 add it, opus-4-5 unaffected", () => {
+    // Pins the first-match-wins override ordering: "claude-sonnet-4-6"
+    // matches the "sonnet" key before "4-6", so it must NOT get the effort
+    // beta, while opus-4-6/4-7 reach their "4-6"/"4-7" add-overrides.
+    assert.ok(
+      !getModelBetas("claude-sonnet-4-6").includes("effort-2025-11-24"),
+      "sonnet-4-6 must not include effort",
+    )
+    assert.ok(
+      getModelBetas("claude-opus-4-6").includes("effort-2025-11-24"),
+      "opus-4-6 must include effort",
+    )
+    assert.ok(
+      getModelBetas("claude-opus-4-7").includes("effort-2025-11-24"),
+      "opus-4-7 must include effort",
+    )
+    assert.ok(
+      !getModelBetas("claude-opus-4-5").includes("effort-2025-11-24"),
+      "opus-4-5 must not include effort",
+    )
   })
 
   it("getModelOverride sets disableEffort for haiku models", () => {
@@ -201,12 +223,12 @@ describe("betas", () => {
     // Regenerated configs can list the same beta twice; excluding it must
     // remove every occurrence, not just the first.
     process.env.ANTHROPIC_BETA_FLAGS =
-      "interleaved-thinking-2025-05-14,custom-beta-1,interleaved-thinking-2025-05-14"
+      "effort-2025-11-24,custom-beta-1,effort-2025-11-24"
     try {
       const betas = getModelBetas("claude-haiku-4-5")
       assert.ok(
-        !betas.includes("interleaved-thinking-2025-05-14"),
-        "haiku should exclude every occurrence of interleaved-thinking",
+        !betas.includes("effort-2025-11-24"),
+        "haiku should exclude every occurrence of effort",
       )
       assert.ok(betas.includes("custom-beta-1"), "unrelated beta should remain")
     } finally {

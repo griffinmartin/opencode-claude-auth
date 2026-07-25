@@ -13,6 +13,7 @@ import {
 } from "../dist/credentials.js"
 import { buildRequestHeaders, fetchWithRetry } from "../dist/index.js"
 import { readAllClaudeAccounts } from "../dist/keychain.js"
+import { SYSTEM_IDENTITY } from "../dist/transforms.js"
 
 // ANSI color helpers
 const c = {
@@ -25,8 +26,6 @@ const c = {
 }
 
 const API_URL = "https://api.anthropic.com/v1/messages"
-const SYSTEM_IDENTITY_PREFIX =
-  "You are Claude Code, Anthropic's official CLI for Claude."
 
 interface ModelResult {
   model: string
@@ -117,7 +116,7 @@ async function testModel(
   const body = JSON.stringify({
     model: modelId,
     max_tokens: 128,
-    system: [{ type: "text", text: SYSTEM_IDENTITY_PREFIX }],
+    system: [{ type: "text", text: SYSTEM_IDENTITY }],
     messages: [{ role: "user", content: "hi" }],
   })
 

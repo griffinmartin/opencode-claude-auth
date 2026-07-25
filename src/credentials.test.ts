@@ -1,7 +1,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -18,6 +24,7 @@ async function loadCredentialsWithCountingKeychain(
 ): Promise<{
   credentialsModule: {
     getCachedCredentials: () => Creds | null
+    reloadCredentialsFromSource: () => Creds | null
     getCredentialsForSync: () => Creds | null
     refreshIfNeeded: (account?: {
       label: string
@@ -25,26 +32,38 @@ async function loadCredentialsWithCountingKeychain(
       credentials: Creds
     }) => Creds | null
     initAccounts: (accounts: unknown[]) => void
+    invalidateCredentialCache: () => void
+    refreshAccountsList: () => unknown[]
+    reloadActiveAccount: () => void
+    forceRefreshActiveAccount: (
+      refresh?: (refreshToken: string) => Creds | null,
+    ) => Creds | null
   }
   keychainModule: {
     __getReadCount: () => number
     __getWriteCount: () => number
-    __setCredentials: (c: Creds) => void
+    __setCredentials: (c: Creds | null) => void
+    __setAccounts: (list: unknown[]) => void
+    __setReadError: (enabled: boolean) => void
+    __setReadHook: (hook: (() => void) | null) => void
   }
 }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-creds-"))
   const tempKeychain = join(tempDir, "keychain.ts")
   const tempBetas = join(tempDir, "betas.ts")
+  const tempChildProcess = join(tempDir, "child-process.ts")
   const tempLogger = join(tempDir, "logger.ts")
   const tempCredentials = join(tempDir, "credentials.ts")
   const sourceCredentials = await readFile(
     new URL("./credentials.ts", import.meta.url),
     "utf8",
   )
-  const rewritten = sourceCredentials.replace(
-    /from\s+["']\.\/(\w+)\.js["']/g,
-    'from "./$1.ts"',
-  )
+  const rewritten = sourceCredentials
+    .replace(/from\s+["']\.\/(\w+)\.js["']/g, 'from "./$1.ts"')
+    .replace(
+      'import { execFileSync, execSync } from "node:child_process"',
+      'import { execFileSync, execSync } from "./child-process.ts"',
+    )
 
   await writeFile(
     tempLogger,
@@ -53,23 +72,52 @@ async function loadCredentialsWithCountingKeychain(
   )
 
   await writeFile(
+    tempChildProcess,
+    `export function execFileSync() {
+  throw new Error("oauth disabled in test harness")
+}
+
+export function execSync() {
+  return ""
+}
+`,
+    "utf8",
+  )
+
+  await writeFile(
     tempKeychain,
     `let readCount = 0
 let writeCount = 0
+let accounts = null // null = derive a single account from the credentials var
+let readError = false
+let readHook = null
 let credentials = {
   accessToken: "token",
   refreshToken: "refresh",
   expiresAt: ${initialExpiresAt}
 }
 
+export const PRIMARY_SERVICE = "Claude Code-credentials"
+
 export function readAllClaudeAccounts() {
   readCount += 1
+  if (accounts !== null) return accounts
   return [{ label: "Account 1", source: "keychain", credentials }]
 }
 
 export function refreshAccount(source) {
   readCount += 1
+  if (readError) throw new Error("Keychain read denied")
+  if (readHook) readHook()
   return credentials
+}
+
+export function __setReadError(enabled) {
+  readError = enabled
+}
+
+export function __setReadHook(hook) {
+  readHook = hook
 }
 
 export function writeBackCredentials() {
@@ -87,6 +135,10 @@ export function __getWriteCount() {
 
 export function __setCredentials(c) {
   credentials = c
+}
+
+export function __setAccounts(list) {
+  accounts = list
 }
 `,
     "utf8",
@@ -107,6 +159,7 @@ export function __setCredentials(c) {
   return {
     credentialsModule: credentialsModule as {
       getCachedCredentials: () => Creds | null
+      reloadCredentialsFromSource: () => Creds | null
       getCredentialsForSync: () => Creds | null
       refreshIfNeeded: (account?: {
         label: string
@@ -114,16 +167,192 @@ export function __setCredentials(c) {
         credentials: Creds
       }) => Creds | null
       initAccounts: (accounts: unknown[]) => void
+      invalidateCredentialCache: () => void
+      refreshAccountsList: () => unknown[]
+      reloadActiveAccount: () => void
+      forceRefreshActiveAccount: (
+        refresh?: (refreshToken: string) => Creds | null,
+      ) => Creds | null
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
       __getWriteCount: () => number
-      __setCredentials: (c: Creds) => void
+      __setCredentials: (c: Creds | null) => void
+      __setAccounts: (list: unknown[]) => void
+      __setReadError: (enabled: boolean) => void
+      __setReadHook: (hook: (() => void) | null) => void
     },
   }
 }
 
 describe("credential caching", () => {
+  it("reloadCredentialsFromSource bypasses cache and stores rotated Keychain credentials", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "old-token",
+            refreshToken: "old-refresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+
+      assert.equal(
+        credentialsModule.getCachedCredentials()?.accessToken,
+        "old-token",
+      )
+
+      keychainModule.__setCredentials({
+        accessToken: "new-token",
+        refreshToken: "new-refresh",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      const reloaded = credentialsModule.reloadCredentialsFromSource()
+      const readCountAfterReload = keychainModule.__getReadCount()
+
+      assert.equal(reloaded?.accessToken, "new-token")
+      assert.equal(readCountAfterReload, 1)
+      assert.equal(
+        credentialsModule.getCachedCredentials()?.accessToken,
+        "new-token",
+      )
+      assert.equal(keychainModule.__getReadCount(), readCountAfterReload)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("reloadCredentialsFromSource returns null when the source read throws", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "old-token",
+            refreshToken: "old-refresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+      credentialsModule.getCachedCredentials()
+      keychainModule.__setReadError(true)
+
+      assert.equal(credentialsModule.reloadCredentialsFromSource(), null)
+      assert.equal(keychainModule.__getReadCount(), 1)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("reloadCredentialsFromSource rejects credentials that enter the expiry buffer during source read", async () => {
+    const originalNow = Date.now
+    let now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 61_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "old-token",
+            refreshToken: "old-refresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+      keychainModule.__setReadHook(() => {
+        now += 2_000
+      })
+
+      assert.equal(credentialsModule.reloadCredentialsFromSource(), null)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("reloadCredentialsFromSource returns null when the source is unavailable", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "old-token",
+            refreshToken: "old-refresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+      keychainModule.__setCredentials(null)
+
+      assert.equal(credentialsModule.reloadCredentialsFromSource(), null)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("reloadCredentialsFromSource rejects a blank access token", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "old-token",
+            refreshToken: "old-refresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+      keychainModule.__setCredentials({
+        accessToken: "   ",
+        refreshToken: "new-refresh",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      assert.equal(credentialsModule.reloadCredentialsFromSource(), null)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("getCachedCredentials reuses cached credentials within 30 second TTL", async () => {
     const originalNow = Date.now
     const now = 1_700_000_000_000
@@ -324,6 +553,285 @@ describe("credential caching", () => {
     }
   })
 
+  it("refreshAccountsList keeps existing accounts when the source reads empty", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    credentialsModule.initAccounts([
+      {
+        label: "Account 1",
+        source: "keychain",
+        credentials: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      },
+    ])
+
+    // Transient empty read (e.g. keychain race while the claude CLI
+    // rewrites credentials) must not clobber a working session.
+    keychainModule.__setAccounts([])
+    const result = credentialsModule.refreshAccountsList()
+
+    assert.equal(
+      result.length,
+      1,
+      "must not clobber a healthy session with an empty account list",
+    )
+    assert.ok(
+      credentialsModule.getCachedCredentials(),
+      "credentials must remain available after the empty read",
+    )
+  })
+
+  it("refreshIfNeeded borrows a fallback account whose keychain entry was refreshed externally", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      // Active account: suffixed keychain entry with an unknown configDir,
+      // so the CLI refresh is skipped (requireConfigDir) and OAuth is
+      // disabled by the harness. Fallback account: its in-memory expiry is
+      // stale too, but the live keychain read returns credentials that were
+      // refreshed externally (e.g. by the Claude CLI in another terminal).
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "Claude Code-credentials-aabbccdd",
+          credentials: {
+            accessToken: "stale-suffixed",
+            refreshToken: "rt-suffixed",
+            expiresAt: now - 1_000,
+          },
+        },
+        {
+          label: "Account 2",
+          source: "Claude Code-credentials",
+          credentials: {
+            accessToken: "stale-primary",
+            refreshToken: "rt-primary",
+            expiresAt: now - 1_000,
+          },
+        },
+      ])
+
+      keychainModule.__setCredentials({
+        accessToken: "externally-refreshed",
+        refreshToken: "rt-new",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      const result = credentialsModule.refreshIfNeeded()
+
+      assert.equal(
+        result?.accessToken,
+        "externally-refreshed",
+        "stale in-memory expiry must not prevent a live fallback keychain read",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("fallback uses a valid in-memory account without a keychain read", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "Claude Code-credentials-aabbccdd",
+          credentials: {
+            accessToken: "stale-suffixed",
+            refreshToken: "rt-suffixed",
+            expiresAt: now - 1_000,
+          },
+        },
+        {
+          label: "Account 2",
+          source: "Claude Code-credentials",
+          credentials: {
+            accessToken: "fresh-in-memory",
+            refreshToken: "rt-primary",
+            expiresAt: now + 8 * 60 * 60_000,
+          },
+        },
+      ])
+
+      const readsBefore = keychainModule.__getReadCount()
+      const result = credentialsModule.refreshIfNeeded()
+
+      assert.equal(result?.accessToken, "fresh-in-memory")
+      assert.equal(
+        keychainModule.__getReadCount(),
+        readsBefore,
+        "valid in-memory fallback credentials must not trigger a keychain read",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("reloadActiveAccount picks up rotated keychain credentials in place", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    // Keychain source: refreshIfNeeded never re-reads these while the local
+    // copy looks valid, so a 401 needs an explicit source reload.
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "token",
+        refreshToken: "refresh",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    keychainModule.__setCredentials({
+      accessToken: "rotated",
+      refreshToken: "rotated-refresh",
+      expiresAt: now + 10 * 60_000,
+    })
+
+    credentialsModule.reloadActiveAccount()
+
+    assert.equal(account.credentials.accessToken, "rotated")
+  })
+
+  it("forceRefreshActiveAccount swaps in OAuth-refreshed credentials and writes back", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "rejected-token",
+        refreshToken: "refresh-token",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    const newCreds = {
+      accessToken: "oauth-refreshed",
+      refreshToken: "new-refresh",
+      expiresAt: now + 10 * 60_000,
+    }
+    const seenRefreshTokens: string[] = []
+    const writesBefore = keychainModule.__getWriteCount()
+
+    const result = credentialsModule.forceRefreshActiveAccount((token) => {
+      seenRefreshTokens.push(token)
+      return newCreds
+    })
+
+    assert.ok(result)
+    assert.equal(result.accessToken, "oauth-refreshed")
+    assert.deepEqual(seenRefreshTokens, ["refresh-token"])
+    assert.equal(account.credentials.accessToken, "oauth-refreshed")
+    assert.equal(
+      keychainModule.__getWriteCount(),
+      writesBefore + 1,
+      "refreshed credentials must be written back to the source",
+    )
+    const cached = credentialsModule.getCachedCredentials()
+    assert.equal(
+      cached?.accessToken,
+      "oauth-refreshed",
+      "cache must serve the refreshed token immediately",
+    )
+  })
+
+  it("forceRefreshActiveAccount returns null and leaves the account untouched on failure", async () => {
+    const now = Date.now()
+    const { credentialsModule } = await loadCredentialsWithCountingKeychain(
+      now + 10 * 60_000,
+    )
+
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "rejected-token",
+        refreshToken: "refresh-token",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    const result = credentialsModule.forceRefreshActiveAccount(() => null)
+
+    assert.equal(result, null)
+    assert.equal(account.credentials.accessToken, "rejected-token")
+  })
+
+  it("invalidateCredentialCache forces the next read to bypass the 30s TTL", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      const account = {
+        label: "Account 1",
+        source: "file",
+        credentials: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([account])
+
+      // Prime the cache
+      const first = credentialsModule.getCachedCredentials()
+      assert.ok(first)
+
+      // Server-side rotation: on-disk credentials change, but the local
+      // copy still looks valid so the cache would serve it for 30s.
+      keychainModule.__setCredentials({
+        accessToken: "rotated-token",
+        refreshToken: "rotated-refresh",
+        expiresAt: now + 10 * 60_000,
+      })
+
+      const cached = credentialsModule.getCachedCredentials()
+      assert.ok(cached)
+      assert.equal(
+        cached.accessToken,
+        "token",
+        "within TTL the stale token is served from cache",
+      )
+
+      // After invalidation (e.g. a 401 from the API), the next read must
+      // go back to the source instead of serving the rejected token.
+      credentialsModule.invalidateCredentialCache()
+      const fresh = credentialsModule.getCachedCredentials()
+      assert.ok(fresh)
+      assert.equal(fresh.accessToken, "rotated-token")
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("refreshIfNeeded skips OAuth refresh writeback when on-disk file source is fresh", async () => {
     const originalNow = Date.now
     const now = 1_700_000_000_000
@@ -398,7 +906,8 @@ describe("syncAuthJson file permissions", () => {
 
       await writeFile(
         tempKeychain,
-        `export function readAllClaudeAccounts() { return [] }
+        `export const PRIMARY_SERVICE = "Claude Code-credentials"
+export function readAllClaudeAccounts() { return [] }
 export function refreshAccount() { return null }
 export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }`,
@@ -482,7 +991,8 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
       await writeFile(
         tempKeychain,
-        `export function readAllClaudeAccounts() { return [] }
+        `export const PRIMARY_SERVICE = "Claude Code-credentials"
+export function readAllClaudeAccounts() { return [] }
 export function refreshAccount() { return null }
 export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }`,
@@ -530,6 +1040,18 @@ describe("refreshViaOAuth", () => {
   })
 })
 
+describe("refreshViaCli command shape", () => {
+  it("uses the stable haiku alias, not a dated model ID", () => {
+    const source = readFileSync(
+      new URL("./credentials.ts", import.meta.url),
+      "utf-8",
+    )
+
+    assert.match(source, /claude -p \. --model haiku/)
+    assert.doesNotMatch(source, /claude-haiku-4-5-20250514/)
+  })
+})
+
 describe("parseOAuthResponse", () => {
   const now = 1_700_000_000_000
   const currentRefresh = "sk-ant-ort01-current"
@@ -546,6 +1068,20 @@ describe("parseOAuthResponse", () => {
     assert.equal(result.accessToken, "sk-ant-oat01-new")
     assert.equal(result.refreshToken, "sk-ant-ort01-new")
     assert.equal(result.expiresAt, now + 28800 * 1000)
+  })
+
+  it("truncates fractional expires_in to integer milliseconds", () => {
+    const expiresIn = 28_800.000_901_1
+    const raw = JSON.stringify({
+      access_token: "sk-ant-oat01-new",
+      expires_in: expiresIn,
+    })
+
+    const result = parseOAuthResponse(raw, currentRefresh, now)
+
+    assert.ok(result)
+    assert.equal(result.expiresAt, Math.trunc(now + expiresIn * 1000))
+    assert.equal(Number.isInteger(result.expiresAt), true)
   })
 
   it("returns null when access_token is missing", () => {

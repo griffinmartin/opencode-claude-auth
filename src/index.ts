@@ -11,10 +11,15 @@ import {
   isLongContextError,
   LONG_CONTEXT_BETAS,
 } from "./betas.ts"
-import { transformBody, transformResponseStream } from "./transforms.ts"
+import {
+  SYSTEM_IDENTITY,
+  transformBody,
+  transformResponseStream,
+} from "./transforms.ts"
 import {
   getCachedCredentials,
   getCredentialsForSync,
+  reloadCredentialsFromSource,
   syncAuthJson,
   initAccounts,
   setActiveAccountSource,
@@ -35,6 +40,7 @@ export {
 export { resetExcludedBetas } from "./betas.ts"
 export {
   stripToolPrefix,
+  SYSTEM_IDENTITY,
   transformBody,
   transformResponseStream,
 } from "./transforms.ts"
@@ -50,9 +56,6 @@ export {
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from "./signing.ts"
-
-const SYSTEM_IDENTITY_PREFIX =
-  "You are Claude Code, Anthropic's official CLI for Claude."
 
 function getCliVersion(): string {
   return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
@@ -282,10 +285,10 @@ const plugin: Plugin = async () => {
       }
 
       const hasIdentityPrefix = output.system.some((entry) =>
-        entry.includes(SYSTEM_IDENTITY_PREFIX),
+        entry.includes(SYSTEM_IDENTITY),
       )
       if (!hasIdentityPrefix) {
-        output.system.unshift(SYSTEM_IDENTITY_PREFIX)
+        output.system.unshift(SYSTEM_IDENTITY)
       }
     },
     auth: {
@@ -357,7 +360,9 @@ const plugin: Plugin = async () => {
             const body = transformBody(requestInit.body)
 
             const headerKeys: string[] = []
-            headers.forEach((_, key) => headerKeys.push(key))
+            headers.forEach((_, key) => {
+              headerKeys.push(key)
+            })
             const betas = (headers.get("anthropic-beta") ?? "")
               .split(",")
               .filter(Boolean)
@@ -375,11 +380,14 @@ const plugin: Plugin = async () => {
               retryAttempt: 0,
             })
 
-            // On 401, force a credential refresh and retry once.
-            // This handles the common case of token expiry mid-session.
+            // On 401, bypass the in-memory cache to pick up credentials rotated by
+            // another client, then retry once only when the access token changed.
+            let preserveResponseUnchanged = false
             if (response.status === 401) {
-              log("fetch_401_retry", { modelId })
-              const refreshed = getCachedCredentials()
+              let refreshed: ClaudeCredentials | null = null
+              try {
+                refreshed = reloadCredentialsFromSource()
+              } catch {}
               if (refreshed && refreshed.accessToken !== latest.accessToken) {
                 const retryHeaders = buildRequestHeaders(
                   input,
@@ -393,10 +401,8 @@ const plugin: Plugin = async () => {
                   body,
                   headers: retryHeaders,
                 })
-                log("fetch_401_retry_result", {
-                  status: response.status,
-                  modelId,
-                })
+              } else {
+                preserveResponseUnchanged = true
               }
             }
 
@@ -448,7 +454,7 @@ const plugin: Plugin = async () => {
               })
             }
 
-            // Log non-200 responses at warn level so they're visible in OpenCode
+            // Record non-200 responses without writing over OpenCode's terminal UI.
             if (!response.ok) {
               const status = response.status
               const cloned = response.clone()
@@ -464,14 +470,13 @@ const plugin: Plugin = async () => {
                       parsed.error?.message ?? parsed.error?.type ?? errorBody
                   } catch {}
                   log("fetch_error_response", { status, modelId, message })
-                  console.warn(
-                    `opencode-claude-auth: API ${status} for ${modelId}: ${message}`,
-                  )
                 })
                 .catch(() => {})
             }
 
-            return transformResponseStream(response)
+            return preserveResponseUnchanged
+              ? response
+              : transformResponseStream(response)
           },
         }
       },
@@ -493,10 +498,7 @@ const plugin: Plugin = async () => {
                 options: currentAccounts.map((a) => ({
                   label: a.label,
                   value: a.source,
-                  hint:
-                    a.source === currentSource
-                      ? `${a.source} (active)`
-                      : a.source,
+                  hint: a.source === currentSource ? "active" : undefined,
                 })),
               },
             ]
@@ -521,8 +523,8 @@ const plugin: Plugin = async () => {
 
             const sourceDescription =
               chosen.source === "file"
-                ? "credentials file (~/.claude/.credentials.json)"
-                : "macOS Keychain"
+                ? `credentials file (${chosen.configDir ?? "~/.claude"}/.credentials.json)`
+                : `macOS Keychain (${chosen.source})`
 
             return {
               url: "",

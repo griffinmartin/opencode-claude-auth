@@ -153,6 +153,52 @@ describe("updateModelConfig", () => {
     )
   })
 
+  it("dedupes baseBetas (the CLI can send duplicated beta headers)", () => {
+    updateModelConfig(
+      {
+        newBaseBetas: ["beta-a", "beta-b", "beta-a"],
+      },
+      configPath,
+    )
+    const result = readFileSync(configPath, "utf-8")
+    const occurrences = result.match(/"beta-a"/g)
+    assert.equal(
+      occurrences?.length,
+      1,
+      "duplicated captured betas should be written only once",
+    )
+  })
+
+  it("preserves disableEffort when rewriting an existing override", () => {
+    const templateWithFlag = TEMPLATE.replace(
+      `  modelOverrides: {`,
+      `  modelOverrides: {
+    haiku: {
+      exclude: ["interleaved-thinking-2025-05-14"],
+      disableEffort: true,
+    },`,
+    )
+    writeFileSync(configPath, templateWithFlag, "utf-8")
+
+    const diffs = new Map<string, { added: string[]; removed: string[] }>()
+    diffs.set("claude-haiku-4-5", {
+      added: [],
+      removed: ["some-removed-beta"],
+    })
+
+    updateModelConfig(
+      {
+        modelBetaDiffs: diffs,
+      },
+      configPath,
+    )
+    const result = readFileSync(configPath, "utf-8")
+    assert.ok(
+      result.includes("disableEffort: true"),
+      "hand-maintained disableEffort flag must survive regeneration",
+    )
+  })
+
   it("preserves file structure outside of updated sections", () => {
     updateModelConfig(
       {

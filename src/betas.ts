@@ -74,7 +74,7 @@ export function getModelBetas(
   // The legacy context-1m-2025-08-07 beta is never sent — the API supports
   // 1M context natively without it.
 
-  // Apply per-model overrides (e.g. haiku excludes claude-code-20250219)
+  // Apply per-model overrides (e.g. haiku excludes effort-2025-11-24)
   const override = getModelOverride(modelId)
   if (override) {
     const { exclude, add } = override
