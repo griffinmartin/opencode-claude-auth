@@ -927,6 +927,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     })) as unknown as typeof setInterval
 
     let requestCount = 0
+    const errorBody = '{"name":"mcp_UnchangedToken"}'
 
     try {
       const { helpersModule } = await loadHelpersWithCountingKeychain(
@@ -934,7 +935,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
       globalThis.fetch = (async () => {
         requestCount += 1
-        return new Response("unauthorized", { status: 401 })
+        return new Response(errorBody, {
+          status: 401,
+          headers: { "x-request-id": "unchanged-token-401" },
+        })
       }) as typeof fetch
 
       const plugin = await helpersModule.default({} as never)
@@ -959,6 +963,8 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
 
       assert.equal(response.status, 401)
+      assert.equal(response.headers.get("x-request-id"), "unchanged-token-401")
+      assert.equal(await response.text(), errorBody)
       assert.equal(requestCount, 1)
     } finally {
       Date.now = originalNow
@@ -985,6 +991,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     })) as unknown as typeof setInterval
 
     let requestCount = 0
+    const errorBody = '{"name":"mcp_ReloadFailure"}'
 
     try {
       const { helpersModule } = await loadHelpersWithCountingKeychain(
@@ -993,7 +1000,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
       globalThis.fetch = (async () => {
         requestCount += 1
-        return new Response("original unauthorized", {
+        return new Response(errorBody, {
           status: 401,
           statusText: "Unauthorized",
           headers: {
@@ -1028,7 +1035,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       assert.equal(response.statusText, "Unauthorized")
       assert.equal(response.headers.get("content-type"), "text/plain")
       assert.equal(response.headers.get("x-request-id"), "request-401")
-      assert.equal(await response.text(), "original unauthorized")
+      assert.equal(await response.text(), errorBody)
       assert.equal(requestCount, 1)
     } finally {
       Date.now = originalNow

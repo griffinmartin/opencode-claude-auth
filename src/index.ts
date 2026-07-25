@@ -380,6 +380,7 @@ const plugin: Plugin = async () => {
 
             // On 401, bypass the in-memory cache to pick up credentials rotated by
             // another client, then retry once only when the access token changed.
+            let preserveResponseUnchanged = false
             if (response.status === 401) {
               let refreshed: ClaudeCredentials | null = null
               try {
@@ -398,6 +399,8 @@ const plugin: Plugin = async () => {
                   body,
                   headers: retryHeaders,
                 })
+              } else {
+                preserveResponseUnchanged = true
               }
             }
 
@@ -469,7 +472,9 @@ const plugin: Plugin = async () => {
                 .catch(() => {})
             }
 
-            return transformResponseStream(response)
+            return preserveResponseUnchanged
+              ? response
+              : transformResponseStream(response)
           },
         }
       },

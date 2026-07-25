@@ -71,8 +71,7 @@ function redactValue(key: string, value: unknown): unknown {
   }
 
   if (key === "accessToken") {
-    const prefix = value.slice(0, 8)
-    return `${prefix}...REDACTED`
+    return "REDACTED"
   }
 
   if (JWT_PATTERN.test(value)) {

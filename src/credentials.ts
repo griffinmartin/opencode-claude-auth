@@ -445,7 +445,6 @@ export function reloadCredentialsFromSource(): ClaudeCredentials | null {
   const account = getActiveAccount()
   if (!account) return null
 
-  const now = Date.now()
   let reloaded: ClaudeCredentials | null
   try {
     reloaded = refreshAccount(account.source)
@@ -458,12 +457,21 @@ export function reloadCredentialsFromSource(): ClaudeCredentials | null {
     })
     return null
   }
-  if (!reloaded || reloaded.expiresAt <= now + 60_000) {
+  const now = Date.now()
+  if (
+    !reloaded ||
+    !reloaded.accessToken.trim() ||
+    reloaded.expiresAt <= now + 60_000
+  ) {
     accountCacheMap.delete(account.source)
     log("credentials_source_reload", {
       source: account.source,
       success: false,
-      reason: reloaded ? "expiring" : "unavailable",
+      reason: !reloaded
+        ? "unavailable"
+        : !reloaded.accessToken.trim()
+          ? "invalid"
+          : "expiring",
     })
     return null
   }
