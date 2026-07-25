@@ -61,6 +61,28 @@ describe("betas", () => {
     }
   })
 
+  it("effort beta: sonnet-4-6 omits it, opus-4-6/4-7 add it, opus-4-5 unaffected", () => {
+    // Pins the first-match-wins override ordering: "claude-sonnet-4-6"
+    // matches the "sonnet" key before "4-6", so it must NOT get the effort
+    // beta, while opus-4-6/4-7 reach their "4-6"/"4-7" add-overrides.
+    assert.ok(
+      !getModelBetas("claude-sonnet-4-6").includes("effort-2025-11-24"),
+      "sonnet-4-6 must not include effort",
+    )
+    assert.ok(
+      getModelBetas("claude-opus-4-6").includes("effort-2025-11-24"),
+      "opus-4-6 must include effort",
+    )
+    assert.ok(
+      getModelBetas("claude-opus-4-7").includes("effort-2025-11-24"),
+      "opus-4-7 must include effort",
+    )
+    assert.ok(
+      !getModelBetas("claude-opus-4-5").includes("effort-2025-11-24"),
+      "opus-4-5 must not include effort",
+    )
+  })
+
   it("getModelOverride sets disableEffort for haiku models", () => {
     for (const model of ["claude-haiku-4-5", "claude-haiku-4-5-20251001"]) {
       const override = getModelOverride(model)
