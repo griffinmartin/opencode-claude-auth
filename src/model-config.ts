@@ -23,7 +23,6 @@ export const config: ModelConfig = {
     "thinking-token-count-2026-05-13",
     "extended-cache-ttl-2025-04-11",
     "effort-2025-11-24",
-    "interleaved-thinking-2025-05-14",
   ],
   longContextBetas: [
     "context-1m-2025-08-07",
