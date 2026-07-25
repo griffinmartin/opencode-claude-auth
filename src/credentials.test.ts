@@ -586,6 +586,59 @@ describe("credential caching", () => {
     )
   })
 
+  it("refreshIfNeeded borrows a fallback account whose keychain entry was refreshed externally", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      // Active account: suffixed keychain entry with an unknown configDir,
+      // so the CLI refresh is skipped (requireConfigDir) and OAuth is
+      // disabled by the harness. Fallback account: its in-memory expiry is
+      // stale too, but the live keychain read returns credentials that were
+      // refreshed externally (e.g. by the Claude CLI in another terminal).
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "Claude Code-credentials-aabbccdd",
+          credentials: {
+            accessToken: "stale-suffixed",
+            refreshToken: "rt-suffixed",
+            expiresAt: now - 1_000,
+          },
+        },
+        {
+          label: "Account 2",
+          source: "Claude Code-credentials",
+          credentials: {
+            accessToken: "stale-primary",
+            refreshToken: "rt-primary",
+            expiresAt: now - 1_000,
+          },
+        },
+      ])
+
+      keychainModule.__setCredentials({
+        accessToken: "externally-refreshed",
+        refreshToken: "rt-new",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      const result = credentialsModule.refreshIfNeeded()
+
+      assert.equal(
+        result?.accessToken,
+        "externally-refreshed",
+        "stale in-memory expiry must not prevent a live fallback keychain read",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("reloadActiveAccount picks up rotated keychain credentials in place", async () => {
     const now = Date.now()
     const { credentialsModule, keychainModule } =

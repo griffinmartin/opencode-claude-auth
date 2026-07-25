@@ -120,7 +120,7 @@ function extractServicesFromDump(output: string): string[] {
   const services: string[] = []
   const seen = new Set<string>()
 
-  const re = /"Claude Code-credentials(?:-[0-9a-f]{8})?"/g
+  const re = /"Claude Code-credentials(?:-[0-9a-f]+)?"/g
   let m = re.exec(output)
   while (m !== null) {
     const svc = m[0].slice(1, -1)
@@ -231,6 +231,17 @@ describe("keychain service discovery", () => {
       ),
       [],
     )
+  })
+
+  it("discovers legacy hex suffixes that are not exactly 8 chars", () => {
+    const dump = `
+    "svce"<blob>="Claude Code-credentials-abc"
+    "svce"<blob>="Claude Code-credentials-deadbeefcafebabe"
+    `
+    assert.deepEqual(extractServicesFromDump(dump), [
+      "Claude Code-credentials-abc",
+      "Claude Code-credentials-deadbeefcafebabe",
+    ])
   })
 })
 
@@ -411,6 +422,47 @@ describe("readAllClaudeAccounts", () => {
         `Claude: Claude Code-credentials-${workSuffix}`,
       )
       assert.equal(account.configDir, workDir)
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps legacy hex suffixes that are not exactly 8 chars discoverable", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    const primaryDir = join(tempHome, ".claude")
+    mkdirSync(primaryDir, { recursive: true })
+    writeFileSync(join(primaryDir, ".claude.json"), JSON.stringify({}))
+
+    process.env.HOME = tempHome
+
+    try {
+      const { readAllClaudeAccounts } = await loadKeychainWithMockedSecurity(
+        `"svce"<blob>="Claude Code-credentials-abc"`,
+        {
+          "Claude Code-credentials-abc": JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "legacy-at",
+              refreshToken: "legacy-rt",
+              expiresAt: 1_700_000_000_000,
+            },
+          }),
+        },
+      )
+
+      const accounts = readAllClaudeAccounts()
+      assert.equal(accounts.length, 1)
+      assert.equal(accounts[0].source, "Claude Code-credentials-abc")
+      // A non-8-char suffix cannot be mapped back to a config dir hash, so
+      // the entry falls back to the primary config dir — matching the CLI
+      // refresh behaviour these legacy entries had before suffix mapping
+      // existed.
+      assert.equal(accounts[0].configDir, primaryDir)
     } finally {
       if (originalHome === undefined) {
         delete process.env.HOME

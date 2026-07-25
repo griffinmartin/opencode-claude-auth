@@ -153,7 +153,10 @@ function listClaudeKeychainServices(): string[] {
     const services: string[] = []
     const seen = new Set<string>()
 
-    const re = /"Claude Code-credentials(?:-[0-9a-f]{8})?"/g
+    // Any-length hex suffix so legacy entries stay discoverable. The
+    // suffix-to-config-dir mapping below still only applies to the
+    // 8-char hashes the Claude CLI generates.
+    const re = /"Claude Code-credentials(?:-[0-9a-f]+)?"/g
     let m = re.exec(dump)
     while (m !== null) {
       const svc = m[0].slice(1, -1)

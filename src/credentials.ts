@@ -359,11 +359,28 @@ export function refreshIfNeeded(
 
 function tryFallbackAccount(excludeSource: string): ClaudeCredentials | null {
   const now = Date.now()
-  for (const account of allAccounts) {
-    if (account.source === excludeSource) continue
-    if (account.credentials.expiresAt <= now + 60_000) continue
-    const fresh = refreshAccount(account.source, account.configDir)
+  const candidates = allAccounts.filter((a) => a.source !== excludeSource)
+
+  // Prefer accounts whose in-memory expiry still looks valid (cheap), but
+  // fall back to live-reading the stale-looking ones too: another process
+  // (e.g. the Claude CLI in a different terminal) may have refreshed their
+  // keychain entry since we last read it.
+  const likelyFresh = candidates.filter(
+    (a) => a.credentials.expiresAt > now + 60_000,
+  )
+  const staleLooking = candidates.filter(
+    (a) => a.credentials.expiresAt <= now + 60_000,
+  )
+
+  for (const account of [...likelyFresh, ...staleLooking]) {
+    let fresh: ClaudeCredentials | null = null
+    try {
+      fresh = refreshAccount(account.source, account.configDir)
+    } catch {
+      continue
+    }
     if (fresh && fresh.expiresAt > now + 60_000) {
+      account.credentials = fresh
       log("refresh_fallback_account", {
         failedSource: excludeSource,
         usedSource: account.source,
