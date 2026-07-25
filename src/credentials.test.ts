@@ -1,7 +1,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -527,6 +533,18 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 describe("refreshViaOAuth", () => {
   it("is exported as a function", () => {
     assert.equal(typeof refreshViaOAuth, "function")
+  })
+})
+
+describe("refreshViaCli command shape", () => {
+  it("uses the stable haiku alias, not a dated model ID", () => {
+    const source = readFileSync(
+      new URL("./credentials.ts", import.meta.url),
+      "utf-8",
+    )
+
+    assert.match(source, /claude -p \. --model haiku/)
+    assert.doesNotMatch(source, /claude-haiku-4-5-20250514/)
   })
 })
 
