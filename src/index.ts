@@ -11,7 +11,11 @@ import {
   isLongContextError,
   LONG_CONTEXT_BETAS,
 } from "./betas.ts"
-import { transformBody, transformResponseStream } from "./transforms.ts"
+import {
+  SYSTEM_IDENTITY,
+  transformBody,
+  transformResponseStream,
+} from "./transforms.ts"
 import {
   getCachedCredentials,
   getCredentialsForSync,
@@ -35,6 +39,7 @@ export {
 export { resetExcludedBetas } from "./betas.ts"
 export {
   stripToolPrefix,
+  SYSTEM_IDENTITY,
   transformBody,
   transformResponseStream,
 } from "./transforms.ts"
@@ -50,9 +55,6 @@ export {
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from "./signing.ts"
-
-const SYSTEM_IDENTITY_PREFIX =
-  "You are Claude Code, Anthropic's official CLI for Claude."
 
 function getCliVersion(): string {
   return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
@@ -282,10 +284,10 @@ const plugin: Plugin = async () => {
       }
 
       const hasIdentityPrefix = output.system.some((entry) =>
-        entry.includes(SYSTEM_IDENTITY_PREFIX),
+        entry.includes(SYSTEM_IDENTITY),
       )
       if (!hasIdentityPrefix) {
-        output.system.unshift(SYSTEM_IDENTITY_PREFIX)
+        output.system.unshift(SYSTEM_IDENTITY)
       }
     },
     auth: {

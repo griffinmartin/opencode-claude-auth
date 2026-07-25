@@ -19,7 +19,7 @@ function unprefixName(name: string): string {
   return `${name.charAt(0).toLowerCase()}${name.slice(1)}`
 }
 
-const SYSTEM_IDENTITY =
+export const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
 
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
