@@ -154,7 +154,7 @@ async function copySourceFiles(
 
 async function loadHelpersWithCountingKeychain(
   initialExpiresAt: number,
-  opts?: { oauthTokenUrl?: string },
+  options: { oauthTokenUrl?: string; throwOnReload?: boolean } = {},
 ): Promise<{
   helpersModule: typeof import("./index.ts")
   keychainModule: {
@@ -165,7 +165,22 @@ async function loadHelpersWithCountingKeychain(
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cache-"))
   const tempKeychain = join(tempDir, "keychain.ts")
 
-  await copySourceFiles(tempDir, opts)
+  await copySourceFiles(tempDir, options)
+  if (options.throwOnReload) {
+    const tempCredentials = join(tempDir, "credentials.ts")
+    const reloadSignature =
+      "export function reloadCredentialsFromSource(): ClaudeCredentials | null {"
+    const credentialsSource = await readFile(tempCredentials, "utf8")
+    assert.ok(credentialsSource.includes(reloadSignature))
+    await writeFile(
+      tempCredentials,
+      credentialsSource.replace(
+        reloadSignature,
+        `${reloadSignature}\n  throw new Error("forced reload failure")`,
+      ),
+      "utf8",
+    )
+  }
   await writeFile(
     tempKeychain,
     `let readCount = 0
@@ -944,6 +959,76 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
 
       assert.equal(response.status, 401)
+      assert.equal(requestCount, 1)
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch preserves the original 401 when credential reload throws", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let requestCount = 0
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+        { throwOnReload: true },
+      )
+      globalThis.fetch = (async () => {
+        requestCount += 1
+        return new Response("original unauthorized", {
+          status: 401,
+          statusText: "Unauthorized",
+          headers: {
+            "content-type": "text/plain",
+            "x-request-id": "request-401",
+          },
+        })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      assert.equal(typeof typedPlugin.auth?.loader, "function")
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 401)
+      assert.equal(response.statusText, "Unauthorized")
+      assert.equal(response.headers.get("content-type"), "text/plain")
+      assert.equal(response.headers.get("x-request-id"), "request-401")
+      assert.equal(await response.text(), "original unauthorized")
       assert.equal(requestCount, 1)
     } finally {
       Date.now = originalNow

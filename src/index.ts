@@ -381,8 +381,10 @@ const plugin: Plugin = async () => {
             // On 401, bypass the in-memory cache to pick up credentials rotated by
             // another client, then retry once only when the access token changed.
             if (response.status === 401) {
-              log("fetch_401_retry", { modelId })
-              const refreshed = reloadCredentialsFromSource()
+              let refreshed: ClaudeCredentials | null = null
+              try {
+                refreshed = reloadCredentialsFromSource()
+              } catch {}
               if (refreshed && refreshed.accessToken !== latest.accessToken) {
                 const retryHeaders = buildRequestHeaders(
                   input,
@@ -395,10 +397,6 @@ const plugin: Plugin = async () => {
                   ...requestInit,
                   body,
                   headers: retryHeaders,
-                })
-                log("fetch_401_retry_result", {
-                  status: response.status,
-                  modelId,
                 })
               }
             }
