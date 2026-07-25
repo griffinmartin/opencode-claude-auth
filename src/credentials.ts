@@ -45,7 +45,14 @@ export function setActiveAccountSource(source: string): void {
 }
 
 export function refreshAccountsList(): ClaudeAccount[] {
-  allAccounts = readAllClaudeAccounts()
+  const fresh = readAllClaudeAccounts()
+  if (fresh.length === 0 && allAccounts.length > 0) {
+    // Transient empty read (e.g. keychain race while the claude CLI rewrites
+    // credentials) must not clobber a working session.
+    log("accounts_reload_empty", { keptAccounts: allAccounts.length })
+    return allAccounts
+  }
+  allAccounts = fresh
   return allAccounts
 }
 

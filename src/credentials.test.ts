@@ -32,11 +32,13 @@ async function loadCredentialsWithCountingKeychain(
     }) => Creds | null
     initAccounts: (accounts: unknown[]) => void
     invalidateCredentialCache: () => void
+    refreshAccountsList: () => unknown[]
   }
   keychainModule: {
     __getReadCount: () => number
     __getWriteCount: () => number
     __setCredentials: (c: Creds) => void
+    __setAccounts: (list: unknown[]) => void
   }
 }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-creds-"))
@@ -63,6 +65,7 @@ async function loadCredentialsWithCountingKeychain(
     tempKeychain,
     `let readCount = 0
 let writeCount = 0
+let accounts = null // null = derive a single account from the credentials var
 let credentials = {
   accessToken: "token",
   refreshToken: "refresh",
@@ -71,6 +74,7 @@ let credentials = {
 
 export function readAllClaudeAccounts() {
   readCount += 1
+  if (accounts !== null) return accounts
   return [{ label: "Account 1", source: "keychain", credentials }]
 }
 
@@ -94,6 +98,10 @@ export function __getWriteCount() {
 
 export function __setCredentials(c) {
   credentials = c
+}
+
+export function __setAccounts(list) {
+  accounts = list
 }
 `,
     "utf8",
@@ -122,11 +130,13 @@ export function __setCredentials(c) {
       }) => Creds | null
       initAccounts: (accounts: unknown[]) => void
       invalidateCredentialCache: () => void
+      refreshAccountsList: () => unknown[]
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
       __getWriteCount: () => number
       __setCredentials: (c: Creds) => void
+      __setAccounts: (list: unknown[]) => void
     },
   }
 }
@@ -330,6 +340,39 @@ describe("credential caching", () => {
     } finally {
       Date.now = originalNow
     }
+  })
+
+  it("refreshAccountsList keeps existing accounts when the source reads empty", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    credentialsModule.initAccounts([
+      {
+        label: "Account 1",
+        source: "keychain",
+        credentials: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      },
+    ])
+
+    // Transient empty read (e.g. keychain race while the claude CLI
+    // rewrites credentials) must not clobber a working session.
+    keychainModule.__setAccounts([])
+    const result = credentialsModule.refreshAccountsList()
+
+    assert.equal(
+      result.length,
+      1,
+      "must not clobber a healthy session with an empty account list",
+    )
+    assert.ok(
+      credentialsModule.getCachedCredentials(),
+      "credentials must remain available after the empty read",
+    )
   })
 
   it("invalidateCredentialCache forces the next read to bypass the 30s TTL", async () => {
