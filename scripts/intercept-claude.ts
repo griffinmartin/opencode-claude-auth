@@ -48,6 +48,7 @@ const TIMEOUT_MS = 30_000
 const MODEL_CONFIG_PATH = join(__dirname, "..", "src", "model-config.ts")
 
 const ALL_MODELS = [
+  "claude-opus-4-7",
   "claude-sonnet-4-6",
   "claude-opus-4-6",
   "claude-sonnet-4-5",
