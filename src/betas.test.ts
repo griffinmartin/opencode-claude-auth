@@ -42,13 +42,13 @@ describe("betas", () => {
     }
   })
 
-  it("getModelBetas excludes interleaved-thinking for haiku models", () => {
+  it("getModelBetas excludes effort for haiku models", () => {
     const models = ["claude-haiku-4-5", "claude-haiku-4-5-20251001"]
     for (const model of models) {
       const betas = getModelBetas(model)
       assert.ok(
-        !betas.includes("interleaved-thinking-2025-05-14"),
-        `${model} should not include interleaved-thinking beta`,
+        !betas.includes("effort-2025-11-24"),
+        `${model} should not include effort beta`,
       )
       assert.ok(
         betas.includes("claude-code-20250219"),
@@ -201,12 +201,12 @@ describe("betas", () => {
     // Regenerated configs can list the same beta twice; excluding it must
     // remove every occurrence, not just the first.
     process.env.ANTHROPIC_BETA_FLAGS =
-      "interleaved-thinking-2025-05-14,custom-beta-1,interleaved-thinking-2025-05-14"
+      "effort-2025-11-24,custom-beta-1,effort-2025-11-24"
     try {
       const betas = getModelBetas("claude-haiku-4-5")
       assert.ok(
-        !betas.includes("interleaved-thinking-2025-05-14"),
-        "haiku should exclude every occurrence of interleaved-thinking",
+        !betas.includes("effort-2025-11-24"),
+        "haiku should exclude every occurrence of effort",
       )
       assert.ok(betas.includes("custom-beta-1"), "unrelated beta should remain")
     } finally {
