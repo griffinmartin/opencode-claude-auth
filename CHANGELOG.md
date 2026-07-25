@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.1](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.0.0...v2.0.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* keep API errors out of terminal UI ([#244](https://github.com/griffinmartin/opencode-claude-auth/issues/244)) ([baf1ffd](https://github.com/griffinmartin/opencode-claude-auth/commit/baf1ffd0b10ebdb5b5bc03464b93def1219de671))
+* normalize fractional credential expiry timestamps ([#246](https://github.com/griffinmartin/opencode-claude-auth/issues/246)) ([686a543](https://github.com/griffinmartin/opencode-claude-auth/commit/686a54395d23388c7c0193d112d4ca973034bbed))
+
 ## [2.0.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v1.5.4...v2.0.0) (2026-07-08)
 
 
