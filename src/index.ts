@@ -18,7 +18,6 @@ import {
 } from "./transforms.ts"
 import {
   getCachedCredentials,
-  getCredentialsForSync,
   reloadCredentialsFromSource,
   getActiveAccount,
   syncAuthJson,

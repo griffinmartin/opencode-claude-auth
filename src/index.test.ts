@@ -885,7 +885,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       })
 
       const plugin = await helpersModule.default({} as never)
-      assert.ok(tickCallback, "Expected setInterval to capture the tick callback")
+      assert.ok(
+        tickCallback,
+        "Expected setInterval to capture the tick callback",
+      )
 
       const typedPlugin = plugin as {
         auth?: {
