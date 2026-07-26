@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.3...v2.1.4) (2026-07-26)
+
+
+### Bug Fixes
+
+* proactive OAuth token refresh before session expiry ([#238](https://github.com/griffinmartin/opencode-claude-auth/issues/238)) ([ed1d735](https://github.com/griffinmartin/opencode-claude-auth/commit/ed1d7357b62eb9e50461ef3e6b6f447bbc68fd71))
+
 ## [2.1.3](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.2...v2.1.3) (2026-07-25)
 
 
