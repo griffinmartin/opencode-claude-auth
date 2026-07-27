@@ -63,7 +63,7 @@ function getCliVersion(): string {
 }
 
 export function getAnthropicBaseUrl(): string {
-  return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com/v1"
+  return process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com/v1"
 }
 
 function getUserAgent(): string {
