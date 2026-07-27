@@ -529,6 +529,35 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     }
   })
 
+  it("getAnthropicBaseUrl returns default URL when ANTHROPIC_BASE_URL is unset", () => {
+    const saved = process.env.ANTHROPIC_BASE_URL
+    try {
+      delete process.env.ANTHROPIC_BASE_URL
+      assert.equal(
+        helpers.getAnthropicBaseUrl(),
+        "https://api.anthropic.com/v1",
+      )
+    } finally {
+      if (saved !== undefined) {
+        process.env.ANTHROPIC_BASE_URL = saved
+      }
+    }
+  })
+
+  it("getAnthropicBaseUrl returns env var value when ANTHROPIC_BASE_URL is set", () => {
+    const saved = process.env.ANTHROPIC_BASE_URL
+    try {
+      process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8787/v1"
+      assert.equal(helpers.getAnthropicBaseUrl(), "http://127.0.0.1:8787/v1")
+    } finally {
+      if (saved !== undefined) {
+        process.env.ANTHROPIC_BASE_URL = saved
+      } else {
+        delete process.env.ANTHROPIC_BASE_URL
+      }
+    }
+  })
+
   it("buildRequestHeaders preserves provided stainless headers", () => {
     const headers = helpers.buildRequestHeaders(
       "https://api.anthropic.com/v1/messages",
