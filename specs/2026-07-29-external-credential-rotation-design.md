@@ -109,6 +109,38 @@ propagating into the request path.
 
 Worst-case latency for an external switch to take effect: one cache TTL (30s).
 
+**The adopt must be validated.** Taking any non-null stored blob over valid
+in-memory credentials is unsafe, because `performRefresh` ignores
+`writeBackCredentials`'s return value. When the read succeeds but the write
+fails — a malformed stored blob, or an ACL allowing read but not
+`add-generic-password` — memory holds freshly refreshed credentials while the
+store holds the pre-refresh blob. That blob has under 60s left, since that
+window is the only reason a refresh happened. Adopting it re-enters
+`performRefresh` with a refresh token the successful refresh just rotated dead,
+so OAuth fails and the code falls through to two 60s `claude` spawns — on every
+cache miss, indefinitely, on the authentication path.
+
+The rule: **adopt a usable stored blob always; adopt an unusable one only when
+what we already hold is also unusable.**
+
+| stored   | in memory | action                                                             |
+| -------- | --------- | ------------------------------------------------------------------ |
+| usable   | usable    | adopt — this is the external-switch case                           |
+| usable   | unusable  | adopt                                                              |
+| unusable | usable    | decline — this is the failed-write-back case                       |
+| unusable | unusable  | adopt; nothing is lost and the stored refresh token may still work |
+
+Accepted cost: if an external switch installs an account whose stored token is
+already expired while ours is still usable, the session keeps its own
+credentials until they expire and adopts the switched-in account then. cswap
+freshens a target before activating it, so a newly-active slot is normally
+fresh, and the alternative is the failure loop above.
+
+The same branch clears the borrowed-credentials flag. A read from the account's
+own source returns that account's own credentials, so it is by definition no
+longer running on a lender's — matching the invariant `refreshBorrowedAccount`
+maintains at every other adoption site.
+
 ### 2. Compare-and-swap on write-back
 
 `writeBackCredentials` (`src/keychain.ts:442`) gains an optional expected prior
