@@ -207,6 +207,7 @@ const OAUTH_TIMEOUT_MS = 15_000
  */
 export async function refreshViaOAuth(
   refreshToken: string,
+  timeoutMs = OAUTH_TIMEOUT_MS,
 ): Promise<ClaudeCredentials | null> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -215,7 +216,7 @@ export async function refreshViaOAuth(
   })
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), OAUTH_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
     log("refresh_started", { source: "oauth" })

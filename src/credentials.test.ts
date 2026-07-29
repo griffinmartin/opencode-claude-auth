@@ -1137,6 +1137,40 @@ describe("refreshViaOAuth", () => {
     }
   })
 
+  it("returns null instead of hanging when the request outlives its timeout", async () => {
+    const originalFetch = globalThis.fetch
+    let aborted = false
+
+    globalThis.fetch = ((_url: string | URL, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            resolve(
+              new Response(
+                JSON.stringify({
+                  access_token: "sk-ant-oat01-too-late",
+                  expires_in: 28_800,
+                }),
+                { status: 200 },
+              ),
+            ),
+          2_000,
+        )
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true
+          clearTimeout(timer)
+          reject(new DOMException("The operation was aborted.", "AbortError"))
+        })
+      })) as typeof fetch
+
+    try {
+      assert.equal(await refreshViaOAuth("sk-ant-ort01-current", 20), null)
+      assert.equal(aborted, true, "expected the request to be aborted")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it("returns null when the OAuth request throws", async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async () => {
@@ -1279,6 +1313,56 @@ describe("refreshIfNeeded CLI fallback scope", () => {
       assert.equal(fetchCount, 1, "expected exactly one OAuth refresh")
       assert.equal(viaTimer?.accessToken, "sk-ant-oat01-1")
       assert.equal(viaRequest?.accessToken, "sk-ant-oat01-1")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  // Deduplication must survive an exhausted refresh: callers that joined a
+  // failed attempt all observe null, and the retry round they trigger has
+  // to collapse into one request too rather than one per caller.
+  it("keeps collapsing requests across rounds when a refresh is exhausted", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    let fetchCount = 0
+    globalThis.fetch = (async () => {
+      fetchCount += 1
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      throw new Error("network unreachable")
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 30_000)
+      credentialsModule.initAccounts([makeAccount(now + 30_000)])
+      // Force the CLI fallback to come back empty so the chain exhausts.
+      keychainModule.__setCredentials(null)
+
+      const first = await Promise.all([
+        credentialsModule.getCachedCredentials(),
+        credentialsModule.getCachedCredentials(),
+        credentialsModule.getCachedCredentials(),
+      ])
+      const afterFirstRound = fetchCount
+
+      const second = await Promise.all([
+        credentialsModule.getCachedCredentials(),
+        credentialsModule.getCachedCredentials(),
+        credentialsModule.getCachedCredentials(),
+      ])
+
+      assert.deepEqual(first, [null, null, null])
+      assert.deepEqual(second, [null, null, null])
+      assert.equal(afterFirstRound, 1, "3 callers must share one attempt")
+      assert.equal(
+        fetchCount,
+        2,
+        "the retry round must collapse into one attempt, not one per caller",
+      )
     } finally {
       globalThis.fetch = originalFetch
       Date.now = originalNow
