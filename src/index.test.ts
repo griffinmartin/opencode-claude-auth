@@ -1580,6 +1580,140 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       }
     }
   })
+
+  it("auth fetch retries a 429 once when the source token changed", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let apiCalls = 0
+
+    try {
+      const { helpersModule, keychainModule } =
+        await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+
+      globalThis.fetch = (async () => {
+        apiCalls += 1
+        if (apiCalls === 1) {
+          // retry-after beyond the 30s cap: quota exhaustion, not a
+          // transient limit, so fetchWithRetry returns immediately.
+          return new Response('{"error":"rate_limited"}', {
+            status: 429,
+            headers: { "retry-after": "3600" },
+          })
+        }
+        return new Response("data: {}\n\n", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      // An external switch lands while this session is still on the
+      // exhausted account.
+      keychainModule.__setCredentials({
+        accessToken: "switched-token",
+        refreshToken: "rt-switched",
+        expiresAt: Date.now() + 10 * 60_000,
+      })
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 200)
+      assert.equal(apiCalls, 2, "the rotated token must be retried once")
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch does not retry a 429 when the source token is unchanged", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let apiCalls = 0
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 10 * 60_000,
+      )
+
+      globalThis.fetch = (async () => {
+        apiCalls += 1
+        return new Response('{"error":"rate_limited"}', {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 429)
+      assert.equal(apiCalls, 1, "an unchanged token must not be retried")
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
 })
 
 describe("auth hook — account resolution", () => {

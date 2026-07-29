@@ -456,6 +456,55 @@ const plugin: Plugin = async () => {
               })
             }
 
+            // An external switch — cswap rotating off an exhausted account —
+            // leaves this session on the old token until the 30s credential
+            // cache expires. Re-read once so a rate limit that has already
+            // been resolved elsewhere is not surfaced. A changed token is the
+            // signal that a switch happened; when nothing changed this costs
+            // one source read and no retry.
+            //
+            // Ordered before the long-context beta loop deliberately. A
+            // long-context 429 is a header problem, not an account one, so it
+            // rotates no token and falls through here untouched. In the rare
+            // case a switch lands on the same 429, this spends one retry that
+            // comes back with the same long-context error and the beta loop
+            // then handles it off the fresh response — one wasted request,
+            // same outcome.
+            if (response.status === 429) {
+              let rotated: ClaudeCredentials | null = null
+              // Unreachable today for the same reason as the 401 loop's
+              // reload catch: reloadCredentialsFromSource swallows its own
+              // source read and returns null. Kept, and logged, on the same
+              // grounds — no reload failure should turn a readable 429 into
+              // an exception thrown out of fetch(), and a future reload that
+              // does throw should be diagnosable rather than silently
+              // coalesced to "nothing rotated".
+              try {
+                rotated = reloadCredentialsFromSource()
+              } catch (err) {
+                log("rate_limit_reload_threw", {
+                  modelId,
+                  error: err instanceof Error ? err.message : String(err),
+                })
+              }
+
+              if (rotated && rotated.accessToken !== tokenInUse) {
+                log("rate_limit_credentials_rotated", { modelId })
+                tokenInUse = rotated.accessToken
+                response = await fetchWithRetry(requestUrl, {
+                  ...requestInit,
+                  body,
+                  headers: buildRequestHeaders(
+                    input,
+                    requestInit,
+                    tokenInUse,
+                    modelId,
+                    excluded,
+                  ),
+                })
+              }
+            }
+
             // Check for long-context beta errors and retry with betas excluded
             // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
             for (
