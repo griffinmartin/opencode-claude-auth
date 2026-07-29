@@ -68,11 +68,9 @@ export function __setCredentials(c) {
 export function __setCredentialsForSource(source, c) {
   bySource[source] = c
 }
-
-export function __clearSourceOverrides() {
-  bySource = {}
-}
 ```
+
+Each test calls `loadCredentialsWithCountingKeychain` fresh, which imports a new module instance with an empty `bySource`, so no reset helper is needed.
 
 - [ ] **Step 2: Record the expected-prior-token argument on write-back**
 
@@ -92,7 +90,6 @@ In the `keychainModule` type annotation (both the declared return type at `src/c
 
 ```ts
     __setCredentialsForSource: (source: string, c: Creds | null) => void
-    __clearSourceOverrides: () => void
     __getWrites: () => Array<{
       source: string
       creds: Creds
