@@ -312,7 +312,7 @@ Closes the window between reading a credential and writing its refreshed replace
 - Modify: `src/credentials.ts:376`, `:499`, `:622-628`
 - Test: `src/keychain.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add `credentialBlobMatches` to the existing import from `./keychain.ts` at `src/keychain.test.ts:15-23`.
 
@@ -395,12 +395,12 @@ it("skips the write when the stored token is no longer the expected one", async 
 })
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `node --test --experimental-strip-types --test-name-pattern="credentialBlobMatches|no longer the expected one" src/keychain.test.ts 2>&1 | tail -12`
 Expected: FAIL — `credentialBlobMatches is not a function`, and the skip test writes anyway (`result` is `true`).
 
-- [ ] **Step 3: Implement the guard**
+- [x] **Step 3: Implement the guard**
 
 In `src/keychain.ts`, add above `writeBackCredentials` (line 442):
 
@@ -457,12 +457,12 @@ if (
 }
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `node --test --experimental-strip-types --test-name-pattern="credentialBlobMatches|no longer the expected one" src/keychain.test.ts 2>&1 | tail -8`
 Expected: `pass 4`, `fail 0`
 
-- [ ] **Step 5: Pass the expected token from all three refresh call sites**
+- [x] **Step 5: Pass the expected token from all three refresh call sites**
 
 `src/credentials.ts:376` — `creds` is the pre-refresh credential captured by `performRefresh`:
 
@@ -503,7 +503,7 @@ writeBackCredentials(
     ) {
 ```
 
-- [ ] **Step 6: Add the write-back assertion test**
+- [x] **Step 6: Add the write-back assertion test**
 
 Append inside the top-level `describe` in `src/credentials.test.ts`:
 
@@ -559,12 +559,12 @@ it("performRefresh passes the pre-refresh token as the write-back guard", async 
 })
 ```
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 Run: `pnpm test 2>&1 | tail -8`
-Expected: `pass 256`, `fail 0`
+Expected: `pass 259`, `fail 0` (later extended to 263 by review follow-ups)
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/keychain.ts src/keychain.test.ts src/credentials.ts src/credentials.test.ts
@@ -1160,6 +1160,7 @@ Add under the topmost unreleased heading in `CHANGELOG.md` (create `## Unrelease
 - Pick up credentials rotated by another process (claude-swap, the `claude` CLI, a second OpenCode instance) in a live session instead of staying pinned to the account that was active at startup
 - Never write a refreshed token into a slot that was switched underneath us
 - Force an OAuth refresh when a request is rejected and the store still holds the rejected token, so the request recovers in place
+- Write refreshed credentials back to the account's own config directory on the force-refresh path, which previously fell back to the default directory and could write to the wrong file for a file-source account with a custom `CLAUDE_CONFIG_DIR`
 
 ### Behavior Changes
 
