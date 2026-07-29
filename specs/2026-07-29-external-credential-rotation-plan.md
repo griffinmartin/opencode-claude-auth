@@ -1180,6 +1180,14 @@ git commit -m "docs: document external credential rotation handling"
 
 ---
 
+## Follow-ups (deliberately out of scope)
+
+**The post-OAuth file-source exclusion in `performRefresh` is now unjustified.** `src/credentials.ts` re-reads the source after a failed OAuth refresh, to catch credentials a sibling instance wrote during the round trip — but skips that read for `file` sources. That guard was coherent while the up-front re-read was file-only; Task 2 removed that rationale and left nothing in its place. A sibling can write a file source mid-round-trip exactly as it can a keychain entry, a file read is cheaper than shelling out to `security`, and the block is already try/catch-wrapped, so including file sources would add no throw path.
+
+Consequence today: a file-source account whose OAuth refresh fails goes straight to `refreshViaCli` without checking whether a sibling already wrote usable credentials — the very race the block exists to handle.
+
+Not fixed here because it changes behavior on the file path, which no current test covers, and it is outside the guard replacement this feature specified. The comment at the guard says so plainly rather than implying the asymmetry is principled.
+
 ## Manual verification
 
 Automated tests stub the Keychain. Verify against real cswap state once:
