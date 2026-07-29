@@ -24,10 +24,7 @@ import {
 } from "./keychain.ts"
 
 // Mirrors listClaudeKeychainServices regex logic for unit testing
-async function loadKeychainWithMockedSecurity(
-  securityDump: string,
-  keychainEntries: Record<string, string>,
-): Promise<{
+type MockedKeychain = {
   readAllClaudeAccounts: () => Array<{
     label: string
     source: string
@@ -39,7 +36,19 @@ async function loadKeychainWithMockedSecurity(
       subscriptionType?: string
     }
   }>
-}> {
+  writeBackCredentials: (
+    source: string,
+    creds: { accessToken: string; refreshToken: string; expiresAt: number },
+    configDir?: string,
+    expectedPriorAccessToken?: string,
+  ) => boolean
+  __getSecurityWrites: () => Array<{ service: string; value: string }>
+}
+
+async function loadKeychainWithMockedSecurity(
+  securityDump: string,
+  keychainEntries: Record<string, string>,
+): Promise<MockedKeychain> {
   const tempDir = await mkdtemp(
     join(tmpdir(), "opencode-claude-auth-keychain-"),
   )
@@ -82,11 +91,23 @@ export function execSync(command) {
   throw new Error("unexpected execSync call: " + command)
 }
 
+const securityWrites = []
+
 export function execFileSync(file, args) {
   if (file !== "/usr/bin/security") {
     throw new Error("unexpected execFileSync file: " + file)
   }
   const service = args[args.indexOf("-s") + 1]
+
+  // add-generic-password is the write path. Record it and mutate the backing
+  // store, so a test can tell "the write was skipped" from "the write ran".
+  if (args[0] === "add-generic-password") {
+    const value = args[args.indexOf("-w") + 1]
+    securityWrites.push({ service, value })
+    keychainEntries[service] = value
+    return ""
+  }
+
   const raw = keychainEntries[service]
   if (raw === undefined) {
     const error = new Error("The specified item could not be found in the keychain.")
@@ -96,25 +117,23 @@ export function execFileSync(file, args) {
   }
   return raw
 }
+
+export function __getSecurityWrites() {
+  return securityWrites
+}
 `,
     "utf8",
   )
 
   await writeFile(tempKeychain, rewritten, "utf8")
-  const keychainModule = await import(pathToFileURL(tempKeychain).href)
-  return keychainModule as {
-    readAllClaudeAccounts: () => Array<{
-      label: string
-      source: string
-      configDir?: string
-      credentials: {
-        accessToken: string
-        refreshToken: string
-        expiresAt: number
-        subscriptionType?: string
-      }
-    }>
-  }
+  const [keychainModule, childProcessModule] = await Promise.all([
+    import(pathToFileURL(tempKeychain).href),
+    import(pathToFileURL(tempChildProcess).href),
+  ])
+  return {
+    ...keychainModule,
+    __getSecurityWrites: childProcessModule.__getSecurityWrites,
+  } as MockedKeychain
 }
 
 function extractServicesFromDump(output: string): string[] {
@@ -907,6 +926,91 @@ describe("writeBackCredentials (file source)", () => {
       rmSync(tempHome, { recursive: true, force: true })
       rmSync(configDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("writeBackCredentials (keychain source)", () => {
+  // The keychain is the primary platform and the reason the compare-and-swap
+  // guard exists, so it needs its own coverage: the file-source tests cannot
+  // reach this branch, and `process.platform` is rewritten to "darwin" by the
+  // harness so these run on any host.
+  const SERVICE = "Claude Code-credentials"
+  const DUMP = `"${SERVICE}"`
+
+  const blob = (accessToken: string) =>
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken,
+        refreshToken: `rt-for-${accessToken}`,
+        expiresAt: 1000,
+        subscriptionType: "max",
+      },
+    })
+
+  const refreshed = {
+    accessToken: "our-refreshed-at",
+    refreshToken: "our-refreshed-rt",
+    expiresAt: 2000,
+  }
+
+  it("skips the write when the stored token is no longer the expected one", async () => {
+    const { writeBackCredentials, __getSecurityWrites } =
+      await loadKeychainWithMockedSecurity(DUMP, {
+        // Another account was switched in after we read "expected-at".
+        [SERVICE]: blob("switched-in-at"),
+      })
+
+    const result = writeBackCredentials(
+      SERVICE,
+      refreshed,
+      undefined,
+      "expected-at",
+    )
+
+    assert.equal(result, false)
+    assert.deepEqual(
+      __getSecurityWrites(),
+      [],
+      "the switched-in credential must survive untouched",
+    )
+  })
+
+  it("writes when the stored token still matches the expected one", async () => {
+    const { writeBackCredentials, __getSecurityWrites } =
+      await loadKeychainWithMockedSecurity(DUMP, {
+        [SERVICE]: blob("expected-at"),
+      })
+
+    const result = writeBackCredentials(
+      SERVICE,
+      refreshed,
+      undefined,
+      "expected-at",
+    )
+
+    assert.equal(result, true)
+    const writes = __getSecurityWrites()
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0].service, SERVICE)
+    const written = JSON.parse(writes[0].value) as {
+      claudeAiOauth: { accessToken: string; subscriptionType: string }
+    }
+    assert.equal(written.claudeAiOauth.accessToken, "our-refreshed-at")
+    assert.equal(
+      written.claudeAiOauth.subscriptionType,
+      "max",
+      "unrelated fields must be preserved",
+    )
+  })
+
+  it("writes without a guard when no expected token is supplied", async () => {
+    const { writeBackCredentials, __getSecurityWrites } =
+      await loadKeychainWithMockedSecurity(DUMP, {
+        [SERVICE]: blob("whatever-is-there"),
+      })
+
+    assert.equal(writeBackCredentials(SERVICE, refreshed), true)
+    assert.equal(__getSecurityWrites().length, 1)
   })
 })
 
