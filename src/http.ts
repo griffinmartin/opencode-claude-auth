@@ -17,6 +17,30 @@ function getMaxRetryDelayMs(): number {
   return DEFAULT_MAX_RETRY_DELAY_MS
 }
 
+/**
+ * Waits `ms`, or resolves early if the caller's signal aborts. A plain
+ * setTimeout would let a capped backoff outlast the timeout the caller
+ * bounded the whole request with.
+ */
+function sleepUnlessAborted(
+  ms: number,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve()
+      return
+    }
+    const finish = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, ms)
+    signal?.addEventListener("abort", finish, { once: true })
+  })
+}
+
 export async function fetchWithRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -46,10 +70,17 @@ export async function fetchWithRetry(
         retryAfter: retryAfter ?? "none",
         delayMs: delay,
       })
-      await new Promise((r) => setTimeout(r, delay))
+      await sleepUnlessAborted(delay, init?.signal)
+      if (init?.signal?.aborted) {
+        // The caller's deadline passed while we were backing off. Surface the
+        // rate-limit response rather than issuing a request that can only fail.
+        log("fetch_retry_aborted", { status: res.status })
+        return res
+      }
       continue
     }
     return res
   }
+  // Only reachable when retries < 1; still issue the request once.
   return fetchImpl(input, init)
 }

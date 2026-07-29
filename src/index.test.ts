@@ -648,6 +648,35 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     assert.ok(elapsed >= 900, `Expected at least 900ms delay, got ${elapsed}ms`)
   })
 
+  // refreshViaOAuth bounds its whole request with an AbortController. If the
+  // backoff ignores that signal, the effective timeout is the retry delay
+  // (capped at 30s) rather than the 15s the caller asked for.
+  it("fetchWithRetry stops backing off once the request is aborted", async () => {
+    const controller = new AbortController()
+    let calls = 0
+    const mockFetch = async () => {
+      calls += 1
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "5" },
+      })
+    }
+
+    setTimeout(() => controller.abort(), 50)
+    const started = Date.now()
+    const res = await helpers.fetchWithRetry(
+      "https://example.com",
+      { signal: controller.signal },
+      3,
+      mockFetch as unknown as typeof fetch,
+    )
+    const elapsed = Date.now() - started
+
+    assert.equal(res.status, 429)
+    assert.equal(calls, 1, "must not keep retrying after abort")
+    assert.ok(elapsed < 1_000, `expected a prompt return, took ${elapsed}ms`)
+  })
+
   it("fetchWithRetry returns immediately when retry-after exceeds max delay cap", async () => {
     // A retry-after of 31s (31,000ms) exceeds the 30,000ms cap and signals a
     // quota/usage-limit reset, not a transient rate limit. The function must
