@@ -1710,6 +1710,73 @@ describe("borrowed credentials after exhaustion", () => {
     }
   })
 
+  // The guard is keyed on the account object, and refreshAccountsList swaps
+  // in freshly-read ones. Those carry their own credentials straight from
+  // the store, so losing the flag with them is correct — but only because
+  // the rebuilt account is never left holding the lender's tokens.
+  it("drops the borrowed state when the account list is rebuilt from source", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    globalThis.fetch = (async () => {
+      throw new Error("network unreachable")
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 8 * 60 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+      await credentialsModule.refreshIfNeeded(borrower)
+      assert.equal(borrower.credentials.accessToken, "at-lender")
+
+      // A rebuild re-reads every account from its own store.
+      keychainModule.__setAccounts([
+        {
+          label: "Account 1",
+          source: "Claude Code-credentials-aabbccdd",
+          credentials: {
+            accessToken: "at-borrower-own",
+            refreshToken: "rt-borrower-own",
+            expiresAt: now + 8 * 60 * 60_000,
+          },
+        },
+      ])
+      const rebuilt = credentialsModule.refreshAccountsList() as Array<{
+        source: string
+        credentials: Creds
+      }>
+
+      assert.equal(rebuilt[0].credentials.refreshToken, "rt-borrower-own")
+      assert.notEqual(
+        rebuilt[0].credentials.refreshToken,
+        "rt-lender",
+        "a rebuilt account must hold its own tokens, never the lender's",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
   it("forceRefreshActiveAccount refuses to exchange a borrowed token", async () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now
