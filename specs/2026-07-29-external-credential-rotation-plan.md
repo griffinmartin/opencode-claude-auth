@@ -35,6 +35,16 @@ These pass today and **will fail** partway through. Each is repaired in the task
 | `src/credentials.test.ts:735` | `__getReadCount() === readsBefore + 1`                    | now two reads                         | Task 2      |
 | `src/index.test.ts:1189`      | "does not retry a 401 when the source token is unchanged" | that is the behavior being changed    | Task 4      |
 
+Three further Task 2 breakages were found during execution that this plan did not predict. All share the root cause above — the up-front re-read makes the stub's source blob visible to accounts whose in-memory credentials differ from it:
+
+| Test                                                                    | Fix                                                                                                                                            |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reloadCredentialsFromSource bypasses cache`                            | prime via `__setCredentialsForSource` so the rotation under test still lands                                                                   |
+| `does not spawn the claude CLI while credentials are still usable`      | pin the source to the account's own value                                                                                                      |
+| `falls back to the claude CLI once credentials reach the expiry window` | its `__setReadHook` rotated the store on read #2, which is now the pre-CLI re-read rather than the post-CLI one; move the threshold to read #3 |
+
+The last one matters beyond bookkeeping. Left at read #2 the result-token assertion still passes while `__getExecSyncCount()` drops to 0 — the CLI fallback silently stops being exercised, and the test keeps looking meaningful. Verified by reverting the threshold: `actual: 0, expected: 1`. Relaxing that count instead of moving the threshold would have left dead coverage behind.
+
 ---
 
 ### Task 1: Make the credentials test harness source-aware
@@ -45,7 +55,7 @@ The stub `refreshAccount(source)` ignores `source` and returns one global blob (
 
 - Modify: `src/credentials.test.ts:126-190` (the `tempKeychain` stub literal)
 
-- [ ] **Step 1: Add per-source overrides to the stub keychain**
+- [x] **Step 1: Add per-source overrides to the stub keychain**
 
 In the `writeFile(tempKeychain, ...)` template literal, replace the `refreshAccount` and `__setCredentials` definitions and add two exports. Keep `__setCredentials` working as the default so existing tests are untouched.
 
@@ -73,7 +83,7 @@ export function __setCredentialsForSource(source, c) {
 
 Each test calls `loadCredentialsWithCountingKeychain` fresh, which imports a new module instance with an empty `bySource`, so no reset helper is needed.
 
-- [ ] **Step 2: Record the expected-prior-token argument on write-back**
+- [x] **Step 2: Record the expected-prior-token argument on write-back**
 
 Replace the stub `writeBackCredentials` so Task 3 can assert on it. Four parameters, matching the real signature after Task 3.
 
@@ -90,7 +100,7 @@ export function writeBackCredentials(
 }
 ```
 
-- [ ] **Step 3: Widen the harness return types**
+- [x] **Step 3: Widen the harness return types**
 
 In the `keychainModule` type annotation (both the declared return type at `src/credentials.test.ts:56-64` and the cast at `:226-235`), add the new members and widen `__getWrites`:
 
@@ -104,12 +114,12 @@ In the `keychainModule` type annotation (both the declared return type at `src/c
     }>
 ```
 
-- [ ] **Step 4: Run the full suite to confirm nothing regressed**
+- [x] **Step 4: Run the full suite to confirm nothing regressed**
 
 Run: `pnpm test 2>&1 | tail -8`
 Expected: `pass 249`, `fail 0`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/credentials.test.ts
@@ -125,7 +135,7 @@ git commit -m "test: make credentials keychain stub source-aware"
 - Modify: `src/credentials.ts:326-334`
 - Test: `src/credentials.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append inside the existing top-level `describe` block in `src/credentials.test.ts`:
 
@@ -199,12 +209,12 @@ it("refreshIfNeeded keeps in-memory credentials when the source read throws", as
 })
 ```
 
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [x] **Step 2: Run the new tests to verify they fail**
 
 Run: `node --test --experimental-strip-types --test-name-pattern="rotated externally in a keychain source|source read throws" src/credentials.test.ts 2>&1 | tail -12`
 Expected: FAIL — the first asserts `'before-switch' !== 'after-switch'`; the second throws `Keychain read denied`.
 
-- [ ] **Step 3: Implement the re-read**
+- [x] **Step 3: Implement the re-read**
 
 In `src/credentials.ts`, replace lines 326-334 (the comment block and the `if (target.source === "file")` guard) with:
 
@@ -230,12 +240,12 @@ try {
 }
 ```
 
-- [ ] **Step 4: Run the new tests to verify they pass**
+- [x] **Step 4: Run the new tests to verify they pass**
 
 Run: `node --test --experimental-strip-types --test-name-pattern="rotated externally in a keychain source|source read throws" src/credentials.test.ts 2>&1 | tail -8`
 Expected: `pass 2`, `fail 0`
 
-- [ ] **Step 5: Repair the three read-count assertions**
+- [x] **Step 5: Repair the three read-count assertions**
 
 Run: `pnpm test 2>&1 | grep -E "^not ok|✖" | head`
 Expected: three failures, at `src/credentials.test.ts` lines ~315, ~437, ~735.
@@ -278,12 +288,12 @@ assert.equal(
 )
 ```
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `pnpm test 2>&1 | tail -8`
 Expected: `pass 251`, `fail 0`
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/credentials.ts src/credentials.test.ts
