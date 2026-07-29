@@ -414,7 +414,12 @@ async function performRefresh(
     const oauthCreds = await refreshViaOAuth(creds.refreshToken)
     if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
       target.credentials = oauthCreds
-      writeBackCredentials(target.source, oauthCreds, target.configDir)
+      writeBackCredentials(
+        target.source,
+        oauthCreds,
+        target.configDir,
+        creds.accessToken,
+      )
       return oauthCreds
     }
   }
@@ -543,7 +548,12 @@ async function refreshBorrowedAccount(
     if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
       borrowedCredentialAccounts.delete(target)
       target.credentials = oauthCreds
-      writeBackCredentials(target.source, oauthCreds, target.configDir)
+      writeBackCredentials(
+        target.source,
+        oauthCreds,
+        target.configDir,
+        own.accessToken,
+      )
       log("refresh_borrowed_recovered", { source: target.source, via: "oauth" })
       return oauthCreds
     }
@@ -666,10 +676,18 @@ export async function forceRefreshActiveAccount(
     return null
   }
 
+  const priorAccessToken = account.credentials.accessToken
   const oauthCreds = await refresh(account.credentials.refreshToken)
   if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
     account.credentials = oauthCreds
-    if (!writeBackCredentials(account.source, oauthCreds)) {
+    if (
+      !writeBackCredentials(
+        account.source,
+        oauthCreds,
+        account.configDir,
+        priorAccessToken,
+      )
+    ) {
       // Session continues from memory/cache; a later source re-read may
       // resurrect the rejected token and trigger another refresh.
       log("force_refresh_writeback_failed", { source: account.source })

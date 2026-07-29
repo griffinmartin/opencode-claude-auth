@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
   buildAccountLabels,
+  credentialBlobMatches,
   keychainSuffixForDir,
   parseCredentials,
   readAllClaudeAccounts as readAllClaudeAccountsReal,
@@ -582,6 +583,28 @@ describe("updateCredentialBlob", () => {
   })
 })
 
+describe("credentialBlobMatches", () => {
+  const blob = JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "account-a",
+      refreshToken: "rt-a",
+      expiresAt: 1,
+    },
+  })
+
+  it("accepts a blob still holding the expected token", () => {
+    assert.equal(credentialBlobMatches(blob, "account-a"), true)
+  })
+
+  it("rejects a blob replaced by another account", () => {
+    assert.equal(credentialBlobMatches(blob, "account-b"), false)
+  })
+
+  it("rejects an unparseable blob rather than assuming a match", () => {
+    assert.equal(credentialBlobMatches("not json", "account-a"), false)
+  })
+})
+
 describe("writeBackCredentials (file source)", () => {
   // These tests isolate via HOME; unset CLAUDE_CONFIG_DIR so an ambient value
   // (e.g. in CI or a dev shell) doesn't redirect the credentials path.
@@ -628,6 +651,56 @@ describe("writeBackCredentials (file source)", () => {
       const written = JSON.parse(readFileSync(credPath, "utf-8"))
       assert.equal(written.claudeAiOauth.accessToken, "new-at")
       assert.equal(written.claudeAiOauth.subscriptionType, "pro")
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("skips the write when the stored token is no longer the expected one", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cas-"))
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const credPath = join(claudeDir, ".credentials.json")
+      // Another process switched accounts after we read "expected-at".
+      writeFileSync(
+        credPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "switched-in-at",
+            refreshToken: "switched-in-rt",
+            expiresAt: 1000,
+          },
+        }),
+        { encoding: "utf-8", mode: 0o600 },
+      )
+
+      const result = writeBackCredentials(
+        "file",
+        {
+          accessToken: "our-refreshed-at",
+          refreshToken: "our-refreshed-rt",
+          expiresAt: 2000,
+        },
+        undefined,
+        "expected-at",
+      )
+
+      assert.equal(result, false)
+      const written = JSON.parse(readFileSync(credPath, "utf-8"))
+      assert.equal(
+        written.claudeAiOauth.accessToken,
+        "switched-in-at",
+        "the switched-in credential must survive untouched",
+      )
     } finally {
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome

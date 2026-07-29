@@ -439,10 +439,27 @@ function getKeychainAccountName(serviceName: string): string | null {
   }
 }
 
+/**
+ * Whether a stored credential blob still carries the access token we expect.
+ *
+ * Guards write-back against an external switch landing between the read that
+ * produced the token being refreshed and the write of its replacement. An
+ * unparseable blob returns false: a write into state we cannot identify is
+ * exactly what this is meant to prevent.
+ */
+export function credentialBlobMatches(
+  raw: string,
+  expectedAccessToken: string,
+): boolean {
+  const parsed = parseCredentials(raw)
+  return parsed?.accessToken === expectedAccessToken
+}
+
 export function writeBackCredentials(
   source: string,
   creds: ClaudeCredentials,
   configDir?: string,
+  expectedPriorAccessToken?: string,
 ): boolean {
   const newCreds = {
     accessToken: creds.accessToken,
@@ -456,6 +473,13 @@ export function writeBackCredentials(
         configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
       const credPath = join(dir, ".credentials.json")
       const raw = readFileSync(credPath, "utf-8")
+      if (
+        expectedPriorAccessToken !== undefined &&
+        !credentialBlobMatches(raw, expectedPriorAccessToken)
+      ) {
+        log("writeback_skipped_stale", { source, configDir: dir })
+        return false
+      }
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
       writeFileSync(credPath, updated, { encoding: "utf-8", mode: 0o600 })
@@ -474,6 +498,13 @@ export function writeBackCredentials(
     try {
       const raw = readKeychainService(source)
       if (!raw) return false
+      if (
+        expectedPriorAccessToken !== undefined &&
+        !credentialBlobMatches(raw, expectedPriorAccessToken)
+      ) {
+        log("writeback_skipped_stale", { source })
+        return false
+      }
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
       const accountName = getKeychainAccountName(source) ?? source

@@ -1142,6 +1142,56 @@ describe("credential caching", () => {
       Date.now = originalNow
     }
   })
+
+  it("performRefresh passes the pre-refresh token as the write-back guard", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    const originalFetch = globalThis.fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 60_000)
+
+      keychainModule.__setCredentials({
+        accessToken: "stale-token",
+        refreshToken: "rt-stale",
+        expiresAt: now - 60_000,
+      })
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "stale-token",
+            refreshToken: "rt-stale",
+            expiresAt: now - 60_000,
+          },
+        },
+      ])
+
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            access_token: "rotated-token",
+            refresh_token: "rt-rotated",
+            expires_in: 36_000,
+          }),
+          { status: 200 },
+        )) as typeof fetch
+
+      await credentialsModule.refreshIfNeeded()
+
+      const writes = keychainModule.__getWrites()
+      assert.equal(writes.length, 1)
+      assert.equal(writes[0].creds.accessToken, "rotated-token")
+      assert.equal(writes[0].expectedPriorAccessToken, "stale-token")
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
 })
 
 describe("syncAuthJson file permissions", () => {
