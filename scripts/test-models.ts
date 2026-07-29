@@ -391,7 +391,7 @@ async function main(): Promise<void> {
   initAccounts(accounts)
   setActiveAccountSource(accounts[0].source)
 
-  const creds = getCachedCredentials()
+  const creds = await getCachedCredentials()
   if (!creds) {
     console.error(c.red("Credentials are expired and could not be refreshed."))
     process.exit(1)

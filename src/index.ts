@@ -254,7 +254,7 @@ const plugin: Plugin = async () => {
       activeSource: defaultAccount.source,
     })
 
-    const initialCreds = getCachedCredentials()
+    const initialCreds = await getCachedCredentials()
     if (initialCreds) {
       syncAuthJson(initialCreds)
     } else {
@@ -273,7 +273,7 @@ const plugin: Plugin = async () => {
     // This prevents the "run `claude` to re-authenticate" message from
     // appearing mid-session when the token silently expires.
     let proactiveRefreshWarned = false
-    const syncTimer = setInterval(() => {
+    const syncTimer = setInterval(async () => {
       try {
         const account = getActiveAccount()
         log("proactive_refresh_check", {
@@ -282,7 +282,10 @@ const plugin: Plugin = async () => {
           thresholdMs: PROACTIVE_REFRESH_THRESHOLD_MS,
         })
 
-        const creds = refreshIfNeeded(undefined, PROACTIVE_REFRESH_THRESHOLD_MS)
+        const creds = await refreshIfNeeded(
+          undefined,
+          PROACTIVE_REFRESH_THRESHOLD_MS,
+        )
         if (creds) {
           syncAuthJson(creds)
           if (proactiveRefreshWarned) {
@@ -354,7 +357,7 @@ const plugin: Plugin = async () => {
           apiKey: "",
           baseURL: "https://api.anthropic.com/v1",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const latest = getCachedCredentials()
+            const latest = await getCachedCredentials()
             if (!latest) {
               log("fetch_no_credentials", { modelId: "unknown" })
               throw new Error(
@@ -470,7 +473,7 @@ const plugin: Plugin = async () => {
               })
 
               // Rebuild headers without the excluded beta and retry
-              const currentCreds = getCachedCredentials()
+              const currentCreds = await getCachedCredentials()
               const retryToken = currentCreds?.accessToken ?? latest.accessToken
               const newExcluded = getExcludedBetas(modelId)
               const newHeaders = buildRequestHeaders(
@@ -550,7 +553,7 @@ const plugin: Plugin = async () => {
               accounts[0]
 
             setActiveAccountSource(chosen.source)
-            const creds = getCachedCredentials() ?? chosen.credentials
+            const creds = (await getCachedCredentials()) ?? chosen.credentials
 
             syncAuthJson(creds)
             saveAccountSource(chosen.source)

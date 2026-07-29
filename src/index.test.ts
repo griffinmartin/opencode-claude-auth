@@ -139,16 +139,32 @@ async function copySourceFiles(
         /from\s+["']\.\/([\w-]+)\.js["']/g,
         'from "./$1.ts"',
       )
-      if (opts?.oauthTokenUrl && file === "credentials.ts") {
-        // Point the OAuth refresh subprocess at a local test server so the
-        // real refreshViaOAuth path runs offline.
+      if (file === "credentials.ts") {
+        if (opts?.oauthTokenUrl) {
+          // Point the OAuth refresh at a local test server so the real
+          // refreshViaOAuth path runs offline.
+          source = source.replace(
+            "https://claude.ai/v1/oauth/token",
+            opts.oauthTokenUrl,
+          )
+        }
+        // Keep refreshViaCli from launching the real claude binary.
         source = source.replace(
-          "https://claude.ai/v1/oauth/token",
-          opts.oauthTokenUrl,
+          'import { execSync } from "node:child_process"',
+          'import { execSync } from "./child-process.ts"',
         )
       }
       await writeFile(join(tempDir, file), source, "utf8")
     }),
+  )
+
+  await writeFile(
+    join(tempDir, "child-process.ts"),
+    `export function execSync() {
+  return ""
+}
+`,
+    "utf8",
   )
 }
 
@@ -864,8 +880,8 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     // routes logs to a file (see logger.ts).
     process.env.CLAUDE_AUTH_DEBUG = debugLogPath
 
-    let tickCallback: (() => void) | undefined
-    globalThis.setInterval = ((cb: () => void) => {
+    let tickCallback: (() => void | Promise<void>) | undefined
+    globalThis.setInterval = ((cb: () => void | Promise<void>) => {
       tickCallback = cb
       return { unref() {} }
     }) as unknown as typeof setInterval
@@ -904,7 +920,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
       // Fire the timer tick manually — this is the only thing that should
       // trigger a refresh in this scenario.
-      tickCallback!()
+      await tickCallback!()
 
       const logs = await readFile(debugLogPath, "utf-8")
       // The fix: timer's proactive_refresh_check should reference the
@@ -950,8 +966,8 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
     process.env.HOME = tempHome
 
-    let tickCallback: (() => void) | undefined
-    globalThis.setInterval = ((cb: () => void) => {
+    let tickCallback: (() => void | Promise<void>) | undefined
+    globalThis.setInterval = ((cb: () => void | Promise<void>) => {
       tickCallback = cb
       return { unref() {} }
     }) as unknown as typeof setInterval
@@ -969,7 +985,9 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         // and refreshIfNeeded would return non-null — making the warn
         // path unreachable and the latch untestable.
         aExpiresAt: Date.now() - 60_000,
-        bExpiresAt: Date.now() + 10 * 60 * 1000,
+        // Inside the reactive window, so the refresh chain runs to
+        // exhaustion instead of short-circuiting on still-usable creds.
+        bExpiresAt: Date.now() + 30_000,
         bRefreshResult: "fail",
       })
 
@@ -988,9 +1006,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       warnMessages.length = 0 // ignore any warnings emitted during init/authorize
 
       // Simulate 3 consecutive failed sync ticks (15 minutes of downtime).
-      tickCallback!()
-      tickCallback!()
-      tickCallback!()
+      // Awaited individually: real ticks are 5 minutes apart, so each one
+      // completes long before the next fires.
+      await tickCallback!()
+      await tickCallback!()
+      await tickCallback!()
 
       const proactiveWarnings = warnMessages.filter((m) =>
         m.includes("Proactive token refresh failed"),
