@@ -1581,6 +1581,162 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     }
   })
 
+  it("auth fetch stops at the recovery attempt cap when the store rotates on every read", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    // Against a store rotated on every read, every candidate differs from the
+    // token in use, so the no-progress break never fires and the attempt cap
+    // is the only thing stopping the loop. Nothing else pins that ceiling —
+    // the two-attempt test exits via success, so it constrains the floor.
+    const authorizationHeaders: string[] = []
+
+    try {
+      const { helpersModule, keychainModule } =
+        await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+
+      globalThis.fetch = (async (_input, init) => {
+        authorizationHeaders.push(
+          new Headers(init?.headers).get("authorization") ?? "",
+        )
+        // Rotate the store before answering, so the next reload always finds
+        // a token it has not seen.
+        keychainModule.__setCredentials({
+          accessToken: `rotated-${authorizationHeaders.length}`,
+          refreshToken: `rt-${authorizationHeaders.length}`,
+          expiresAt: Date.now() + 10 * 60_000,
+        })
+        return new Response('{"error":"expired"}', { status: 401 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 401)
+      assert.equal(
+        authorizationHeaders.length,
+        3,
+        "original request plus two capped recovery attempts, and no more",
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch compares the 429 re-read against the recovered token, not the original", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    // 401 -> recover -> the retry comes back 429. The 429 block must compare
+    // the source against the token it just recovered with. Comparing against
+    // the original `latest` instead still compiles and passes every other
+    // test, while retrying a quota error on a token the source already agrees
+    // is current — the exact hazard the block's own comment predicts.
+    const authorizationHeaders: string[] = []
+
+    try {
+      const { helpersModule, keychainModule } =
+        await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+
+      globalThis.fetch = (async (_input, init) => {
+        authorizationHeaders.push(
+          new Headers(init?.headers).get("authorization") ?? "",
+        )
+        if (authorizationHeaders.length === 1) {
+          return new Response('{"error":"expired"}', { status: 401 })
+        }
+        return new Response('{"error":"rate_limited"}', {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      // The store already holds the token the 401 recovery will adopt, so
+      // once recovered there is nothing further to rotate to.
+      keychainModule.__setCredentials({
+        accessToken: "recovered-token",
+        refreshToken: "rt-recovered",
+        expiresAt: Date.now() + 10 * 60_000,
+      })
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 429)
+      assert.deepEqual(
+        authorizationHeaders,
+        ["Bearer token", "Bearer recovered-token"],
+        "the 429 must not be retried once the source agrees with the token in use",
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
   it("auth fetch retries a 429 once when the source token changed", async () => {
     const originalNow = Date.now
     const originalSetInterval = globalThis.setInterval
