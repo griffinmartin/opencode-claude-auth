@@ -1138,12 +1138,12 @@ git commit -m "fix: re-read credentials on a 429 so a resolved rate limit is not
 
 - Modify: `README.md`, `CHANGELOG.md`
 
-- [ ] **Step 1: Lint and format**
+- [x] **Step 1: Lint and format**
 
 Run: `pnpm run lint:fix && pnpm run lint`
 Expected: clean exit, no diagnostics.
 
-- [ ] **Step 2: Add the behavior to the README technical list**
+- [x] **Step 2: Add the behavior to the README technical list**
 
 In `README.md`, under `## How it works (technical)`, insert after the bullet beginning "Syncs credentials to `auth.json`":
 
@@ -1153,7 +1153,7 @@ In `README.md`, under `## How it works (technical)`, insert after the bullet beg
 - On a rejected token, adopts an externally rotated credential and otherwise forces an OAuth refresh, retrying the request in place rather than surfacing the 401
 ```
 
-- [ ] **Step 3: Add a CHANGELOG entry**
+- [x] **Step 3: Add a CHANGELOG entry**
 
 Add under the topmost unreleased heading in `CHANGELOG.md` (create `## Unreleased` above the newest release heading if absent):
 
@@ -1170,12 +1170,12 @@ Add under the topmost unreleased heading in `CHANGELOG.md` (create `## Unrelease
 - A 401 that survives recovery is now returned without SSE stream transformation, matching what a non-retried 401 already did
 ```
 
-- [ ] **Step 4: Verify the full suite and a clean tree**
+- [x] **Step 4: Verify the full suite and a clean tree**
 
 Run: `pnpm test 2>&1 | tail -8 && git status --short`
 Expected: `fail 0`; only `README.md` and `CHANGELOG.md` modified.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md CHANGELOG.md
