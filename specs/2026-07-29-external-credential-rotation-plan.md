@@ -1198,6 +1198,16 @@ This cannot be fixed at the re-read — it cannot distinguish "the store is stal
 
 **`transformResponseStream` is applied to non-401 error responses.** Task 4 scopes the bypass to 401 only, matching the prior behavior for that status. But 4xx and 5xx responses other than 401 still flow through the SSE transform, which strips tool-name prefixes from the body. The transform's `!ok` branch already passes status and headers through intact, so the practical difference for a 401 is only that prefix stripping — the carve-out is narrower than "the transform mangles errors". Still asymmetric: the comment's rationale ("carries an error body, not an SSE stream") applies equally to 400/429/500, which do go through it. Pre-existing and unchanged by this feature. Worth deciding whether the bypass should cover all `!ok` statuses rather than 401 alone.
 
+**`configDir` is honored on one re-read path but not the others.** `refreshIfNeeded` passes `target.configDir` to `refreshAccount`; `reloadCredentialsFromSource` and `reloadActiveAccount` do not. Not reachable today — every file account is assigned `CLAUDE_CONFIG_DIR ?? ~/.claude`, exactly what `readCredentialsFile` recomputes by default — but latent, and the compare-and-swap guard now depends on the read and the write resolving to the same file.
+
+**`reloadActiveAccount` and `invalidateCredentialCache` are still dead, with now-false docstrings.** Both claim to be "used on 401". The 401 path uses `reloadCredentialsFromSource` instead. This feature revived the third of the three dead functions the design doc identified and left these two behind. Either wire them up or delete them.
+
+**No negative caching of a terminal auth failure.** On a server-side-revoked credential the store keeps returning a locally-unexpired token, so every request pays the full recovery loop — three API calls plus an OAuth exchange plus `security` spawns — indefinitely, where before it paid one request. Worst-case cost per `fetch()` is now roughly 18 Anthropic requests and several minutes of capped backoff, bounded by the caller's abort signal but with no deadline of the plugin's own.
+
+**The log redactor protects structured fields only.** `logger.ts` redacts by key name or an anchored `^eyJ` whole-value match, so a token embedded mid-string in an `err.message` would pass through. Unreachable today — every callee either catches internally or throws fixed strings — but two new sites log `err.message`.
+
+**Narrow in-memory orphaned-rotation race.** If the proactive timer's refresh is in flight while a request-path re-read adopts an externally written blob, the timer's OAuth result overwrites `target.credentials` while its write-back guard correctly refuses. Both tokens are usable so nothing breaks, but a rotation is consumed and stored nowhere. Requires an external write inside a 15s OAuth round trip plus two concurrent callers. The store-side variant is covered above; this in-memory one is distinct.
+
 ## Manual verification
 
 Automated tests stub the Keychain. Verify against real cswap state once:
