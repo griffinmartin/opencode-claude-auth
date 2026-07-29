@@ -324,11 +324,10 @@ export async function refreshIfNeeded(
   if (!target) return null
 
   // Pick up credentials replaced externally — cswap switching accounts, the
-  // claude CLI in another terminal, or a second OpenCode instance. This used
-  // to be limited to file sources on the assumption that a keychain entry is
-  // only ever mutated by our own writeBackCredentials; that assumption is
-  // false. Bounded by getCachedCredentials's 30s TTL, so it fires at most
-  // ~2x/min under load.
+  // claude CLI in another terminal, or a second OpenCode instance. This was
+  // once limited to file sources, on the false assumption that a keychain
+  // entry is only ever mutated by our own writeBackCredentials. Bounded by
+  // getCachedCredentials's 30s TTL, so it fires at most ~2x/min under load.
   //
   // A keychain read shells out to `security`, which throws when the keychain
   // is locked, access is denied, or the call times out. Degrade to the
@@ -337,18 +336,24 @@ export async function refreshIfNeeded(
   // Adopt a usable stored blob always; an unusable one only when what we
   // already hold is unusable too. Do not simplify this to an unconditional
   // adopt: performRefresh ignores writeBackCredentials's return value, and
-  // that write can fail while the read before it succeeded (a malformed
-  // blob, or an ACL allowing read but not add-generic-password). Memory then
-  // holds freshly refreshed credentials while the store holds the
-  // pre-refresh blob — which has under 60s left, since that window is the
-  // only reason we refreshed. Adopting it re-enters performRefresh with a
-  // refresh token our own refresh just rotated dead, so OAuth fails and we
+  // that write can fail while the read before it succeeded (malformed blob,
+  // or an ACL allowing read but not add-generic-password), leaving memory
+  // freshly refreshed and the store holding the orphaned pre-refresh blob.
+  // On the reactive path that blob has under 60s left — that window is the
+  // only reason we refreshed — so adopting it re-enters performRefresh with
+  // a refresh token our own refresh just rotated dead: OAuth fails and we
   // fall through to two 60s claude spawns, on every cache miss, forever.
   //
-  // The accepted cost: if an external switch installs an account whose
-  // stored token is already expired while ours is still usable, we keep ours
-  // until it expires and adopt the switched-in account then. cswap freshens
-  // a target before activating it, so a newly-active slot is normally fresh.
+  // Two accepted residuals. An external switch installing an already-expired
+  // token while ours is usable is ignored until ours expires; cswap freshens
+  // a target before activating it, so that is rare. And the proactive timer
+  // refreshes an hour ahead (index.ts), where a failed write-back orphans a
+  // blob that is still usable — so it IS adopted, costing wasted background
+  // refreshes rather than failed requests until it drops under 60s and the
+  // CLI fallback recovers. No guard here closes that one: the re-read cannot
+  // tell "stale because our write failed" from "changed because cswap
+  // switched", as both present as store-disagrees-with-memory-and-usable.
+  // Only the return value performRefresh discards carries the distinction.
   try {
     const stored = refreshAccount(target.source, target.configDir)
     const now = Date.now()
