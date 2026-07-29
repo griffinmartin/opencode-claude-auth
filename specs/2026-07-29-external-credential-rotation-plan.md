@@ -580,7 +580,7 @@ git commit -m "fix: guard credential write-back against an external switch"
 - Modify: `src/index.ts:368-392` (401 block), `:462-464` (return), imports at `:20-31`
 - Test: `src/index.test.ts:1189-1251`
 
-- [ ] **Step 1: Import the currently-dead force-refresh helper**
+- [x] **Step 1: Import the currently-dead force-refresh helper**
 
 In the `from "./credentials.ts"` import block in `src/index.ts` (around line 20-31), add:
 
@@ -588,7 +588,7 @@ In the `from "./credentials.ts"` import block in `src/index.ts` (around line 20-
   forceRefreshActiveAccount,
 ```
 
-- [ ] **Step 2: Replace the 401 block with the recovery loop**
+- [x] **Step 2: Replace the 401 block with the recovery loop**
 
 Replace `src/index.ts:368-392` in full:
 
@@ -648,7 +648,7 @@ for (
 }
 ```
 
-- [ ] **Step 3: Derive the stream-transform decision from the final status**
+- [x] **Step 3: Derive the stream-transform decision from the final status**
 
 Replace `src/index.ts:462-464`:
 
@@ -659,14 +659,17 @@ Replace `src/index.ts:462-464`:
 return response.status === 401 ? response : transformResponseStream(response)
 ```
 
-- [ ] **Step 4: Run the suite to see the expected failure**
+- [x] **Step 4: Run the suite to see the expected failure**
 
 Run: `pnpm test 2>&1 | grep -E "^not ok|✖" | head`
-Expected: exactly one failure — `auth fetch does not retry a 401 when the source token is unchanged` (`src/index.test.ts:1189`). Its name describes the behavior being replaced.
+Expected: **two** failures.
 
-The neighbouring test around `src/index.test.ts:1141` (a 401 recovered by an externally rotated token) and the one at `:1253` (reload throws) must both still pass — the loop preserves those paths. If either fails, the loop is wrong, not the test.
+1. `auth fetch does not retry a 401 when the source token is unchanged` — its name describes the behavior being replaced.
+2. `auth fetch preserves the original 401 when credential reload throws` — fails **only** on its request-count assertion. Its mock counts every `fetch` without discriminating the OAuth token endpoint, so the new force-refresh call inflates the count from 1 to 2. Every behavioral assertion (status, statusText, `content-type`, `x-request-id`, body) still passes, and the API is still hit exactly once. Fix by splitting the mock into `apiCalls` / `oauthCalls`, keeping all existing assertions and adding `oauthCalls === 1` — a thrown reload must still force a refresh.
 
-- [ ] **Step 5: Replace that test with the two behaviors that supersede it**
+The neighbouring test that recovers a 401 via an externally rotated token must still pass — the loop preserves that path. If it fails, the loop is wrong, not the test.
+
+- [x] **Step 5: Replace that test with the two behaviors that supersede it**
 
 Replace the whole `it(...)` block at `src/index.test.ts:1189-1251` with:
 
@@ -820,7 +823,7 @@ it("auth fetch surfaces the 401 unchanged when recovery cannot progress", async 
 })
 ```
 
-- [ ] **Step 6: Add the test that justifies a second attempt**
+- [x] **Step 6: Add the test that justifies a second attempt**
 
 This is the only scenario where one attempt is insufficient: the reload returns a valid-looking token that a concurrent writer has itself just rotated again, so the first retry is also rejected. Append after the two tests from Step 5:
 
@@ -907,12 +910,12 @@ it("auth fetch makes a second recovery attempt when the first retry is also reje
 })
 ```
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 Run: `pnpm test 2>&1 | tail -8`
-Expected: `pass 258`, `fail 0`
+Expected: `pass 265`, `fail 0` (actual, measured — earlier tasks landed extra tests)
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/index.ts src/index.test.ts
@@ -1192,6 +1195,8 @@ Not fixed here because it changes behavior on the file path, which no current te
 **`performRefresh` discards `writeBackCredentials`'s return value.** A failed write-back is therefore invisible: memory holds freshly refreshed credentials while the store keeps the pre-refresh blob. On the proactive path that orphaned blob can still have ~1h left, so the validated re-read reads it as usable and adopts it, clobbering the fresh credentials and wasting background OAuth attempts until it drops under 60s.
 
 This cannot be fixed at the re-read — it cannot distinguish "the store is stale because our write failed" from "the store changed because cswap switched"; both look like _store disagrees with memory, store is usable_. The information exists only at the write-back call site. `forceRefreshActiveAccount` already models the fix, checking the return and logging `force_refresh_writeback_failed`; `performRefresh` does neither. Pre-existing, not introduced by this feature.
+
+**`transformResponseStream` is applied to non-401 error responses.** Task 4 scopes the bypass to 401 only, matching the prior behavior for that status. But 4xx and 5xx responses other than 401 still flow through the SSE transform, which does not preserve headers and body faithfully — surfaced while proving a Task 4 test non-vacuous. Pre-existing and unchanged by this feature, but it means a non-401 API error may reach the user altered. Worth its own investigation.
 
 ## Manual verification
 
