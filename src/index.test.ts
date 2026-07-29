@@ -1593,15 +1593,20 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       unref() {},
     })) as unknown as typeof setInterval
 
-    let apiCalls = 0
+    // Captured per call, not just counted: a count alone cannot tell a
+    // retry that carried the rotated token from one that replayed the
+    // exhausted token, which is the whole behavior under test.
+    const authorizationHeaders: string[] = []
 
     try {
       const { helpersModule, keychainModule } =
         await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
 
-      globalThis.fetch = (async () => {
-        apiCalls += 1
-        if (apiCalls === 1) {
+      globalThis.fetch = (async (_input, init) => {
+        authorizationHeaders.push(
+          new Headers(init?.headers).get("authorization") ?? "",
+        )
+        if (authorizationHeaders.length === 1) {
           // retry-after beyond the 30s cap: quota exhaustion, not a
           // transient limit, so fetchWithRetry returns immediately.
           return new Response('{"error":"rate_limited"}', {
@@ -1641,7 +1646,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       )
 
       assert.equal(response.status, 200)
-      assert.equal(apiCalls, 2, "the rotated token must be retried once")
+      assert.deepEqual(
+        authorizationHeaders,
+        ["Bearer token", "Bearer switched-token"],
+        "the retry must carry the rotated token, not replay the exhausted one",
+      )
     } finally {
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
@@ -1703,6 +1712,76 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
       assert.equal(response.status, 429)
       assert.equal(apiCalls, 1, "an unchanged token must not be retried")
+    } finally {
+      Date.now = originalNow
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch does not retry a 429 when the source is unreadable", async () => {
+    const originalNow = Date.now
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    Date.now = () => 1_700_000_000_000
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let apiCalls = 0
+
+    try {
+      const { helpersModule, keychainModule } =
+        await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+
+      globalThis.fetch = (async () => {
+        apiCalls += 1
+        return new Response('{"error":"rate_limited"}', {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      // Distinct from the unchanged-token arm: the token DID change, but
+      // reloadCredentialsFromSource rejects anything expiring within 60s,
+      // so it yields null. Retrying with a token the reload refused to
+      // vouch for would burn a request on a credential already known bad.
+      keychainModule.__setCredentials({
+        accessToken: "expiring-token",
+        refreshToken: "rt-expiring",
+        expiresAt: Date.now() + 30_000,
+      })
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 429)
+      assert.equal(apiCalls, 1, "an unusable reload must not be retried")
     } finally {
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval

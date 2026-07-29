@@ -463,6 +463,16 @@ const plugin: Plugin = async () => {
             // signal that a switch happened; when nothing changed this costs
             // one source read and no retry.
             //
+            // Ordered AFTER the 401 recovery loop, and that is a real
+            // dependency, not incidental sequencing: it must compare against
+            // the token the loop last tried, so a 401 recovered into a 429 is
+            // measured against the recovered token rather than the rejected
+            // one. Only half of this is compiler-enforced — hoisting the block
+            // above `let tokenInUse` is a TDZ error, but moving it between
+            // that declaration and the loop still compiles and still passes,
+            // while silently comparing against a stale token on the
+            // 401 -> retry -> 429 path.
+            //
             // Ordered before the long-context beta loop deliberately. A
             // long-context 429 is a header problem, not an account one, so it
             // rotates no token and falls through here untouched. In the rare
@@ -489,7 +499,14 @@ const plugin: Plugin = async () => {
               }
 
               if (rotated && rotated.accessToken !== tokenInUse) {
-                log("rate_limit_credentials_rotated", { modelId })
+                // Named for what was observed, not for what it implies. A
+                // changed token is not proof of an account switch: a routine
+                // refresh of this same exhausted account by another instance
+                // or the claude CLI changes the token too, and that retry hits
+                // the same quota. Accepted cost — one request — but the log
+                // must not tell a quota investigation "we switched accounts"
+                // when all it saw was a different token.
+                log("rate_limit_token_changed", { modelId })
                 tokenInUse = rotated.accessToken
                 response = await fetchWithRetry(requestUrl, {
                   ...requestInit,
@@ -501,6 +518,14 @@ const plugin: Plugin = async () => {
                     modelId,
                     excluded,
                   ),
+                })
+                // Whether rotating resolved the limit is the question this
+                // whole block exists to answer, so record it outright rather
+                // than leaving success to be inferred from the absence of a
+                // fetch_error_response line.
+                log("rate_limit_retry_response", {
+                  modelId,
+                  status: response.status,
                 })
               }
             }
