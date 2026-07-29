@@ -141,11 +141,21 @@ recovery attempts. Each attempt:
 The no-progress check is what bounds the loop; the attempt cap is defence in
 depth.
 
-Two attempts are required, not one. After a switch to a slot whose access token
-is cold, step 1 *does* return a different token, so the existing code retries,
-401s again, and surfaces — `forceRefreshActiveAccount` never runs. The second
-iteration re-reads, finds the token unchanged, and force-refreshes. One
-structure covers external rotation, revoked tokens, and cold-slot switches.
+Most cases resolve on the first attempt. A switch to a slot whose access token
+is cold yields *null* from step 1, not a different token —
+`reloadCredentialsFromSource` rejects anything expiring within 60s
+(`src/credentials.ts:706-710`) — so step 2 runs immediately. The second attempt
+exists for the narrower race where step 1 returns a token that is valid-looking
+but has itself just been rotated again by a concurrent writer: the retry 401s,
+and the next iteration finds the source unchanged and force-refreshes.
+
+One consequence to note: when step 1 returns null it does **not** update
+`account.credentials`, so the force refresh runs against whatever account was
+in memory. If a switch has landed, that is the previous account. The refresh
+succeeds and the request recovers, but the write-back is correctly suppressed
+by the compare-and-swap from change 2, since the store now holds a different
+account. The session continues from memory and the next cache miss converges on
+the switched-in account.
 
 `forceRefreshActiveAccount` already guards borrowed credentials
 (`src/credentials.ts:617`), writes back on success, and updates the cache, so it
@@ -204,12 +214,14 @@ Follows existing convention: colocated `*.test.ts`, run via
 
 `src/index.test.ts`
 - 401, external rotation present → retry succeeds, response is stream-transformed
-- 401, source holds the rejected token → force refresh → retry succeeds
-- 401, cold token after a switch → two-stage recovery succeeds
-- 401, unrecoverable → single response returned raw, `preserveResponseUnchanged` semantics hold
+- 401, source yields no better token (unchanged, or null because it is expiring)
+  → force refresh on the first attempt → retry succeeds
+- 401, first retry also rejected → second attempt force-refreshes → retry succeeds
+- 401, unrecoverable → response returned raw, no stream transformation
 - 429 with a changed token → retried once
 - 429 with an unchanged token → not retried, falls through to the beta loop
-- a 429 from the OAuth token endpoint does not trigger account recovery
+- a 429 from the OAuth token endpoint surfaces as a failed refresh and does not
+  loop account recovery
 
 ## Risks
 
