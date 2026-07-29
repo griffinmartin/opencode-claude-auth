@@ -20,6 +20,7 @@ import {
 import {
   getCachedCredentials,
   reloadCredentialsFromSource,
+  forceRefreshActiveAccount,
   getActiveAccount,
   syncAuthJson,
   initAccounts,
@@ -365,30 +366,58 @@ const plugin: Plugin = async () => {
               retryAttempt: 0,
             })
 
-            // On 401, bypass the in-memory cache to pick up credentials rotated by
-            // another client, then retry once only when the access token changed.
-            let preserveResponseUnchanged = false
-            if (response.status === 401) {
-              let refreshed: ClaudeCredentials | null = null
+            // Recover from a rejected token: first by adopting credentials
+            // rotated externally (cswap switching accounts, the claude CLI,
+            // another OpenCode instance), then by forcing an OAuth refresh
+            // when the store still holds the token that was just rejected.
+            //
+            // Most cases resolve on the first attempt: a cold or unreadable
+            // store yields null from the reload (reloadCredentialsFromSource
+            // rejects anything expiring within 60s), so the force refresh runs
+            // immediately. The second attempt covers the narrower race where
+            // the reload returns a valid-looking token that a concurrent
+            // writer has itself just rotated again. The no-progress break is
+            // what actually bounds this — the cap is defence in depth.
+            const MAX_AUTH_RECOVERY_ATTEMPTS = 2
+            let tokenInUse = latest.accessToken
+
+            for (
+              let attempt = 0;
+              response.status === 401 && attempt < MAX_AUTH_RECOVERY_ATTEMPTS;
+              attempt++
+            ) {
+              let candidate: ClaudeCredentials | null = null
               try {
-                refreshed = reloadCredentialsFromSource()
+                candidate = reloadCredentialsFromSource()
               } catch {}
-              if (refreshed && refreshed.accessToken !== latest.accessToken) {
-                const retryHeaders = buildRequestHeaders(
+
+              if (!candidate || candidate.accessToken === tokenInUse) {
+                try {
+                  candidate = await forceRefreshActiveAccount()
+                } catch {}
+              }
+
+              if (!candidate || candidate.accessToken === tokenInUse) {
+                log("auth_recovery_exhausted", {
+                  modelId,
+                  attempt: attempt + 1,
+                })
+                break
+              }
+
+              tokenInUse = candidate.accessToken
+              log("auth_recovery_retry", { modelId, attempt: attempt + 1 })
+              response = await fetchWithRetry(requestUrl, {
+                ...requestInit,
+                body,
+                headers: buildRequestHeaders(
                   input,
                   requestInit,
-                  refreshed.accessToken,
+                  tokenInUse,
                   modelId,
                   excluded,
-                )
-                response = await fetchWithRetry(requestUrl, {
-                  ...requestInit,
-                  body,
-                  headers: retryHeaders,
-                })
-              } else {
-                preserveResponseUnchanged = true
-              }
+                ),
+              })
             }
 
             // Check for long-context beta errors and retry with betas excluded
@@ -459,7 +488,10 @@ const plugin: Plugin = async () => {
                 .catch(() => {})
             }
 
-            return preserveResponseUnchanged
+            // A 401 that survived recovery carries an error body, not an SSE
+            // stream. Deciding here rather than from a flag set mid-flight
+            // makes the retried and non-retried paths behave identically.
+            return response.status === 401
               ? response
               : transformResponseStream(response)
           },
