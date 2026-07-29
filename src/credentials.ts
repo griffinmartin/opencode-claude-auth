@@ -17,6 +17,7 @@ import {
   type ClaudeCredentials,
 } from "./keychain.ts"
 import { resetExcludedBetas } from "./betas.ts"
+import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
 
 export type { ClaudeAccount } from "./keychain.ts"
@@ -33,6 +34,11 @@ const accountCacheMap = new Map<
   { creds: ClaudeCredentials; cachedAt: number }
 >()
 const inFlightRefreshes = new Map<string, Promise<ClaudeCredentials | null>>()
+
+// Accounts currently running on credentials borrowed from another account.
+// Those tokens belong to the lender: they must never be used as this
+// account's refresh source, and never written back to its store.
+const borrowedCredentialAccounts = new WeakSet<ClaudeAccount>()
 let activeAccountSource: string | null = null
 let allAccounts: ClaudeAccount[] = []
 
@@ -220,7 +226,11 @@ export async function refreshViaOAuth(
 
   try {
     log("refresh_started", { source: "oauth" })
-    const response = await fetch(OAUTH_TOKEN_URL, {
+    // The token endpoint rate-limits valid refresh requests, and several
+    // OpenCode instances refreshing near expiry cluster their calls, so a
+    // 429 here is transient rather than terminal. The shared helper caps
+    // its own backoff, and the abort signal bounds the whole sequence.
+    const response = await fetchWithRetry(OAUTH_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
@@ -349,6 +359,10 @@ async function performRefresh(
   target: ClaudeAccount,
   creds: ClaudeCredentials,
 ): Promise<ClaudeCredentials | null> {
+  if (borrowedCredentialAccounts.has(target)) {
+    return refreshBorrowedAccount(target)
+  }
+
   log("refresh_needed", {
     source: target.source,
     expiresAt: creds.expiresAt,
@@ -379,6 +393,29 @@ async function performRefresh(
     return creds
   }
 
+  // Every OpenCode instance refreshes independently, and a rotation
+  // invalidates the refresh token the others are holding. When ours is
+  // rejected, the instance that won may already have written usable
+  // credentials to the shared store — far cheaper to re-read than to spawn
+  // the CLI. (File sources are re-read up front by refreshIfNeeded.)
+  if (target.source !== "file") {
+    let stored: ClaudeCredentials | null = null
+    try {
+      stored = refreshAccount(target.source, target.configDir)
+    } catch {
+      stored = null
+    }
+    if (
+      stored &&
+      stored.accessToken !== creds.accessToken &&
+      stored.expiresAt > Date.now() + 60_000
+    ) {
+      target.credentials = stored
+      log("refresh_adopted_external", { source: target.source })
+      return stored
+    }
+  }
+
   log("refresh_fallback_cli", { source: target.source })
   const isSuffixedAccount =
     target.source !== PRIMARY_SERVICE &&
@@ -388,6 +425,7 @@ async function performRefresh(
     const fallback = tryFallbackAccount(target.source)
     if (fallback) {
       target.credentials = fallback
+      borrowedCredentialAccounts.add(target)
       return fallback
     }
 
@@ -419,6 +457,62 @@ async function performRefresh(
     source: target.source,
     hadCredentials: !!refreshed,
     expiresAt: refreshed?.expiresAt,
+  })
+  return null
+}
+
+/**
+ * Refresh path for an account running on borrowed credentials. The tokens it
+ * currently holds belong to another account, so they cannot be exchanged at
+ * the OAuth endpoint on this account's behalf, and the result must never be
+ * written to this account's store. Re-read our own source first — the claude
+ * CLI or another process may have repaired it — and otherwise borrow again.
+ */
+async function refreshBorrowedAccount(
+  target: ClaudeAccount,
+): Promise<ClaudeCredentials | null> {
+  log("refresh_borrowed", { source: target.source })
+
+  let own: ClaudeCredentials | null = null
+  try {
+    own = refreshAccount(target.source, target.configDir)
+  } catch {
+    own = null
+  }
+
+  if (own && own.expiresAt > Date.now() + 60_000) {
+    borrowedCredentialAccounts.delete(target)
+    target.credentials = own
+    log("refresh_borrowed_recovered", { source: target.source, via: "source" })
+    return own
+  }
+
+  // A refresh token outlives its access token by weeks, so this account's
+  // own stored token is likely still exchangeable even though the access
+  // token it came with has expired. This is the only token we may present
+  // on its behalf, and the only result we may write to its store.
+  if (own?.refreshToken) {
+    const oauthCreds = await refreshViaOAuth(own.refreshToken)
+    if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
+      borrowedCredentialAccounts.delete(target)
+      target.credentials = oauthCreds
+      writeBackCredentials(target.source, oauthCreds, target.configDir)
+      log("refresh_borrowed_recovered", { source: target.source, via: "oauth" })
+      return oauthCreds
+    }
+  }
+
+  const again = tryFallbackAccount(target.source)
+  if (again) {
+    target.credentials = again
+    return again
+  }
+
+  borrowedCredentialAccounts.delete(target)
+  log("refresh_exhausted", {
+    source: target.source,
+    hadCredentials: false,
+    expiresAt: undefined,
   })
   return null
 }

@@ -23,6 +23,13 @@ type Creds = {
   expiresAt: number
 }
 
+// refreshViaOAuth now uses the runtime's fetch, so an unstubbed test would
+// reach the real token endpoint. Fail closed; tests that exercise the OAuth
+// path install their own stub and restore back to this one.
+globalThis.fetch = (async () => {
+  throw new Error("network disabled in test harness")
+}) as typeof fetch
+
 async function loadCredentialsWithCountingKeychain(
   initialExpiresAt: number,
 ): Promise<{
@@ -53,6 +60,7 @@ async function loadCredentialsWithCountingKeychain(
     __setAccounts: (list: unknown[]) => void
     __setReadError: (enabled: boolean) => void
     __setReadHook: (hook: (() => void) | null) => void
+    __getWrites: () => Array<{ source: string; creds: Creds }>
   }
   childProcessModule: {
     __getExecFileSyncCount: () => number
@@ -65,8 +73,15 @@ async function loadCredentialsWithCountingKeychain(
   const tempChildProcess = join(tempDir, "child-process.ts")
   const tempLogger = join(tempDir, "logger.ts")
   const tempCredentials = join(tempDir, "credentials.ts")
+  const tempHttp = join(tempDir, "http.ts")
   const sourceCredentials = await readFile(
     new URL("./credentials.ts", import.meta.url),
+    "utf8",
+  )
+  // Real retry helper; its only dependency is the stubbed logger.
+  await writeFile(
+    tempHttp,
+    await readFile(new URL("./http.ts", import.meta.url), "utf8"),
     "utf8",
   )
   const rewritten = sourceCredentials
@@ -112,6 +127,7 @@ export function __getExecSyncCount() {
     tempKeychain,
     `let readCount = 0
 let writeCount = 0
+const writes = []
 let accounts = null // null = derive a single account from the credentials var
 let readError = false
 let readHook = null
@@ -144,9 +160,14 @@ export function __setReadHook(hook) {
   readHook = hook
 }
 
-export function writeBackCredentials() {
+export function writeBackCredentials(source, creds) {
   writeCount += 1
+  writes.push({ source, creds })
   return true
+}
+
+export function __getWrites() {
+  return writes
 }
 
 export function __getReadCount() {
@@ -210,6 +231,7 @@ export function __setAccounts(list) {
       __setAccounts: (list: unknown[]) => void
       __setReadError: (enabled: boolean) => void
       __setReadHook: (hook: (() => void) | null) => void
+      __getWrites: () => Array<{ source: string; creds: Creds }>
     },
     childProcessModule: childProcessModule as {
       __getExecFileSyncCount: () => number
@@ -706,9 +728,12 @@ describe("credential caching", () => {
       const result = await credentialsModule.refreshIfNeeded()
 
       assert.equal(result?.accessToken, "fresh-in-memory")
+      // One read only: the target re-reading its OWN source to see whether
+      // another process rotated it. The fallback account is still borrowed
+      // straight from memory rather than re-read.
       assert.equal(
         keychainModule.__getReadCount(),
-        readsBefore,
+        readsBefore + 1,
         "valid in-memory fallback credentials must not trigger a keychain read",
       )
     } finally {
@@ -934,6 +959,11 @@ describe("syncAuthJson file permissions", () => {
         new URL("./credentials.ts", import.meta.url),
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "http.ts"),
+        await readFile(new URL("./http.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
       const rewritten = sourceCredentials.replace(
         /from\s+["']\.\/(\w+)\.js["']/g,
         'from "./$1.ts"',
@@ -1017,6 +1047,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       const tempLogger = join(tempDir, "logger.ts")
       const sourceCredentials = await readFile(
         new URL("./credentials.ts", import.meta.url),
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "http.ts"),
+        await readFile(new URL("./http.ts", import.meta.url), "utf8"),
         "utf8",
       )
       const rewritten = sourceCredentials.replace(
@@ -1166,6 +1201,40 @@ describe("refreshViaOAuth", () => {
     try {
       assert.equal(await refreshViaOAuth("sk-ant-ort01-current", 20), null)
       assert.equal(aborted, true, "expected the request to be aborted")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // The token endpoint rate-limits valid refresh requests readily, and
+  // several OpenCode instances refreshing near expiry cluster their calls.
+  // The API request path already retries 429; this one did not.
+  it("retries a rate-limited refresh instead of failing outright", async () => {
+    const originalFetch = globalThis.fetch
+    let calls = 0
+
+    globalThis.fetch = (async () => {
+      calls += 1
+      if (calls === 1) {
+        return new Response(JSON.stringify({ error: "rate_limited" }), {
+          status: 429,
+          headers: { "retry-after": "0" },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          access_token: "sk-ant-oat01-after-retry",
+          expires_in: 28_800,
+        }),
+        { status: 200 },
+      )
+    }) as typeof fetch
+
+    try {
+      const result = await refreshViaOAuth("sk-ant-ort01-current")
+      assert.ok(result, "expected the retry to produce credentials")
+      assert.equal(result.accessToken, "sk-ant-oat01-after-retry")
+      assert.equal(calls, 2, "expected exactly one retry")
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -1369,6 +1438,49 @@ describe("refreshIfNeeded CLI fallback scope", () => {
     }
   })
 
+  // Each OpenCode instance refreshes independently, and a rotation
+  // invalidates the refresh token every other instance is holding. The
+  // loser's OAuth call fails, but the winner has already written usable
+  // credentials to the shared store — cheaper to re-read than to spawn the
+  // claude CLI.
+  it("adopts credentials rotated by another process instead of spawning the CLI", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+      })) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule, childProcessModule } =
+        await loadCredentialsWithCountingKeychain(now + 30_000)
+      const target = makeAccount(now + 30_000)
+      credentialsModule.initAccounts([target])
+
+      // Another instance won the rotation and wrote the result to the store.
+      keychainModule.__setCredentials({
+        accessToken: "rotated-by-other-process",
+        refreshToken: "rt-rotated",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      const result = await credentialsModule.refreshIfNeeded(target)
+
+      assert.equal(result?.accessToken, "rotated-by-other-process")
+      assert.equal(
+        childProcessModule.__getExecSyncCount(),
+        0,
+        "a source re-read must be preferred over spawning the claude CLI",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
   it("falls back to the claude CLI once credentials reach the expiry window", async () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now
@@ -1385,10 +1497,23 @@ describe("refreshIfNeeded CLI fallback scope", () => {
       const target = makeAccount(now + 30_000)
       credentialsModule.initAccounts([target])
 
+      // The store initially matches memory, so the pre-CLI re-read finds
+      // nothing new. Only once the CLI has run does the entry rotate.
       keychainModule.__setCredentials({
-        accessToken: "cli-rotated-token",
-        refreshToken: "cli-rotated-refresh",
-        expiresAt: now + 8 * 60 * 60_000,
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: now + 30_000,
+      })
+      let reads = 0
+      keychainModule.__setReadHook(() => {
+        reads += 1
+        if (reads >= 2) {
+          keychainModule.__setCredentials({
+            accessToken: "cli-rotated-token",
+            refreshToken: "cli-rotated-refresh",
+            expiresAt: now + 8 * 60 * 60_000,
+          })
+        }
       })
 
       const result = await credentialsModule.refreshIfNeeded(target)
@@ -1398,6 +1523,106 @@ describe("refreshIfNeeded CLI fallback scope", () => {
         childProcessModule.__getExecSyncCount(),
         1,
         "claude CLI is the intended fallback inside the expiry window",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+})
+
+describe("borrowed fallback credentials", () => {
+  // Borrowing another account's tokens is a read-only stopgap so the session
+  // survives. Persisting them onto the borrowing account means the next
+  // refresh sends the lender's refresh token and writes the rotated result
+  // into the borrower's store — destroying its credentials and rotating the
+  // lender's token out from under it.
+  it("never refreshes or writes back an account using another account's token", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    let clock = now
+    Date.now = () => clock
+
+    let oauthFails = true
+    const sentRefreshTokens: string[] = []
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+      const sent = new URLSearchParams(String(init?.body ?? "")).get(
+        "refresh_token",
+      )
+      sentRefreshTokens.push(String(sent))
+      if (oauthFails) throw new Error("network unreachable")
+      return new Response(
+        JSON.stringify({
+          access_token: `at-from-${sent}`,
+          refresh_token: `rt-from-${sent}`,
+          expires_in: 28_800,
+        }),
+        { status: 200 },
+      )
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 8 * 60 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+
+      // Exhausts OAuth and the CLI (suffixed source with no configDir), so
+      // the borrower falls back to the lender's still-valid credentials.
+      const borrowed = await credentialsModule.refreshIfNeeded(borrower)
+      assert.equal(borrowed?.accessToken, "at-lender", "borrow should succeed")
+
+      // The borrower's own store still holds its own (expired) token.
+      keychainModule.__setCredentials({
+        accessToken: "at-borrower",
+        refreshToken: "rt-borrower",
+        expiresAt: now - 1_000,
+      })
+
+      // Advance to just before the borrowed credentials expire — the point
+      // at which the borrower refreshes again. It must use its OWN token.
+      clock = now + 8 * 60 * 60_000 - 30_000
+      oauthFails = false
+      sentRefreshTokens.length = 0
+      await credentialsModule.refreshIfNeeded(borrower)
+
+      assert.deepEqual(
+        sentRefreshTokens,
+        ["rt-borrower"],
+        "the borrower must refresh with its own token, never the lender's",
+      )
+
+      const writes = keychainModule.__getWrites()
+      for (const w of writes) {
+        assert.notEqual(
+          w.creds.refreshToken,
+          "rt-from-rt-lender",
+          `lender-derived credentials must never be written to ${w.source}`,
+        )
+      }
+      assert.equal(
+        lender.credentials.refreshToken,
+        "rt-lender",
+        "the lender's stored token must not be rotated by the borrower",
       )
     } finally {
       globalThis.fetch = originalFetch

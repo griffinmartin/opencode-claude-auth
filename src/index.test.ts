@@ -126,6 +126,7 @@ const SOURCE_FILES = [
   "transforms.ts",
   "credentials.ts",
   "logger.ts",
+  "http.ts",
 ] as const
 
 async function copySourceFiles(
