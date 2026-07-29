@@ -406,11 +406,14 @@ async function performRefresh(
   // Every OpenCode instance refreshes independently, and a rotation
   // invalidates the refresh token the others are holding. When ours is
   // rejected, the instance that won may already have written usable
-  // credentials to the shared store — far cheaper to re-read than to spawn
-  // the CLI. refreshIfNeeded now re-reads every source up front, but the
-  // OAuth attempt since then cost a network round trip, so this second read
-  // can still find a newer entry. File sources keep skipping it, as they did
-  // when the up-front re-read was file-only.
+  // credentials to the shared store during the OAuth round trip — far
+  // cheaper to re-read than to spawn the CLI.
+  //
+  // The file-source exclusion below is a leftover from when refreshIfNeeded
+  // re-read file sources only. That rationale is gone and the exclusion now
+  // has none: a sibling process can write a file source mid-round-trip
+  // exactly as it can a keychain entry. Left in place only to keep this
+  // change off the file path; removing it is tracked as a follow-up.
   if (target.source !== "file") {
     let stored: ClaudeCredentials | null = null
     try {
