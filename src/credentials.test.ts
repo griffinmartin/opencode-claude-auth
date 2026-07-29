@@ -282,12 +282,20 @@ describe("credential caching", () => {
         },
       ])
 
+      // The source agrees with memory to begin with, so priming the cache
+      // (which re-reads the source) leaves the account on "old-token".
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "old-token",
+        refreshToken: "old-refresh",
+        expiresAt: now + 10 * 60_000,
+      })
+
       assert.equal(
         (await credentialsModule.getCachedCredentials())?.accessToken,
         "old-token",
       )
 
-      keychainModule.__setCredentials({
+      keychainModule.__setCredentialsForSource("keychain", {
         accessToken: "new-token",
         refreshToken: "new-refresh",
         expiresAt: now + 8 * 60 * 60_000,
@@ -297,7 +305,11 @@ describe("credential caching", () => {
       const readCountAfterReload = keychainModule.__getReadCount()
 
       assert.equal(reloaded?.accessToken, "new-token")
-      assert.equal(readCountAfterReload, 1)
+      assert.equal(
+        readCountAfterReload,
+        2,
+        "one re-read while priming the cache, one for the explicit reload",
+      )
       assert.equal(
         (await credentialsModule.getCachedCredentials())?.accessToken,
         "new-token",
@@ -332,7 +344,7 @@ describe("credential caching", () => {
       keychainModule.__setReadError(true)
 
       assert.equal(credentialsModule.reloadCredentialsFromSource(), null)
-      assert.equal(keychainModule.__getReadCount(), 1)
+      assert.equal(keychainModule.__getReadCount(), 2)
     } finally {
       Date.now = originalNow
     }
@@ -454,7 +466,11 @@ describe("credential caching", () => {
 
       assert.ok(first)
       assert.ok(second)
-      assert.equal(keychainModule.__getReadCount(), 0)
+      assert.equal(
+        keychainModule.__getReadCount(),
+        1,
+        "cache miss re-reads the source once; the cached call does not",
+      )
     } finally {
       Date.now = originalNow
     }
@@ -744,17 +760,27 @@ describe("credential caching", () => {
         },
       ])
 
+      // Pin the expired account's own stored value so the up-front re-read is
+      // a no-op rather than swapping in the other account's blob.
+      keychainModule.__setCredentialsForSource(
+        "Claude Code-credentials-aabbccdd",
+        {
+          accessToken: "stale-suffixed",
+          refreshToken: "rt-suffixed",
+          expiresAt: now - 1_000,
+        },
+      )
+
       const readsBefore = keychainModule.__getReadCount()
       const result = await credentialsModule.refreshIfNeeded()
 
       assert.equal(result?.accessToken, "fresh-in-memory")
-      // One read only: the target re-reading its OWN source to see whether
-      // another process rotated it. The fallback account is still borrowed
-      // straight from memory rather than re-read.
+      // The fallback account is still borrowed straight from memory rather
+      // than re-read.
       assert.equal(
         keychainModule.__getReadCount(),
-        readsBefore + 1,
-        "valid in-memory fallback credentials must not trigger a keychain read",
+        readsBefore + 2,
+        "one up-front re-read of the target's own source, one after the failed OAuth refresh",
       )
     } finally {
       Date.now = originalNow
@@ -766,8 +792,8 @@ describe("credential caching", () => {
     const { credentialsModule, keychainModule } =
       await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
 
-    // Keychain source: refreshIfNeeded never re-reads these while the local
-    // copy looks valid, so a 401 needs an explicit source reload.
+    // A 401 must reload the source immediately rather than waiting for the
+    // next refreshIfNeeded, which the 30s credential cache can defer.
     const account = {
       label: "Account 1",
       source: "keychain",
@@ -951,6 +977,74 @@ describe("credential caching", () => {
         writeCountBefore,
         "writeBackCredentials must not run when on-disk creds are already fresh; otherwise the stale in-memory refreshToken would be spliced into the new account's JSON blob",
       )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("refreshIfNeeded adopts credentials rotated externally in a keychain source", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "before-switch",
+            refreshToken: "rt-before",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+
+      // An external process (cswap, the claude CLI, a second OpenCode)
+      // replaces the stored credential with a different account's.
+      keychainModule.__setCredentials({
+        accessToken: "after-switch",
+        refreshToken: "rt-after",
+        expiresAt: now + 10 * 60_000,
+      })
+
+      const result = await credentialsModule.refreshIfNeeded()
+
+      assert.equal(result?.accessToken, "after-switch")
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("refreshIfNeeded keeps in-memory credentials when the source read throws", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "in-memory",
+            refreshToken: "rt",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+
+      keychainModule.__setReadError(true)
+
+      const result = await credentialsModule.refreshIfNeeded()
+
+      assert.equal(result?.accessToken, "in-memory")
     } finally {
       Date.now = originalNow
     }
@@ -1337,10 +1431,18 @@ describe("refreshIfNeeded CLI fallback scope", () => {
     }) as typeof fetch
 
     try {
-      const { credentialsModule, childProcessModule } =
+      const { credentialsModule, keychainModule, childProcessModule } =
         await loadCredentialsWithCountingKeychain(now + 30 * 60_000)
       const target = makeAccount(now + 30 * 60_000)
       credentialsModule.initAccounts([target])
+
+      // Pin the target's own stored value so the up-front re-read is a no-op
+      // and the assertion below speaks to the CLI, not to source adoption.
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: now + 30 * 60_000,
+      })
 
       const result = await credentialsModule.refreshIfNeeded(
         target,
@@ -1517,8 +1619,11 @@ describe("refreshIfNeeded CLI fallback scope", () => {
       const target = makeAccount(now + 30_000)
       credentialsModule.initAccounts([target])
 
-      // The store initially matches memory, so the pre-CLI re-read finds
-      // nothing new. Only once the CLI has run does the entry rotate.
+      // The store initially matches memory, so neither the up-front re-read
+      // nor the pre-CLI re-read finds anything new. Only once the CLI has run
+      // does the entry rotate — hence the third read, not the second:
+      // 1) refreshIfNeeded's up-front re-read, 2) the re-read after OAuth
+      // fails, 3) the read after the CLI has rotated the entry.
       keychainModule.__setCredentials({
         accessToken: "existing-token",
         refreshToken: "existing-refresh",
@@ -1527,7 +1632,7 @@ describe("refreshIfNeeded CLI fallback scope", () => {
       let reads = 0
       keychainModule.__setReadHook(() => {
         reads += 1
-        if (reads >= 2) {
+        if (reads >= 3) {
           keychainModule.__setCredentials({
             accessToken: "cli-rotated-token",
             refreshToken: "cli-rotated-refresh",

@@ -323,14 +323,24 @@ export async function refreshIfNeeded(
   const target = account ?? getActiveAccount()
   if (!target) return null
 
-  // Pick up external updates to .credentials.json (e.g. switch_claude_account
-  // on Windows). Bounded by getCachedCredentials's 30s TTL: fires at most
-  // ~2x/min under load. macOS keychain sources stay on the in-memory path;
-  // their state is mutated only by our own writeBackCredentials, so no
-  // external-update vector exists for them.
-  if (target.source === "file") {
-    const onDisk = refreshAccount(target.source)
-    if (onDisk) target.credentials = onDisk
+  // Pick up credentials replaced externally — cswap switching accounts, the
+  // claude CLI in another terminal, or a second OpenCode instance. This used
+  // to be limited to file sources on the assumption that a keychain entry is
+  // only ever mutated by our own writeBackCredentials; that assumption is
+  // false. Bounded by getCachedCredentials's 30s TTL, so it fires at most
+  // ~2x/min under load.
+  //
+  // A keychain read shells out to `security`, which throws when the keychain
+  // is locked, access is denied, or the call times out. Degrade to the
+  // in-memory credentials rather than take down the request path.
+  try {
+    const stored = refreshAccount(target.source, target.configDir)
+    if (stored) target.credentials = stored
+  } catch (err) {
+    log("source_reread_failed", {
+      source: target.source,
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
 
   const creds = target.credentials
@@ -397,7 +407,10 @@ async function performRefresh(
   // invalidates the refresh token the others are holding. When ours is
   // rejected, the instance that won may already have written usable
   // credentials to the shared store — far cheaper to re-read than to spawn
-  // the CLI. (File sources are re-read up front by refreshIfNeeded.)
+  // the CLI. refreshIfNeeded now re-reads every source up front, but the
+  // OAuth attempt since then cost a network round trip, so this second read
+  // can still find a newer entry. File sources keep skipping it, as they did
+  // when the up-front re-read was file-only.
   if (target.source !== "file") {
     let stored: ClaudeCredentials | null = null
     try {
