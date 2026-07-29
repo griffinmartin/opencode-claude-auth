@@ -58,7 +58,6 @@ async function loadCredentialsWithCountingKeychain(
     __getWriteCount: () => number
     __setCredentials: (c: Creds | null) => void
     __setCredentialsForSource: (source: string, c: Creds | null) => void
-    __clearSourceOverrides: () => void
     __setAccounts: (list: unknown[]) => void
     __setReadError: (enabled: boolean) => void
     __setReadHook: (hook: (() => void) | null) => void
@@ -143,7 +142,7 @@ let credentials = {
   refreshToken: "refresh",
   expiresAt: ${initialExpiresAt}
 }
-let bySource = {}
+const bySource = {}
 
 export const PRIMARY_SERVICE = "Claude Code-credentials"
 
@@ -197,10 +196,6 @@ export function __setCredentialsForSource(source, c) {
   bySource[source] = c
 }
 
-export function __clearSourceOverrides() {
-  bySource = {}
-}
-
 export function __setAccounts(list) {
   accounts = list
 }
@@ -248,7 +243,6 @@ export function __setAccounts(list) {
       __getWriteCount: () => number
       __setCredentials: (c: Creds | null) => void
       __setCredentialsForSource: (source: string, c: Creds | null) => void
-      __clearSourceOverrides: () => void
       __setAccounts: (list: unknown[]) => void
       __setReadError: (enabled: boolean) => void
       __setReadHook: (hook: (() => void) | null) => void
