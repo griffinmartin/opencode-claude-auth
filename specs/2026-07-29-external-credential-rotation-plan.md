@@ -931,7 +931,7 @@ git commit -m "fix: recover from a rejected token by forcing an OAuth refresh"
 - Modify: `src/index.ts` — insert after the 401 recovery loop, before the long-context beta loop (`:396`)
 - Test: `src/index.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append inside the same `describe` as Task 4's tests:
 
@@ -1073,12 +1073,12 @@ it("auth fetch does not retry a 429 when the source token is unchanged", async (
 
 `loadHelpersWithCountingKeychain` already returns `keychainModule` with `__setCredentials` (`src/index.test.ts:264-273`), so no harness change is needed.
 
-- [ ] **Step 2: Run to verify the first fails and the second passes**
+- [x] **Step 2: Run to verify the first fails and the second passes**
 
 Run: `node --test --experimental-strip-types --test-name-pattern="429" src/index.test.ts 2>&1 | tail -12`
 Expected: the "token changed" test FAILS with `apiCalls` 1 ≠ 2; the "unchanged" test passes (no retry exists yet).
 
-- [ ] **Step 3: Implement the 429 re-read**
+- [x] **Step 3: Implement the 429 re-read**
 
 Insert in `src/index.ts` directly after the 401 recovery loop from Task 4 and before the long-context beta loop:
 
@@ -1113,17 +1113,17 @@ if (response.status === 429) {
 }
 ```
 
-- [ ] **Step 4: Run to verify both pass**
+- [x] **Step 4: Run to verify both pass**
 
 Run: `node --test --experimental-strip-types --test-name-pattern="429" src/index.test.ts 2>&1 | tail -8`
 Expected: `fail 0`
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `pnpm test 2>&1 | tail -8`
 Expected: `pass 260`, `fail 0`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/index.ts src/index.test.ts
