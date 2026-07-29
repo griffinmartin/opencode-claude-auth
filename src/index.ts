@@ -376,8 +376,19 @@ const plugin: Plugin = async () => {
             // rejects anything expiring within 60s), so the force refresh runs
             // immediately. The second attempt covers the narrower race where
             // the reload returns a valid-looking token that a concurrent
-            // writer has itself just rotated again. The no-progress break is
-            // what actually bounds this — the cap is defence in depth.
+            // writer has itself just rotated again.
+            //
+            // The cap is the real bound. Against a store being rotated on
+            // every read, every candidate differs from tokenInUse, so the
+            // no-progress break never fires and the cap alone stops the loop.
+            // The break is the fast path out of the common cases, not the
+            // guarantee of termination.
+            //
+            // tokenInUse deliberately tracks only the last token tried rather
+            // than the set of all of them: a store cycling A->B->A wastes one
+            // request on the second attempt, which is a better trade than
+            // threading extra state through a loop whose whole virtue is a
+            // hard ceiling of three API calls.
             const MAX_AUTH_RECOVERY_ATTEMPTS = 2
             let tokenInUse = latest.accessToken
 
@@ -387,16 +398,41 @@ const plugin: Plugin = async () => {
               attempt++
             ) {
               let candidate: ClaudeCredentials | null = null
+              // reloadCredentialsFromSource already catches its own source
+              // read and returns null, so this is unreachable today. It stays
+              // because the guarantee worth keeping is that no reload failure
+              // turns a well-formed 401 into an exception thrown out of
+              // fetch() — degrading to the original response beats crashing
+              // the request. It logs so a future reload that does throw is
+              // diagnosable rather than silently null-coalesced.
               try {
                 candidate = reloadCredentialsFromSource()
-              } catch {}
+              } catch (err) {
+                log("auth_recovery_reload_threw", {
+                  modelId,
+                  attempt: attempt + 1,
+                  error: err instanceof Error ? err.message : String(err),
+                })
+              }
 
               if (!candidate || candidate.accessToken === tokenInUse) {
                 try {
                   candidate = await forceRefreshActiveAccount()
-                } catch {}
+                } catch (err) {
+                  // A rejected refresh and a refresh that returned null are
+                  // different operator-facing diagnoses; auth_recovery_
+                  // exhausted below collapses them, so record this one here.
+                  log("auth_recovery_force_refresh_threw", {
+                    modelId,
+                    attempt: attempt + 1,
+                    error: err instanceof Error ? err.message : String(err),
+                  })
+                }
               }
 
+              // Re-checked, not copy-pasted: the guard above decides whether
+              // to force a refresh, this one decides whether that refresh
+              // actually produced a token worth retrying with.
               if (!candidate || candidate.accessToken === tokenInUse) {
                 log("auth_recovery_exhausted", {
                   modelId,
@@ -450,8 +486,10 @@ const plugin: Plugin = async () => {
               })
 
               // Rebuild headers without the excluded beta and retry
+              // Falls back to tokenInUse, not latest: after a 401 recovery the
+              // latter is the token the API already rejected.
               const currentCreds = await getCachedCredentials()
-              const retryToken = currentCreds?.accessToken ?? latest.accessToken
+              const retryToken = currentCreds?.accessToken ?? tokenInUse
               const newExcluded = getExcludedBetas(modelId)
               const newHeaders = buildRequestHeaders(
                 input,
