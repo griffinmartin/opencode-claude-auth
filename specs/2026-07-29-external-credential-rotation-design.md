@@ -49,8 +49,8 @@ asymmetry is why the design targets the active credential only.
 2. **Stale-snapshot write-back.** The proactive refresh tick (`src/index.ts:224`,
    every 5 min, acting within 1h of expiry) refreshes from an in-memory snapshot
    and calls `writeBackCredentials`. If the active credential was replaced
-   externally in the meantime, the plugin writes the *stale* account's rotated
-   tokens over the *current* account's slot. Because refresh tokens rotate on
+   externally in the meantime, the plugin writes the _stale_ account's rotated
+   tokens over the _current_ account's slot. Because refresh tokens rotate on
    use, the losing copy is dead.
 
 3. **401 recovery gives up too early.** `src/index.ts:371-392` re-reads the
@@ -99,7 +99,7 @@ miss, so at most about twice a minute under load (`CREDENTIAL_CACHE_TTL_MS`,
 `src/credentials.ts:26`). A `security find-generic-password` call is ~10-50ms.
 
 This resolves problems 1 and 2 together: the plugin refreshes and writes back
-whatever is *currently* active rather than a stale snapshot.
+whatever is _currently_ active rather than a stale snapshot.
 
 **New failure path.** `readKeychainService` throws on a locked, denied, or timed
 out Keychain (`src/keychain.ts:96-142`), whereas the file path swallows errors
@@ -142,7 +142,7 @@ The no-progress check is what bounds the loop; the attempt cap is defence in
 depth.
 
 Most cases resolve on the first attempt. A switch to a slot whose access token
-is cold yields *null* from step 1, not a different token —
+is cold yields _null_ from step 1, not a different token —
 `reloadCredentialsFromSource` rejects anything expiring within 60s
 (`src/credentials.ts:706-710`) — so step 2 runs immediately. The second attempt
 exists for the narrower race where step 1 returns a token that is valid-looking
@@ -191,13 +191,13 @@ sites.
 
 ## Error handling
 
-| Failure | Behavior |
-| --- | --- |
+| Failure                                       | Behavior                                                                          |
+| --------------------------------------------- | --------------------------------------------------------------------------------- |
 | Keychain locked/denied/timeout during re-read | Caught; fall back to in-memory credentials. Never propagates to the request path. |
-| CAS mismatch on write-back | Skip the write, log, continue from memory. Next cache miss converges. |
-| `forceRefreshActiveAccount` returns null | Recovery loop stops; the 401 surfaces with the raw body. |
-| Borrowed credentials active | `forceRefreshActiveAccount` already declines (`src/credentials.ts:617`). |
-| Both recovery attempts exhausted | Return the 401 unchanged, as today. |
+| CAS mismatch on write-back                    | Skip the write, log, continue from memory. Next cache miss converges.             |
+| `forceRefreshActiveAccount` returns null      | Recovery loop stops; the 401 surfaces with the raw body.                          |
+| Borrowed credentials active                   | `forceRefreshActiveAccount` already declines (`src/credentials.ts:617`).          |
+| Both recovery attempts exhausted              | Return the 401 unchanged, as today.                                               |
 
 ## Testing
 
@@ -205,14 +205,17 @@ Follows existing convention: colocated `*.test.ts`, run via
 `node --test --experimental-strip-types`.
 
 `src/credentials.test.ts`
+
 - `refreshIfNeeded` re-reads a Keychain source and adopts an externally rotated token
 - a throwing `refreshAccount` degrades to in-memory credentials rather than propagating
 - write-back is skipped when the stored token no longer matches the expected prior token
 
 `src/keychain.test.ts`
+
 - `writeBackCredentials` honors the expected-prior-token argument and is unchanged when omitted
 
 `src/index.test.ts`
+
 - 401, external rotation present → retry succeeds, response is stream-transformed
 - 401, source yields no better token (unchanged, or null because it is expiring)
   → force refresh on the first attempt → retry succeeds
