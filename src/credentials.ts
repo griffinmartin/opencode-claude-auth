@@ -791,6 +791,13 @@ export function reloadCredentialsFromSource(): ClaudeCredentials | null {
   }
 
   account.credentials = reloaded
+  // Read from this account's own source, so what it returned is this
+  // account's own credentials — it is no longer running on a lender's.
+  // Same invariant as refreshIfNeeded's up-front re-read: leaving the flag
+  // set here makes forceRefreshActiveAccount decline to exchange a token
+  // that is legitimately this account's, which strands the 401 recovery
+  // loop's second attempt on a credential it could have refreshed.
+  borrowedCredentialAccounts.delete(account)
   accountCacheMap.set(account.source, { creds: reloaded, cachedAt: now })
   log("credentials_source_reload", {
     source: account.source,

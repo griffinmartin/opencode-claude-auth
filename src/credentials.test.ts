@@ -2259,6 +2259,96 @@ describe("borrowed credentials after exhaustion", () => {
     }
   })
 
+  // The 401 recovery loop reaches its second attempt only through
+  // reloadCredentialsFromSource, so that adoption site has to clear the flag
+  // for the same reason refreshIfNeeded's does — matching the invariant
+  // refreshBorrowedAccount maintains at every other adoption site. Without
+  // it, a borrower whose own entry has since been repaired reloads onto its
+  // own credentials, gets rejected again, and then force-refresh declines on
+  // a flag that is false in fact: a recoverable 401 reaches the user.
+  it("clears the borrowed flag once a source reload adopts its own credentials", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    globalThis.fetch = (async () => {
+      throw new Error("network unreachable")
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 60 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+
+      // Its own entry is expired, so it ends up on the lender's tokens.
+      keychainModule.__setCredentialsForSource(borrower.source, {
+        accessToken: "at-borrower-own",
+        refreshToken: "rt-borrower-own",
+        expiresAt: now - 1_000,
+      })
+      await credentialsModule.refreshIfNeeded(borrower)
+      assert.equal(
+        borrower.credentials.accessToken,
+        "at-lender",
+        "precondition: the account is running on borrowed tokens",
+      )
+
+      // An external process repairs its entry, and the 401 handler picks that
+      // up through the reload rather than through refreshIfNeeded.
+      keychainModule.__setCredentialsForSource(borrower.source, {
+        accessToken: "at-borrower-fresh",
+        refreshToken: "rt-borrower-fresh",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+      assert.equal(
+        credentialsModule.reloadCredentialsFromSource()?.accessToken,
+        "at-borrower-fresh",
+        "precondition: the reload adopts the account's own credentials",
+      )
+
+      const seen: string[] = []
+      const forced = await credentialsModule.forceRefreshActiveAccount(
+        async (token: string) => {
+          seen.push(token)
+          return {
+            accessToken: "at-forced",
+            refreshToken: "rt-forced",
+            expiresAt: now + 8 * 60 * 60_000,
+          }
+        },
+      )
+
+      assert.deepEqual(
+        seen,
+        ["rt-borrower-fresh"],
+        "an account reloaded onto its own token must be free to force-refresh it",
+      )
+      assert.equal(forced?.accessToken, "at-forced")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
   it("forceRefreshActiveAccount refuses to exchange a borrowed token", async () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now
