@@ -1188,6 +1188,10 @@ Consequence today: a file-source account whose OAuth refresh fails goes straight
 
 Not fixed here because it changes behavior on the file path, which no current test covers, and it is outside the guard replacement this feature specified. The comment at the guard says so plainly rather than implying the asymmetry is principled.
 
+**`performRefresh` discards `writeBackCredentials`'s return value.** A failed write-back is therefore invisible: memory holds freshly refreshed credentials while the store keeps the pre-refresh blob. On the proactive path that orphaned blob can still have ~1h left, so the validated re-read reads it as usable and adopts it, clobbering the fresh credentials and wasting background OAuth attempts until it drops under 60s.
+
+This cannot be fixed at the re-read — it cannot distinguish "the store is stale because our write failed" from "the store changed because cswap switched"; both look like _store disagrees with memory, store is usable_. The information exists only at the write-back call site. `forceRefreshActiveAccount` already models the fix, checking the return and logging `force_refresh_writeback_failed`; `performRefresh` does neither. Pre-existing, not introduced by this feature.
+
 ## Manual verification
 
 Automated tests stub the Keychain. Verify against real cswap state once:

@@ -114,11 +114,11 @@ in-memory credentials is unsafe, because `performRefresh` ignores
 `writeBackCredentials`'s return value. When the read succeeds but the write
 fails — a malformed stored blob, or an ACL allowing read but not
 `add-generic-password` — memory holds freshly refreshed credentials while the
-store holds the pre-refresh blob. That blob has under 60s left, since that
-window is the only reason a refresh happened. Adopting it re-enters
-`performRefresh` with a refresh token the successful refresh just rotated dead,
-so OAuth fails and the code falls through to two 60s `claude` spawns — on every
-cache miss, indefinitely, on the authentication path.
+store holds the pre-refresh blob. On the reactive path that blob has under 60s
+left, since that window is the only reason a refresh happened. Adopting it
+re-enters `performRefresh` with a refresh token the successful refresh just
+rotated dead, so OAuth fails and the code falls through to two 60s `claude`
+spawns — on every cache miss, indefinitely, on the authentication path.
 
 The rule: **adopt a usable stored blob always; adopt an unusable one only when
 what we already hold is also unusable.**
@@ -135,6 +135,23 @@ already expired while ours is still usable, the session keeps its own
 credentials until they expire and adopts the switched-in account then. cswap
 freshens a target before activating it, so a newly-active slot is normally
 fresh, and the alternative is the failure loop above.
+
+Second accepted residual, on the proactive path. The background timer refreshes
+an hour ahead of expiry, so a write-back failure there orphans a blob with up to
+~1h left — which reads as "usable" and is adopted, clobbering the fresh
+credentials. The consequence is categorically milder than the reactive case: the
+adopted token is genuinely valid, so requests keep succeeding, and the
+`CLI_FALLBACK_THRESHOLD_MS` gate in `performRefresh` declines to spawn `claude`
+while credentials remain usable. The cost is a handful of wasted background OAuth
+round trips over that final hour, resolving in one CLI-fallback recovery once the
+blob drops under 60s.
+
+No guard on the re-read can close this, and that is why it is out of scope here:
+the re-read cannot distinguish "the store is stale because our write failed" from
+"the store changed because cswap switched" — both present as _store disagrees
+with memory, store is usable_. The information exists only at the
+`writeBackCredentials` call in `performRefresh`, whose return value is discarded.
+See Follow-ups in the plan.
 
 The same branch clears the borrowed-credentials flag. A read from the account's
 own source returns that account's own credentials, so it is by definition no
