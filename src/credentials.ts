@@ -508,11 +508,19 @@ async function refreshBorrowedAccount(
     return again
   }
 
-  borrowedCredentialAccounts.delete(target)
+  // Recovery failed. The account must not be left holding the lender's
+  // tokens, or the next cycle would take the normal path and exchange them.
+  // Restore its own credentials if we managed to read them — expired, but
+  // ours to refresh — and otherwise keep the guard in place.
+  if (own) {
+    borrowedCredentialAccounts.delete(target)
+    target.credentials = own
+  }
+
   log("refresh_exhausted", {
     source: target.source,
-    hadCredentials: false,
-    expiresAt: undefined,
+    hadCredentials: !!own,
+    expiresAt: own?.expiresAt,
   })
   return null
 }
@@ -602,6 +610,14 @@ export async function forceRefreshActiveAccount(
 ): Promise<ClaudeCredentials | null> {
   const account = getActiveAccount()
   if (!account?.credentials.refreshToken) return null
+
+  // These tokens belong to another account: exchanging them here would
+  // rotate the lender's refresh token and persist the result to this
+  // account's store. Borrowed-account recovery belongs to refreshIfNeeded.
+  if (borrowedCredentialAccounts.has(account)) {
+    log("force_refresh_skipped_borrowed", { source: account.source })
+    return null
+  }
 
   const oauthCreds = await refresh(account.credentials.refreshToken)
   if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {

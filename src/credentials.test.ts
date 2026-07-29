@@ -1631,6 +1631,156 @@ describe("borrowed fallback credentials", () => {
   })
 })
 
+describe("borrowed credentials after exhaustion", () => {
+  async function borrowThenExhaust() {
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(1_700_000_000_000 - 1_000)
+    return { credentialsModule, keychainModule }
+  }
+
+  it("never leaves an account holding the lender's tokens once recovery fails", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    let clock = now
+    Date.now = () => clock
+
+    const sentRefreshTokens: string[] = []
+    globalThis.fetch = (async (_u: string | URL, init?: RequestInit) => {
+      sentRefreshTokens.push(
+        String(
+          new URLSearchParams(String(init?.body ?? "")).get("refresh_token"),
+        ),
+      )
+      throw new Error("network unreachable")
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } = await borrowThenExhaust()
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 60 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+      keychainModule.__setCredentials({
+        accessToken: "at-borrower-own",
+        refreshToken: "rt-borrower-own",
+        expiresAt: now - 1_000,
+      })
+
+      assert.equal(
+        (await credentialsModule.refreshIfNeeded(borrower))?.accessToken,
+        "at-lender",
+        "borrow should succeed",
+      )
+
+      // Everything expires; recovery exhausts and returns null.
+      clock = now + 2 * 60 * 60_000
+      assert.equal(await credentialsModule.refreshIfNeeded(borrower), null)
+
+      assert.notEqual(
+        borrower.credentials.refreshToken,
+        "rt-lender",
+        "an exhausted borrower must not be left holding the lender's token",
+      )
+
+      sentRefreshTokens.length = 0
+      await credentialsModule.refreshIfNeeded(borrower)
+      assert.ok(
+        !sentRefreshTokens.includes("rt-lender"),
+        `must never exchange the lender's token, sent: ${sentRefreshTokens.join()}`,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  it("forceRefreshActiveAccount refuses to exchange a borrowed token", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    globalThis.fetch = (async () => {
+      throw new Error("network unreachable")
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } = await borrowThenExhaust()
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 8 * 60 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+      credentialsModule.setActiveAccountSource(borrower.source)
+      keychainModule.__setCredentials({
+        accessToken: "at-borrower-own",
+        refreshToken: "rt-borrower-own",
+        expiresAt: now - 1_000,
+      })
+
+      await credentialsModule.refreshIfNeeded(borrower)
+      assert.equal(borrower.credentials.accessToken, "at-lender")
+
+      const seen: string[] = []
+      const result = await credentialsModule.forceRefreshActiveAccount(
+        async (token: string) => {
+          seen.push(token)
+          return {
+            accessToken: "at-forced",
+            refreshToken: "rt-forced",
+            expiresAt: now + 8 * 60 * 60_000,
+          }
+        },
+      )
+
+      assert.ok(
+        !seen.includes("rt-lender"),
+        `must not force-refresh with the lender's token, sent: ${seen.join()}`,
+      )
+      for (const w of keychainModule.__getWrites()) {
+        assert.notEqual(
+          w.creds.refreshToken,
+          "rt-forced",
+          `lender-derived credentials must not be written to ${w.source}`,
+        )
+      }
+      assert.equal(result, null)
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+})
+
 describe("refreshViaCli command shape", () => {
   it("uses the stable haiku alias, not a dated model ID", () => {
     const source = readFileSync(
