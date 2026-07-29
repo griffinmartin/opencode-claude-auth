@@ -333,9 +333,35 @@ export async function refreshIfNeeded(
   // A keychain read shells out to `security`, which throws when the keychain
   // is locked, access is denied, or the call times out. Degrade to the
   // in-memory credentials rather than take down the request path.
+  //
+  // Adopt a usable stored blob always; an unusable one only when what we
+  // already hold is unusable too. Do not simplify this to an unconditional
+  // adopt: performRefresh ignores writeBackCredentials's return value, and
+  // that write can fail while the read before it succeeded (a malformed
+  // blob, or an ACL allowing read but not add-generic-password). Memory then
+  // holds freshly refreshed credentials while the store holds the
+  // pre-refresh blob — which has under 60s left, since that window is the
+  // only reason we refreshed. Adopting it re-enters performRefresh with a
+  // refresh token our own refresh just rotated dead, so OAuth fails and we
+  // fall through to two 60s claude spawns, on every cache miss, forever.
+  //
+  // The accepted cost: if an external switch installs an account whose
+  // stored token is already expired while ours is still usable, we keep ours
+  // until it expires and adopt the switched-in account then. cswap freshens
+  // a target before activating it, so a newly-active slot is normally fresh.
   try {
     const stored = refreshAccount(target.source, target.configDir)
-    if (stored) target.credentials = stored
+    const now = Date.now()
+    if (
+      stored &&
+      (stored.expiresAt > now + 60_000 ||
+        target.credentials.expiresAt <= now + 60_000)
+    ) {
+      target.credentials = stored
+      // Read from this account's own source, so what it returned is this
+      // account's own credentials — it is no longer running on a lender's.
+      borrowedCredentialAccounts.delete(target)
+    }
   } catch (err) {
     log("source_reread_failed", {
       source: target.source,

@@ -1019,6 +1019,99 @@ describe("credential caching", () => {
     }
   })
 
+  // writeBackCredentials can fail while the read that precedes it succeeds:
+  // a malformed stored blob makes updateCredentialBlob return null, and an
+  // ACL can permit reads but not add-generic-password. performRefresh
+  // discards that false, so memory ends up holding freshly refreshed
+  // credentials while the store still holds the pre-refresh blob — which,
+  // because we only refresh inside the 60s window, has under 60s left.
+  // Adopting it would re-enter performRefresh with a refresh token our own
+  // successful refresh just rotated dead, failing over to two 60s claude
+  // spawns on every cache miss, forever.
+  it("refreshIfNeeded does not adopt a stale stored blob over valid in-memory credentials", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule, childProcessModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "fresh-in-memory",
+            refreshToken: "rt-fresh",
+            expiresAt: now + 10 * 60_000,
+          },
+        },
+      ])
+
+      // The store still holds the pre-refresh blob the failed write-back
+      // never replaced.
+      keychainModule.__setCredentials({
+        accessToken: "stale-in-store",
+        refreshToken: "rt-stale",
+        expiresAt: now + 30_000,
+      })
+
+      const result = await credentialsModule.refreshIfNeeded()
+
+      assert.equal(result?.accessToken, "fresh-in-memory")
+      assert.equal(
+        childProcessModule.__getExecSyncCount(),
+        0,
+        "adopting the stale blob would fail OAuth and fall through to the CLI",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  // Complement of the test above: the guard must decline only the unusable
+  // blob. If it declined whenever memory was valid, external rotation would
+  // stop being picked up and this task's whole premise would regress.
+  it("refreshIfNeeded adopts a usable stored blob even when memory is still valid", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+      const account = {
+        label: "Account 1",
+        source: "keychain",
+        credentials: {
+          accessToken: "in-memory-valid",
+          refreshToken: "rt-memory",
+          expiresAt: now + 10 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([account])
+
+      keychainModule.__setCredentials({
+        accessToken: "rotated-in-store",
+        refreshToken: "rt-rotated",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      const result = await credentialsModule.refreshIfNeeded()
+
+      assert.equal(result?.accessToken, "rotated-in-store")
+      assert.equal(
+        account.credentials.accessToken,
+        "rotated-in-store",
+        "the adoption must land on the account so later calls see it",
+      )
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("refreshIfNeeded keeps in-memory credentials when the source read throws", async () => {
     const originalNow = Date.now
     const now = 1_700_000_000_000
@@ -1896,6 +1989,89 @@ describe("borrowed credentials after exhaustion", () => {
         "rt-lender",
         "a rebuilt account must hold its own tokens, never the lender's",
       )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  // refreshIfNeeded's up-front re-read pulls from the account's OWN source,
+  // so anything it adopts is the account's own credentials — it is no longer
+  // borrowing. Leaving the flag set would make forceRefreshActiveAccount
+  // refuse to exchange tokens that are legitimately the account's.
+  it("clears the borrowed flag once the up-front re-read adopts its own credentials", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    globalThis.fetch = (async () => {
+      throw new Error("network unreachable")
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 60 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+
+      // Its own entry is expired, so it ends up on the lender's tokens.
+      keychainModule.__setCredentialsForSource(borrower.source, {
+        accessToken: "at-borrower-own",
+        refreshToken: "rt-borrower-own",
+        expiresAt: now - 1_000,
+      })
+      await credentialsModule.refreshIfNeeded(borrower)
+      assert.equal(
+        borrower.credentials.accessToken,
+        "at-lender",
+        "precondition: the account is running on borrowed tokens",
+      )
+
+      // An external process repairs its entry.
+      keychainModule.__setCredentialsForSource(borrower.source, {
+        accessToken: "at-borrower-fresh",
+        refreshToken: "rt-borrower-fresh",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+      await credentialsModule.refreshIfNeeded(borrower)
+      assert.equal(borrower.credentials.accessToken, "at-borrower-fresh")
+
+      const seen: string[] = []
+      const forced = await credentialsModule.forceRefreshActiveAccount(
+        async (token: string) => {
+          seen.push(token)
+          return {
+            accessToken: "at-forced",
+            refreshToken: "rt-forced",
+            expiresAt: now + 8 * 60 * 60_000,
+          }
+        },
+      )
+
+      assert.deepEqual(
+        seen,
+        ["rt-borrower-fresh"],
+        "a recovered account must be free to force-refresh its own token",
+      )
+      assert.equal(forced?.accessToken, "at-forced")
     } finally {
       globalThis.fetch = originalFetch
       Date.now = originalNow
