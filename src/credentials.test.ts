@@ -57,10 +57,17 @@ async function loadCredentialsWithCountingKeychain(
     __getReadCount: () => number
     __getWriteCount: () => number
     __setCredentials: (c: Creds | null) => void
+    __setCredentialsForSource: (source: string, c: Creds | null) => void
+    __clearSourceOverrides: () => void
     __setAccounts: (list: unknown[]) => void
     __setReadError: (enabled: boolean) => void
     __setReadHook: (hook: (() => void) | null) => void
-    __getWrites: () => Array<{ source: string; creds: Creds }>
+    __getWrites: () => Array<{
+      source: string
+      creds: Creds
+      configDir?: string
+      expectedPriorAccessToken?: string
+    }>
   }
   childProcessModule: {
     __getExecFileSyncCount: () => number
@@ -136,6 +143,7 @@ let credentials = {
   refreshToken: "refresh",
   expiresAt: ${initialExpiresAt}
 }
+let bySource = {}
 
 export const PRIMARY_SERVICE = "Claude Code-credentials"
 
@@ -149,6 +157,9 @@ export function refreshAccount(source) {
   readCount += 1
   if (readError) throw new Error("Keychain read denied")
   if (readHook) readHook()
+  if (Object.prototype.hasOwnProperty.call(bySource, source)) {
+    return bySource[source]
+  }
   return credentials
 }
 
@@ -160,9 +171,9 @@ export function __setReadHook(hook) {
   readHook = hook
 }
 
-export function writeBackCredentials(source, creds) {
+export function writeBackCredentials(source, creds, configDir, expectedPriorAccessToken) {
   writeCount += 1
-  writes.push({ source, creds })
+  writes.push({ source, creds, configDir, expectedPriorAccessToken })
   return true
 }
 
@@ -180,6 +191,14 @@ export function __getWriteCount() {
 
 export function __setCredentials(c) {
   credentials = c
+}
+
+export function __setCredentialsForSource(source, c) {
+  bySource[source] = c
+}
+
+export function __clearSourceOverrides() {
+  bySource = {}
 }
 
 export function __setAccounts(list) {
@@ -228,10 +247,17 @@ export function __setAccounts(list) {
       __getReadCount: () => number
       __getWriteCount: () => number
       __setCredentials: (c: Creds | null) => void
+      __setCredentialsForSource: (source: string, c: Creds | null) => void
+      __clearSourceOverrides: () => void
       __setAccounts: (list: unknown[]) => void
       __setReadError: (enabled: boolean) => void
       __setReadHook: (hook: (() => void) | null) => void
-      __getWrites: () => Array<{ source: string; creds: Creds }>
+      __getWrites: () => Array<{
+        source: string
+        creds: Creds
+        configDir?: string
+        expectedPriorAccessToken?: string
+      }>
     },
     childProcessModule: childProcessModule as {
       __getExecFileSyncCount: () => number
