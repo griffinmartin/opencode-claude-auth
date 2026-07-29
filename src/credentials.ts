@@ -688,8 +688,12 @@ export async function forceRefreshActiveAccount(
         priorAccessToken,
       )
     ) {
-      // Session continues from memory/cache; a later source re-read may
-      // resurrect the rejected token and trigger another refresh.
+      // Session continues from memory/cache either way, but the two causes
+      // diverge on a later source re-read. An I/O failure leaves our own
+      // rejected token in the store, so the re-read resurrects it and
+      // triggers another refresh. A CAS mismatch means the store now holds
+      // another account's token, so the re-read adopts that instead and this
+      // account stops using the credentials it just refreshed.
       log("force_refresh_writeback_failed", { source: account.source })
     }
     accountCacheMap.set(account.source, {

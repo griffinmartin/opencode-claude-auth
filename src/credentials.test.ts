@@ -864,6 +864,45 @@ describe("credential caching", () => {
     )
   })
 
+  // The token must be captured before the await: account.credentials is
+  // reassigned to the refreshed pair before write-back runs, so reading it at
+  // the call site would compare the new token against the store and skip
+  // every write.
+  it("forceRefreshActiveAccount guards write-back with the pre-refresh token", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    const account = {
+      label: "Account 1",
+      source: "keychain",
+      credentials: {
+        accessToken: "rejected-token",
+        refreshToken: "refresh-token",
+        expiresAt: now + 10 * 60_000,
+      },
+    }
+    credentialsModule.initAccounts([account])
+
+    const writesBefore = keychainModule.__getWrites().length
+
+    await credentialsModule.forceRefreshActiveAccount(async () => ({
+      accessToken: "oauth-refreshed",
+      refreshToken: "new-refresh",
+      expiresAt: now + 10 * 60_000,
+    }))
+
+    const writes = keychainModule.__getWrites()
+    assert.equal(writes.length, writesBefore + 1)
+    const write = writes[writes.length - 1]
+    assert.equal(write.creds.accessToken, "oauth-refreshed")
+    assert.equal(
+      write.expectedPriorAccessToken,
+      "rejected-token",
+      "the guard must carry the token the refresh was issued against",
+    )
+  })
+
   it("forceRefreshActiveAccount returns null and leaves the account untouched on failure", async () => {
     const now = Date.now()
     const { credentialsModule } = await loadCredentialsWithCountingKeychain(
@@ -1891,6 +1930,98 @@ describe("borrowed fallback credentials", () => {
         lender.credentials.refreshToken,
         "rt-lender",
         "the lender's stored token must not be rotated by the borrower",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  // While borrowed, target.credentials holds the LENDER's token, so guarding
+  // write-back with it would fail the comparison every time and silently stop
+  // persisting refreshes for exactly the accounts that are recovering. The
+  // guard must use this account's own stored token.
+  it("guards a recovering borrower's write-back with its own token, not the lender's", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    let oauthFails = true
+    globalThis.fetch = (async () => {
+      if (oauthFails) throw new Error("network unreachable")
+      return new Response(
+        JSON.stringify({
+          access_token: "at-recovered",
+          refresh_token: "rt-recovered",
+          expires_in: 28_800,
+        }),
+        { status: 200 },
+      )
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+
+      const borrower = {
+        label: "Account 1",
+        source: "Claude Code-credentials-aabbccdd",
+        credentials: {
+          accessToken: "at-borrower",
+          refreshToken: "rt-borrower",
+          expiresAt: now - 1_000,
+        },
+      }
+      const lender = {
+        label: "Account 2",
+        source: "Claude Code-credentials",
+        credentials: {
+          accessToken: "at-lender",
+          refreshToken: "rt-lender",
+          expiresAt: now + 30 * 60_000,
+        },
+      }
+      credentialsModule.initAccounts([borrower, lender])
+
+      // The borrower's own store holds an expired credential distinct from
+      // anything it has ever had in memory, so the assertion below can only
+      // pass if the guard came from the store rather than from memory.
+      keychainModule.__setCredentialsForSource(borrower.source, {
+        accessToken: "at-borrower-own",
+        refreshToken: "rt-borrower-own",
+        expiresAt: now - 1_000,
+      })
+
+      // OAuth and the CLI both fail (suffixed source, no configDir), so the
+      // borrower falls back to the lender's credentials.
+      assert.equal(
+        (await credentialsModule.refreshIfNeeded(borrower))?.accessToken,
+        "at-lender",
+        "borrow should succeed",
+      )
+
+      const writesBefore = keychainModule.__getWrites().length
+      oauthFails = false
+
+      // A threshold wider than the borrowed credential's remaining life
+      // forces a refresh while leaving it usable, so the up-front re-read
+      // does not adopt the expired stored blob and clear the borrowed flag.
+      await credentialsModule.refreshIfNeeded(borrower, 60 * 60_000)
+
+      const writes = keychainModule.__getWrites()
+      assert.equal(writes.length, writesBefore + 1)
+      const write = writes[writes.length - 1]
+      assert.equal(write.creds.accessToken, "at-recovered")
+      assert.equal(
+        write.expectedPriorAccessToken,
+        "at-borrower-own",
+        "the guard must be the borrower's own stored token",
+      )
+      assert.notEqual(
+        write.expectedPriorAccessToken,
+        "at-lender",
+        "guarding with the lender's token would fail every CAS",
       )
     } finally {
       globalThis.fetch = originalFetch

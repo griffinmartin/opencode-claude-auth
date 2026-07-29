@@ -603,6 +603,20 @@ describe("credentialBlobMatches", () => {
   it("rejects an unparseable blob rather than assuming a match", () => {
     assert.equal(credentialBlobMatches("not json", "account-a"), false)
   })
+
+  // The guard validates through parseCredentials; the write it protects uses
+  // updateCredentialBlob, which would rewrite this blob happily. Pinning the
+  // stricter side so the divergence is a decision rather than an accident.
+  it("rejects a blob whose token matches but whose other fields are malformed", () => {
+    const malformed = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "account-a",
+        refreshToken: 12345,
+        expiresAt: "soon",
+      },
+    })
+    assert.equal(credentialBlobMatches(malformed, "account-a"), false)
+  })
 })
 
 describe("writeBackCredentials (file source)", () => {
@@ -648,6 +662,53 @@ describe("writeBackCredentials (file source)", () => {
       })
 
       assert.equal(result, true)
+      const written = JSON.parse(readFileSync(credPath, "utf-8"))
+      assert.equal(written.claudeAiOauth.accessToken, "new-at")
+      assert.equal(written.claudeAiOauth.subscriptionType, "pro")
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("writes when the stored token still matches the expected one", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cas-"))
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const credPath = join(claudeDir, ".credentials.json")
+      writeFileSync(
+        credPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "old-at",
+            refreshToken: "old-rt",
+            expiresAt: 1000,
+            subscriptionType: "pro",
+          },
+        }),
+        { encoding: "utf-8", mode: 0o600 },
+      )
+
+      const result = writeBackCredentials(
+        "file",
+        {
+          accessToken: "new-at",
+          refreshToken: "new-rt",
+          expiresAt: 2000,
+        },
+        undefined,
+        "old-at",
+      )
+
+      assert.equal(result, true, "a matching guard must not block the write")
       const written = JSON.parse(readFileSync(credPath, "utf-8"))
       assert.equal(written.claudeAiOauth.accessToken, "new-at")
       assert.equal(written.claudeAiOauth.subscriptionType, "pro")

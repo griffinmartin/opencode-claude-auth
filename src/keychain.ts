@@ -440,12 +440,31 @@ function getKeychainAccountName(serviceName: string): string | null {
 }
 
 /**
+ * A short, non-reversible tag for an access token, so write-back decisions
+ * can be correlated across log lines (and against another account's) without
+ * putting token material in the log.
+ */
+function tokenFingerprint(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 8)
+}
+
+/**
  * Whether a stored credential blob still carries the access token we expect.
  *
  * Guards write-back against an external switch landing between the read that
  * produced the token being refreshed and the write of its replacement. An
  * unparseable blob returns false: a write into state we cannot identify is
  * exactly what this is meant to prevent.
+ *
+ * Deliberately stricter than the write it guards: this validates through
+ * parseCredentials (field types, mcpOAuth-only rejection) while
+ * updateCredentialBlob rewrites anything JSON.parse accepts. So a blob the
+ * write path would happily update can still be refused here. That gap is
+ * intentional — reaching this guard means an earlier parseCredentials
+ * succeeded, so a blob that no longer parses changed shape after we read it
+ * (a truncated non-atomic external write, or a hand edit), and declining to
+ * write over it is correct. Anyone tightening parseCredentials should know it
+ * narrows write-back too, not just reads.
  */
 export function credentialBlobMatches(
   raw: string,
@@ -477,7 +496,20 @@ export function writeBackCredentials(
         expectedPriorAccessToken !== undefined &&
         !credentialBlobMatches(raw, expectedPriorAccessToken)
       ) {
-        log("writeback_skipped_stale", { source, configDir: dir })
+        // Two operationally opposite causes: another account legitimately
+        // holds the slot (benign, no action) versus a blob we cannot read at
+        // all (corruption, needs a human). Same refusal, different events.
+        const stored = parseCredentials(raw)
+        if (stored === null) {
+          log("writeback_skipped_unparseable", { source, configDir: dir })
+        } else {
+          log("writeback_skipped_stale", {
+            source,
+            configDir: dir,
+            expected: tokenFingerprint(expectedPriorAccessToken),
+            stored: tokenFingerprint(stored.accessToken),
+          })
+        }
         return false
       }
       const updated = updateCredentialBlob(raw, newCreds)
@@ -502,7 +534,17 @@ export function writeBackCredentials(
         expectedPriorAccessToken !== undefined &&
         !credentialBlobMatches(raw, expectedPriorAccessToken)
       ) {
-        log("writeback_skipped_stale", { source })
+        // See the file branch: a mismatch is expected, an unreadable blob is not.
+        const stored = parseCredentials(raw)
+        if (stored === null) {
+          log("writeback_skipped_unparseable", { source })
+        } else {
+          log("writeback_skipped_stale", {
+            source,
+            expected: tokenFingerprint(expectedPriorAccessToken),
+            stored: tokenFingerprint(stored.accessToken),
+          })
+        }
         return false
       }
       const updated = updateCredentialBlob(raw, newCreds)
