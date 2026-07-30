@@ -65,6 +65,10 @@ function getCliVersion(): string {
   return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
 }
 
+export function getAnthropicBaseUrl(): string {
+  return process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com/v1"
+}
+
 function getUserAgent(): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
@@ -304,7 +308,7 @@ const plugin: Plugin = async () => {
 
         return {
           apiKey: "",
-          baseURL: "https://api.anthropic.com/v1",
+          baseURL: getAnthropicBaseUrl(),
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             const latest = await getCachedCredentials()
             if (!latest) {
