@@ -67,10 +67,15 @@ async function loadCredentialsWithCountingKeychain(
       configDir?: string
       expectedPriorAccessToken?: string
     }>
+    __getReads: () => Array<{ source: string; configDir?: string }>
+    __setWriteResult: (v: boolean) => void
   }
   childProcessModule: {
     __getExecFileSyncCount: () => number
     __getExecSyncCount: () => number
+  }
+  loggerModule: {
+    __getLogs: () => Array<{ event: string; data?: unknown }>
   }
 }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-creds-"))
@@ -99,7 +104,16 @@ async function loadCredentialsWithCountingKeychain(
 
   await writeFile(
     tempLogger,
-    `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+    `const logs = []
+export function log(event, data) {
+  logs.push({ event, data })
+}
+export function __getLogs() {
+  return logs
+}
+export function initLogger() {}
+export function closeLogger() {}
+`,
     "utf8",
   )
 
@@ -134,6 +148,8 @@ export function __getExecSyncCount() {
     `let readCount = 0
 let writeCount = 0
 const writes = []
+const reads = []
+let writeResult = true
 let accounts = null // null = derive a single account from the credentials var
 let readError = false
 let readHook = null
@@ -152,8 +168,9 @@ export function readAllClaudeAccounts() {
   return [{ label: "Account 1", source: "keychain", credentials }]
 }
 
-export function refreshAccount(source) {
+export function refreshAccount(source, configDir) {
   readCount += 1
+  reads.push({ source, configDir })
   if (readError) throw new Error("Keychain read denied")
   if (readHook) readHook()
   if (Object.prototype.hasOwnProperty.call(bySource, source)) {
@@ -173,11 +190,19 @@ export function __setReadHook(hook) {
 export function writeBackCredentials(source, creds, configDir, expectedPriorAccessToken) {
   writeCount += 1
   writes.push({ source, creds, configDir, expectedPriorAccessToken })
-  return true
+  return writeResult
+}
+
+export function __setWriteResult(v) {
+  writeResult = v
 }
 
 export function __getWrites() {
   return writes
+}
+
+export function __getReads() {
+  return reads
 }
 
 export function __getReadCount() {
@@ -216,6 +241,7 @@ export function __setAccounts(list) {
       import(pathToFileURL(tempKeychain).href),
       import(pathToFileURL(tempChildProcess).href),
     ])
+  const loggerModule = await import(pathToFileURL(tempLogger).href)
 
   return {
     credentialsModule: credentialsModule as {
@@ -252,10 +278,15 @@ export function __setAccounts(list) {
         configDir?: string
         expectedPriorAccessToken?: string
       }>
+      __getReads: () => Array<{ source: string; configDir?: string }>
+      __setWriteResult: (v: boolean) => void
     },
     childProcessModule: childProcessModule as {
       __getExecFileSyncCount: () => number
       __getExecSyncCount: () => number
+    },
+    loggerModule: loggerModule as {
+      __getLogs: () => Array<{ event: string; data?: unknown }>
     },
   }
 }
@@ -816,6 +847,73 @@ describe("credential caching", () => {
     assert.equal(account.credentials.accessToken, "rotated")
   })
 
+  // Every other refreshAccount call site in credentials.ts forwards the
+  // account's configDir; these two re-read paths did not. Unreachable while
+  // readAllClaudeAccounts assigns every file account
+  // `CLAUDE_CONFIG_DIR ?? ~/.claude` — exactly what readCredentialsFile
+  // recomputes by default — but the CAS guard added here compares a read
+  // against a write, so the two must resolve the same file by construction
+  // rather than by coincidence.
+  it("reloadCredentialsFromSource reads the account's own configDir", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    credentialsModule.initAccounts([
+      {
+        label: "Account 1",
+        source: "file",
+        configDir: "/custom/config/dir",
+        credentials: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      },
+    ])
+
+    const readsBefore = keychainModule.__getReads().length
+    credentialsModule.reloadCredentialsFromSource()
+
+    const reads = keychainModule.__getReads().slice(readsBefore)
+    assert.ok(reads.length > 0, "expected a source read")
+    assert.equal(
+      reads[reads.length - 1].configDir,
+      "/custom/config/dir",
+      "the re-read must target the account's own config directory",
+    )
+  })
+
+  it("reloadActiveAccount reads the account's own configDir", async () => {
+    const now = Date.now()
+    const { credentialsModule, keychainModule } =
+      await loadCredentialsWithCountingKeychain(now + 10 * 60_000)
+
+    credentialsModule.initAccounts([
+      {
+        label: "Account 1",
+        source: "file",
+        configDir: "/custom/config/dir",
+        credentials: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 10 * 60_000,
+        },
+      },
+    ])
+
+    const readsBefore = keychainModule.__getReads().length
+    credentialsModule.reloadActiveAccount()
+
+    const reads = keychainModule.__getReads().slice(readsBefore)
+    assert.ok(reads.length > 0, "expected a source read")
+    assert.equal(
+      reads[reads.length - 1].configDir,
+      "/custom/config/dir",
+      "the re-read must target the account's own config directory",
+    )
+  })
+
   it("forceRefreshActiveAccount swaps in OAuth-refreshed credentials and writes back", async () => {
     const now = Date.now()
     const { credentialsModule, keychainModule } =
@@ -1226,6 +1324,72 @@ describe("credential caching", () => {
       assert.equal(writes.length, 1)
       assert.equal(writes[0].creds.accessToken, "rotated-token")
       assert.equal(writes[0].expectedPriorAccessToken, "stale-token")
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // forceRefreshActiveAccount logs force_refresh_writeback_failed on the same
+  // condition; performRefresh discarded the return value entirely, so a
+  // rejected write-back left no trace anywhere in the debug log. The session
+  // continues from memory either way — this pins the observability, not a
+  // control-flow change.
+  it("performRefresh logs a rejected write-back", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    const originalFetch = globalThis.fetch
+
+    try {
+      const { credentialsModule, keychainModule, loggerModule } =
+        await loadCredentialsWithCountingKeychain(now - 60_000)
+
+      keychainModule.__setCredentials({
+        accessToken: "stale-token",
+        refreshToken: "rt-stale",
+        expiresAt: now - 60_000,
+      })
+
+      credentialsModule.initAccounts([
+        {
+          label: "Account 1",
+          source: "keychain",
+          credentials: {
+            accessToken: "stale-token",
+            refreshToken: "rt-stale",
+            expiresAt: now - 60_000,
+          },
+        },
+      ])
+
+      // An external switch landed inside the OAuth round trip, so the CAS in
+      // writeBackCredentials rejects the write.
+      keychainModule.__setWriteResult(false)
+
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            access_token: "rotated-token",
+            refresh_token: "rt-rotated",
+            expires_in: 36_000,
+          }),
+          { status: 200 },
+        )) as typeof fetch
+
+      const result = await credentialsModule.refreshIfNeeded()
+
+      assert.equal(
+        result?.accessToken,
+        "rotated-token",
+        "the caller still receives the refreshed credentials",
+      )
+      assert.ok(
+        loggerModule
+          .__getLogs()
+          .some((entry) => entry.event === "refresh_writeback_failed"),
+        "a rejected write-back must be visible in the debug log",
+      )
     } finally {
       Date.now = originalNow
       globalThis.fetch = originalFetch
