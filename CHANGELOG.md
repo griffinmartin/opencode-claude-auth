@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.4...v2.1.5) (2026-07-30)
+
+
+### Bug Fixes
+
+* handle external rotation of the Claude Code credential ([#260](https://github.com/griffinmartin/opencode-claude-auth/issues/260)) ([5a44883](https://github.com/griffinmartin/opencode-claude-auth/commit/5a44883817bfc7f1aa497f2c06432d7e5c472c08))
+* refresh OAuth tokens with native fetch instead of a subprocess ([#258](https://github.com/griffinmartin/opencode-claude-auth/issues/258)) ([231165b](https://github.com/griffinmartin/opencode-claude-auth/commit/231165b9859c6195c412896e1207daf2aed4affa))
+
 ## [2.1.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.3...v2.1.4) (2026-07-26)
 
 
