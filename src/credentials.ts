@@ -414,12 +414,22 @@ async function performRefresh(
     const oauthCreds = await refreshViaOAuth(creds.refreshToken)
     if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
       target.credentials = oauthCreds
-      writeBackCredentials(
-        target.source,
-        oauthCreds,
-        target.configDir,
-        creds.accessToken,
-      )
+      if (
+        !writeBackCredentials(
+          target.source,
+          oauthCreds,
+          target.configDir,
+          creds.accessToken,
+        )
+      ) {
+        // Mirrors force_refresh_writeback_failed on the forced path. The
+        // session continues from memory either way, so this stays a log
+        // rather than a control-flow change: acting on the two causes
+        // (I/O failure vs. CAS mismatch) differs, and the proactive-path
+        // consequence — a still-usable orphaned blob being re-adopted by
+        // the validated re-read — is tracked as a follow-up.
+        log("refresh_writeback_failed", { source: target.source })
+      }
       return oauthCreds
     }
   }
@@ -635,15 +645,21 @@ export function getCredentialsForSync(): ClaudeCredentials | null {
 
 /**
  * Re-read only the active account's credentials from its source (single
- * keychain service read or credentials file) and update them in place.
- * Used on 401 so an externally refreshed token is picked up without a
- * full multi-account keychain rescan.
+ * keychain service read or credentials file) and update them in place,
+ * so an externally refreshed token is picked up without a full
+ * multi-account keychain rescan.
+ *
+ * Currently has no call sites: the 401 path uses
+ * reloadCredentialsFromSource, which additionally validates the result
+ * and refreshes the cache. Wiring this up or deleting it is tracked as a
+ * follow-up; until then it must stay consistent with the read paths that
+ * are live, hence the configDir below.
  */
 export function reloadActiveAccount(): void {
   const account = getActiveAccount()
   if (!account) return
   try {
-    const fresh = refreshAccount(account.source)
+    const fresh = refreshAccount(account.source, account.configDir)
     if (fresh) account.credentials = fresh
   } catch (err) {
     log("account_reload_failed", {
@@ -761,7 +777,9 @@ export function reloadCredentialsFromSource(): ClaudeCredentials | null {
 
   let reloaded: ClaudeCredentials | null
   try {
-    reloaded = refreshAccount(account.source)
+    // Same configDir the write path resolves, so the compare-and-swap in
+    // writeBackCredentials compares against the file this read came from.
+    reloaded = refreshAccount(account.source, account.configDir)
   } catch {
     accountCacheMap.delete(account.source)
     log("credentials_source_reload", {
