@@ -8,7 +8,7 @@ import type { JSX } from "@opentui/solid"
 import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { createSignal, onCleanup } from "solid-js"
+import { createMemo, createSignal, onCleanup } from "solid-js"
 import type { UsageSnapshot, UsageWindow } from "../src/usage.ts"
 
 /**
@@ -231,7 +231,7 @@ const plugin: TuiPluginModule & { id: string } = {
       }
       // The countdown has to move without the file changing, so it gets its own
       // clock rather than riding on the poll signal.
-      const [, setTick] = createSignal(0)
+      const [tick, setTick] = createSignal(0)
       const clock = setInterval(() => setTick((n) => n + 1), 30_000)
       clock.unref?.()
       onCleanup(() => clearInterval(clock))
@@ -239,6 +239,22 @@ const plugin: TuiPluginModule & { id: string } = {
       const current = () => snapshot()
       const fiveHour = () => currentWindow(current()?.fiveHour ?? null)
       const sevenDay = () => currentWindow(current()?.sevenDay ?? null)
+
+      /**
+       * Reading tick() is what makes the clock above do anything: setting a
+       * signal nothing reads schedules no re-render, so without this the
+       * countdown would only advance when a response happened to rewrite the
+       * snapshot — that is, never on the idle session it exists for.
+       *
+       * A memo rather than a plain accessor so the two reads below cannot
+       * straddle a minute boundary and disagree about whether there is any
+       * time left to show.
+       */
+      const fiveHourCountdown = createMemo(() => {
+        tick()
+        const window = fiveHour()
+        return window ? countdown(window.resetsAt) : null
+      })
 
       // A recorded rejection expires with the window that caused it, so it is
       // read off the raw reset time rather than the derived window — which has
@@ -267,9 +283,7 @@ const plugin: TuiPluginModule & { id: string } = {
               >
                 {percent(fiveHour()!.utilization)}%
               </span>
-              {countdown(fiveHour()!.resetsAt)
-                ? ` ${countdown(fiveHour()!.resetsAt)}`
-                : ""}
+              {fiveHourCountdown() ? ` ${fiveHourCountdown()}` : ""}
             </>
           ) : (
             ""
