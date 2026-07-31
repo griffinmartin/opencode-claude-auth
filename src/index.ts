@@ -17,6 +17,7 @@ import {
   transformBody,
   transformResponseStream,
 } from "./transforms.ts"
+import { recordUsageFromHeaders } from "./usage.ts"
 import {
   getCachedCredentials,
   getCredentialsWithBackoff,
@@ -62,6 +63,15 @@ export {
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from "./signing.ts"
+export {
+  getUsageStatePaths,
+  parseUsageHeaders,
+  recordUsageFromHeaders,
+  resetUsageWriteCache,
+  writeUsageSnapshot,
+  type UsageSnapshot,
+  type UsageWindow,
+} from "./usage.ts"
 
 function getCliVersion(): string {
   return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
@@ -635,6 +645,13 @@ const plugin: Plugin = async () => {
                 })
                 .catch(() => {})
             }
+
+            // Quota headers ride on every /v1/messages response, including the
+            // 429 that says the quota is spent. Read from the response that is
+            // actually being returned — after the 401, rotation and long-context
+            // retries above — so the recorded numbers match the call that
+            // counted, not one of the attempts that was thrown away.
+            recordUsageFromHeaders(response.headers)
 
             // A 401 that survived recovery carries an error body, not an SSE
             // stream. Deciding here rather than from a flag set mid-flight
