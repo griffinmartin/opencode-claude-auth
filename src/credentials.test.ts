@@ -3,8 +3,11 @@ import assert from "node:assert/strict"
 import {
   refreshViaOAuth,
   parseOAuthResponse,
+  extractOAuthError,
   OAUTH_TOKEN_URL,
 } from "./credentials.ts"
+import { Writable } from "node:stream"
+import { closeLogger, initLogger } from "./logger.ts"
 import {
   chmodSync,
   mkdirSync,
@@ -1711,6 +1714,93 @@ describe("refreshViaOAuth", () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  it("logs the token endpoint's failure reason on a rejected refresh", async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          error: "invalid_grant",
+          error_description: "Refresh token not found or invalid",
+        }),
+        { status: 400 },
+      )) as typeof fetch
+
+    const lines: string[] = []
+    initLogger({
+      stream: new Writable({
+        write(chunk, _enc, cb) {
+          lines.push(chunk.toString())
+          cb()
+        },
+      }),
+    })
+
+    try {
+      assert.equal(await refreshViaOAuth("sk-ant-ort01-stale"), null)
+      const entry = lines
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .find((e) => e.event === "refresh_failed")
+      assert.ok(entry, "expected a refresh_failed log line")
+      assert.equal(entry.error, "HTTP 400")
+      assert.equal(entry.oauthError, "invalid_grant")
+      assert.equal(
+        entry.oauthErrorDescription,
+        "Refresh token not found or invalid",
+      )
+    } finally {
+      closeLogger()
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+describe("extractOAuthError", () => {
+  it("extracts the OAuth error and description", () => {
+    assert.deepEqual(
+      extractOAuthError(
+        JSON.stringify({
+          error: "invalid_grant",
+          error_description: "Refresh token not found or invalid",
+        }),
+      ),
+      {
+        oauthError: "invalid_grant",
+        oauthErrorDescription: "Refresh token not found or invalid",
+      },
+    )
+  })
+
+  it("handles Anthropic's nested error envelope", () => {
+    assert.deepEqual(
+      extractOAuthError(
+        JSON.stringify({
+          error: { type: "rate_limit_error", message: "Rate limited." },
+        }),
+      ),
+      {
+        oauthError: "rate_limit_error",
+        oauthErrorDescription: "Rate limited.",
+      },
+    )
+  })
+
+  it("returns an empty object for non-JSON bodies", () => {
+    assert.deepEqual(extractOAuthError("<html>gateway error</html>"), {})
+  })
+
+  it("returns an empty object when no error field is present", () => {
+    assert.deepEqual(extractOAuthError(JSON.stringify({ ok: true })), {})
+  })
+
+  it("truncates overly long descriptions", () => {
+    const long = "x".repeat(1000)
+    const result = extractOAuthError(
+      JSON.stringify({ error: "server_error", error_description: long }),
+    )
+    assert.equal(result.oauthError, "server_error")
+    assert.equal(result.oauthErrorDescription?.length, 500)
   })
 })
 

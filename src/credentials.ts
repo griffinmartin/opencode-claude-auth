@@ -197,6 +197,45 @@ export function parseOAuthResponse(
   }
 }
 
+/**
+ * Extract the non-secret failure reason from an OAuth token-endpoint error
+ * body so a refresh failure is diagnosable from the debug log. Handles both the
+ * OAuth shape (`{ error, error_description }`) and Anthropic's API error
+ * envelope (`{ error: { type, message } }`). Values are truncated and never
+ * include tokens; the logger additionally redacts anything JWT-shaped.
+ */
+export function extractOAuthError(raw: string): {
+  oauthError?: string
+  oauthErrorDescription?: string
+} {
+  let data: {
+    error?: unknown
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    error_description?: unknown
+  }
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return {}
+  }
+
+  const out: { oauthError?: string; oauthErrorDescription?: string } = {}
+  if (typeof data.error === "string") {
+    out.oauthError = data.error.slice(0, 200)
+  } else if (data.error && typeof data.error === "object") {
+    const nested = data.error as { type?: unknown; message?: unknown }
+    if (typeof nested.type === "string")
+      out.oauthError = nested.type.slice(0, 200)
+    if (typeof nested.message === "string") {
+      out.oauthErrorDescription = nested.message.slice(0, 500)
+    }
+  }
+  if (typeof data.error_description === "string") {
+    out.oauthErrorDescription = data.error_description.slice(0, 500)
+  }
+  return out
+}
+
 const OAUTH_TIMEOUT_MS = 15_000
 
 /**
@@ -238,9 +277,14 @@ export async function refreshViaOAuth(
     })
 
     if (!response.ok) {
+      // Capture the token endpoint's own failure reason (invalid_grant,
+      // invalid_client, rate_limit_error, ...) so a persistent 401 is
+      // diagnosable rather than an opaque "HTTP 400".
+      const detail = extractOAuthError(await response.text().catch(() => ""))
       log("refresh_failed", {
         source: "oauth",
         error: `HTTP ${response.status}`,
+        ...detail,
       })
       return null
     }
