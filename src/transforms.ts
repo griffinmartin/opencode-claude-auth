@@ -140,7 +140,14 @@ function dropPass(messages: Message[]): { next: Message[]; changed: boolean } {
       return id !== undefined && !toolUseHasAdjacentResult(messages, index, id)
     })
 
-    // #261: a thinking turn must be omitted whole, never partially rewritten.
+    // #261: a thinking turn may only be kept whole or dropped whole, never
+    // partially rewritten. So when such a turn holds an orphaned tool_use we
+    // must omit the entire turn — even any *valid* tool_use it also carries.
+    // Those valid calls' results become orphaned by the omission and are then
+    // removed on the next fixed-point pass, so the output stays consistent,
+    // just lossier. (This is the cost of the opt-in `drop` mode; the default
+    // `placeholder` mode keeps the turn intact and synthesizes the missing
+    // result instead.)
     if (hasOrphanUse && hasThinkingBlock(message)) {
       changed = true
       omittedThinkingTurns.push(index)
@@ -282,6 +289,21 @@ export function synthesizeMissingToolResults(messages: Message[]): Message[] {
       // blocks lead it) and skip that turn. Building `out` directly this way
       // avoids mutating `pass1` while it is still being iterated.
       out.push({ ...next, content: [...synthetic, ...next.content] })
+      i++
+    } else if (
+      next &&
+      next.role === "user" &&
+      typeof next.content === "string"
+    ) {
+      // The adjacent user turn is plain text: convert it to blocks so the
+      // tool_result can lead it, rather than emitting two consecutive user
+      // turns (a new synthetic user message followed by this one).
+      const text = next.content
+      out.push({
+        ...next,
+        content:
+          text.length > 0 ? [...synthetic, { type: "text", text }] : synthetic,
+      })
       i++
     } else {
       out.push({ role: "user", content: synthetic })

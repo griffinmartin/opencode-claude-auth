@@ -968,17 +968,20 @@ describe("transforms", () => {
       "orphaned tool_use preserved (not dropped)",
     )
 
-    // A synthetic tool_result now sits immediately after the assistant turn.
-    const synthetic = parsed.messages[1]
-    assert.equal(synthetic.role, "user")
-    assert.equal(synthetic.content[0].type, "tool_result")
-    assert.equal(synthetic.content[0].tool_use_id, "toolu_orphan")
-    assert.equal(synthetic.content[0].is_error, true)
-
-    // The original user message survives after the synthetic pair.
-    assert.equal(parsed.messages.length, 3)
+    // A synthetic tool_result now leads the adjacent user turn, which was plain
+    // text and is converted to blocks (no second, consecutive user message).
+    assert.equal(parsed.messages.length, 2)
+    const userTurn = parsed.messages[1]
+    assert.equal(userTurn.role, "user")
+    assert.equal(userTurn.content[0].type, "tool_result")
+    assert.equal(userTurn.content[0].tool_use_id, "toolu_orphan")
+    assert.equal(userTurn.content[0].is_error, true)
+    // The original user text survives as a trailing text block.
     assert.ok(
-      (parsed.messages[2].content as unknown as string).includes("hello"),
+      userTurn.content.some(
+        (b) => b.type === "text" && String(b.text).includes("hello"),
+      ),
+      "original user text preserved",
     )
   })
 
@@ -1099,6 +1102,35 @@ describe("transforms", () => {
         { role: "user", content: [{ type: "text", text: "no result" }] },
       ])
     })
+
+    it("omits a thinking turn that mixes a valid and an orphaned tool_use, leaving no orphans", () => {
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "t", signature: "s" },
+            { type: "tool_use", id: "toolu_valid", name: "read" },
+            { type: "tool_use", id: "toolu_orphan", name: "read" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_valid", content: "ok" },
+          ],
+        },
+        { role: "assistant", content: [{ type: "text", text: "after" }] },
+      ]
+      // #261 forbids partial rewrites, so the whole thinking turn is dropped —
+      // including its valid tool_use — and the now-orphaned result is removed on
+      // the next fixed-point pass. Lossy but consistent (no orphans remain).
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        { role: "assistant", content: [{ type: "text", text: "after" }] },
+      ])
+    })
   })
 
   describe("repair diagnostics logging", () => {
@@ -1189,6 +1221,63 @@ describe("transforms", () => {
       assert.deepEqual((result[1].content as Array<unknown>)[1], {
         type: "text",
         text: "user says hi",
+      })
+    })
+
+    it("converts a plain-text adjacent user turn to blocks (no second user message)", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_a", name: "read" }],
+        },
+        { role: "user", content: "next user text" },
+      ]
+      const result = synthesizeMissingToolResults(messages)
+      // One user turn, not two consecutive ones.
+      assert.equal(result.length, 2)
+      assert.equal(result[1].role, "user")
+      assert.deepEqual(result[1].content, [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_a",
+          content: TOOL_RESULT_PLACEHOLDER,
+          is_error: true,
+        },
+        { type: "text", text: "next user text" },
+      ])
+    })
+
+    it("preserves a thinking turn that mixes a valid and an orphaned tool_use, synthesizing only the missing result", () => {
+      const thinkingTurn = {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "t", signature: "s" },
+          { type: "tool_use", id: "toolu_valid", name: "read" },
+          { type: "tool_use", id: "toolu_orphan", name: "read" },
+        ],
+      }
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        thinkingTurn,
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_valid", content: "ok" },
+          ],
+        },
+        { role: "assistant", content: [{ type: "text", text: "after" }] },
+      ]
+      const result = synthesizeMissingToolResults(messages)
+      // The thinking turn is preserved byte-identical (both tool_uses + thinking).
+      assert.deepEqual(result[1], thinkingTurn)
+      // Its adjacent user turn now carries results for BOTH ids.
+      const ids = (result[2].content as Array<Record<string, unknown>>)
+        .filter((b) => b.type === "tool_result")
+        .map((b) => b.tool_use_id)
+      assert.deepEqual(ids.sort(), ["toolu_orphan", "toolu_valid"])
+      assert.deepEqual(result[3], {
+        role: "assistant",
+        content: [{ type: "text", text: "after" }],
       })
     })
 
