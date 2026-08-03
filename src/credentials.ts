@@ -1099,8 +1099,11 @@ export async function getCredentialsWithBackoff(
   if (first) return first
 
   const source = getActiveAccount()?.source
+  // No active account means no in-progress refresh could ever produce a token,
+  // so waiting is pointless — fail fast instead of spinning the wait budget.
+  if (!source) return null
   // A dead refresh token will not fix itself by waiting.
-  if (source && getRefreshFailureKind(source) === "terminal") return null
+  if (getRefreshFailureKind(source) === "terminal") return null
 
   const now = opts.now ?? Date.now
   const sleep = opts.sleep ?? sleepAbortable

@@ -2887,6 +2887,32 @@ describe("getCredentialsWithBackoff (transient rate-limit resilience)", () => {
     }
   })
 
+  it("fails fast (no wait) when there is no active account", async () => {
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    try {
+      const { credentialsModule } = await loadCredentialsWithCountingKeychain(
+        now + 10 * 60_000,
+      )
+      credentialsModule.initAccounts([]) // no accounts configured
+
+      let slept = 0
+      const creds = await credentialsModule.getCredentialsWithBackoff({
+        maxWaitMs: 100_000,
+        now: () => now,
+        sleep: async () => {
+          slept += 1
+        },
+      })
+
+      assert.equal(creds, null)
+      assert.equal(slept, 0, "no account means nothing to wait for")
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   it("returns null promptly on a terminal failure, without exhausting the wait", async () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now
