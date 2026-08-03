@@ -1,5 +1,6 @@
 import { buildBillingHeaderValue } from "./signing.ts"
 import { config, getModelOverride } from "./model-config.ts"
+import { log } from "./logger.ts"
 
 const TOOL_PREFIX = "mcp_"
 
@@ -29,68 +30,308 @@ type Message = {
   content?: string | ContentBlock[]
 }
 
-export function repairToolPairs(messages: Message[]): Message[] {
-  // Anthropic requires every tool_use in message N to have its tool_result
-  // in message N+1 — adjacency, not mere existence. /undo and /compact can
-  // leave pairs that still exist but are separated (e.g. a compaction
-  // summary inserted between them), which the API rejects with "Each
-  // tool_use block must have a corresponding tool_result block in the next
-  // message" (issue #212). Drop every block that is not part of an
-  // adjacent pair.
-  const useMsgIndex = new Map<string, number>()
-  const resultMsgIndex = new Map<string, number>()
+/**
+ * Strategy for reconciling `tool_use` / `tool_result` adjacency that OpenCode's
+ * automatic compaction can break (issues #212/#226/#261):
+ *
+ * - `placeholder` (default): never delete blocks. For any `tool_use` left
+ *   without an adjacent `tool_result`, synthesize a paired placeholder result.
+ *   Because assistant `content[]` is never rewritten, `thinking` /
+ *   `redacted_thinking` blocks stay byte-identical, sidestepping Anthropic's
+ *   thinking-preservation contract (issue #261).
+ * - `drop`: remove orphaned blocks (the upstream behavior), but omit an entire
+ *   assistant turn when it carries `thinking` blocks and an orphaned `tool_use`
+ *   rather than partially rewriting it (which #261 forbids).
+ */
+export type ToolRepairMode = "placeholder" | "drop"
+
+/** Content used for a synthesized `tool_result` whose real output was compacted away. */
+export const TOOL_RESULT_PLACEHOLDER =
+  "Tool result unavailable (removed during context compaction)."
+
+/**
+ * Resolve the repair strategy from the environment. Defaults to `placeholder`,
+ * the lossless strategy. Set `OPENCODE_CLAUDE_AUTH_TOOL_REPAIR=drop` to opt into
+ * the drop strategy.
+ */
+export function resolveToolRepairMode(
+  env: Record<string, string | undefined> = process.env,
+): ToolRepairMode {
+  const value = env.OPENCODE_CLAUDE_AUTH_TOOL_REPAIR?.trim().toLowerCase()
+  return value === "drop" ? "drop" : "placeholder"
+}
+
+const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
+
+function toolUseIdOf(block: ContentBlock): string | undefined {
+  return block.type === "tool_use" && typeof block["id"] === "string"
+    ? (block["id"] as string)
+    : undefined
+}
+
+function toolResultIdOf(block: ContentBlock): string | undefined {
+  return block.type === "tool_result" &&
+    typeof block["tool_use_id"] === "string"
+    ? (block["tool_use_id"] as string)
+    : undefined
+}
+
+function hasThinkingBlock(message: Message): boolean {
+  return (
+    message.role === "assistant" &&
+    Array.isArray(message.content) &&
+    message.content.some((block) => THINKING_TYPES.has(block.type ?? ""))
+  )
+}
+
+/** A `tool_use` is valid iff the immediately-following message carries its result. */
+function toolUseHasAdjacentResult(
+  messages: Message[],
+  index: number,
+  id: string,
+): boolean {
+  const next = messages[index + 1]
+  if (!next || !Array.isArray(next.content)) return false
+  return next.content.some((block) => toolResultIdOf(block) === id)
+}
+
+/** A `tool_result` is valid iff the immediately-preceding message made the call. */
+function toolResultHasAdjacentUse(
+  messages: Message[],
+  index: number,
+  id: string,
+): boolean {
+  const prev = messages[index - 1]
+  if (!prev || !Array.isArray(prev.content)) return false
+  return prev.content.some((block) => toolUseIdOf(block) === id)
+}
+
+function makePlaceholderResult(id: string): ContentBlock {
+  return {
+    type: "tool_result",
+    tool_use_id: id,
+    content: TOOL_RESULT_PLACEHOLDER,
+    is_error: true,
+  }
+}
+
+/**
+ * One drop pass over the message list. Adjacency is evaluated per-occurrence
+ * (not via first-occurrence index maps), so a replayed/duplicate `tool_use` id
+ * whose first occurrence is a valid pair no longer masks a later orphan.
+ * Assistant turns that hold thinking blocks are omitted wholesale when they
+ * contain an orphaned `tool_use`.
+ */
+function dropPass(messages: Message[]): { next: Message[]; changed: boolean } {
+  let changed = false
+  const droppedToolUseIds: string[] = []
+  const droppedToolResultIds: string[] = []
+  const omittedThinkingTurns: number[] = []
+  const out: Message[] = []
 
   messages.forEach((message, index) => {
-    if (!Array.isArray(message.content)) return
-    for (const block of message.content) {
-      const id = block["id"]
-      if (block.type === "tool_use" && typeof id === "string") {
-        if (!useMsgIndex.has(id)) useMsgIndex.set(id, index)
-      }
-      const toolUseId = block["tool_use_id"]
-      if (block.type === "tool_result" && typeof toolUseId === "string") {
-        if (!resultMsgIndex.has(toolUseId)) resultMsgIndex.set(toolUseId, index)
-      }
+    if (!Array.isArray(message.content)) {
+      out.push(message)
+      return
     }
+
+    const hasOrphanUse = message.content.some((block) => {
+      const id = toolUseIdOf(block)
+      return id !== undefined && !toolUseHasAdjacentResult(messages, index, id)
+    })
+
+    // #261: a thinking turn may only be kept whole or dropped whole, never
+    // partially rewritten. So when such a turn holds an orphaned tool_use we
+    // must omit the entire turn — even any *valid* tool_use it also carries.
+    // Those valid calls' results become orphaned by the omission and are then
+    // removed on the next fixed-point pass, so the output stays consistent,
+    // just lossier. (This is the cost of the opt-in `drop` mode; the default
+    // `placeholder` mode keeps the turn intact and synthesizes the missing
+    // result instead.)
+    if (hasOrphanUse && hasThinkingBlock(message)) {
+      changed = true
+      omittedThinkingTurns.push(index)
+      for (const block of message.content) {
+        const id = toolUseIdOf(block)
+        if (id !== undefined) droppedToolUseIds.push(id)
+      }
+      return
+    }
+
+    const filtered = message.content.filter((block) => {
+      const useId = toolUseIdOf(block)
+      if (useId !== undefined) {
+        const ok = toolUseHasAdjacentResult(messages, index, useId)
+        if (!ok) {
+          changed = true
+          droppedToolUseIds.push(useId)
+        }
+        return ok
+      }
+      const resultId = toolResultIdOf(block)
+      if (resultId !== undefined) {
+        const ok = toolResultHasAdjacentUse(messages, index, resultId)
+        if (!ok) {
+          changed = true
+          droppedToolResultIds.push(resultId)
+        }
+        return ok
+      }
+      return true
+    })
+
+    if (filtered.length === 0) {
+      if (message.content.length > 0) changed = true
+      return
+    }
+    out.push(
+      filtered.length === message.content.length
+        ? message
+        : { ...message, content: filtered },
+    )
   })
 
-  const isAdjacentPair = (id: string): boolean => {
-    const useIndex = useMsgIndex.get(id)
-    return useIndex !== undefined && resultMsgIndex.get(id) === useIndex + 1
+  if (changed) {
+    log("repair_orphan_dropped", {
+      droppedToolUseIds,
+      droppedToolResultIds,
+      omittedThinkingTurns,
+    })
+  }
+  return { next: out, changed }
+}
+
+/**
+ * Drop-strategy repair. Iterated to a fixed point so that cascades — e.g. an
+ * omitted thinking turn orphaning the result that followed it — are fully
+ * reconciled rather than left half-repaired.
+ */
+export function repairToolPairs(messages: Message[]): Message[] {
+  let current = messages
+  const maxIterations = messages.length + 2
+  for (let i = 0; i < maxIterations; i++) {
+    const { next, changed } = dropPass(current)
+    if (!changed) return current
+    current = next
+  }
+  // Each pass strictly removes blocks/messages, so a fixed point is reached
+  // within messages.length passes; exhausting the cap means an unexpected
+  // non-converging shape. Surface it rather than returning silently.
+  log("repair_drop_max_iterations", { messageCount: messages.length })
+  return current
+}
+
+/**
+ * Placeholder-strategy repair (default). Guarantees `tool_use` ↔ `tool_result`
+ * adjacency without ever deleting a block from an assistant turn, so thinking
+ * blocks are preserved exactly. Two passes:
+ *
+ *  1. Remove `tool_result` blocks that have no adjacent preceding `tool_use`
+ *     (these live in user turns, so no thinking block is affected).
+ *  2. Synthesize a placeholder `tool_result`, adjacent, for every `tool_use`
+ *     that still lacks one.
+ */
+export function synthesizeMissingToolResults(messages: Message[]): Message[] {
+  let removedOrphanResults = 0
+
+  // Pass 1: strip orphaned tool_result blocks.
+  const pass1: Message[] = []
+  messages.forEach((message, index) => {
+    if (!Array.isArray(message.content)) {
+      pass1.push(message)
+      return
+    }
+    const filtered = message.content.filter((block) => {
+      const resultId = toolResultIdOf(block)
+      if (resultId === undefined) return true
+      const ok = toolResultHasAdjacentUse(messages, index, resultId)
+      if (!ok) removedOrphanResults++
+      return ok
+    })
+    if (filtered.length === 0 && message.content.length > 0) return
+    pass1.push(
+      filtered.length === message.content.length
+        ? message
+        : { ...message, content: filtered },
+    )
+  })
+
+  // Pass 2: synthesize adjacent results for orphaned tool_use blocks.
+  const synthesizedToolUseIds: string[] = []
+  const out: Message[] = []
+  for (let i = 0; i < pass1.length; i++) {
+    const message = pass1[i]
+    out.push(message)
+    if (!Array.isArray(message.content)) continue
+
+    const useIds = message.content
+      .map(toolUseIdOf)
+      .filter((id): id is string => id !== undefined)
+    if (useIds.length === 0) continue
+
+    const next = pass1[i + 1]
+    const presentIds =
+      next && Array.isArray(next.content)
+        ? new Set(
+            next.content
+              .map(toolResultIdOf)
+              .filter((id): id is string => id !== undefined),
+          )
+        : new Set<string>()
+    const missing = useIds.filter((id) => !presentIds.has(id))
+    if (missing.length === 0) continue
+
+    synthesizedToolUseIds.push(...missing)
+    const synthetic = missing.map(makePlaceholderResult)
+
+    if (next && next.role === "user" && Array.isArray(next.content)) {
+      // Merge the synthetic results into the adjacent user turn (so tool_result
+      // blocks lead it) and skip that turn. Building `out` directly this way
+      // avoids mutating `pass1` while it is still being iterated.
+      out.push({ ...next, content: [...synthetic, ...next.content] })
+      i++
+    } else if (
+      next &&
+      next.role === "user" &&
+      typeof next.content === "string"
+    ) {
+      // The adjacent user turn is plain text: convert it to blocks so the
+      // tool_result can lead it, rather than emitting two consecutive user
+      // turns (a new synthetic user message followed by this one).
+      const text = next.content
+      out.push({
+        ...next,
+        content:
+          text.length > 0 ? [...synthetic, { type: "text", text }] : synthetic,
+      })
+      i++
+    } else {
+      out.push({ role: "user", content: synthetic })
+    }
   }
 
-  const needsRepair =
-    [...useMsgIndex.keys()].some((id) => !isAdjacentPair(id)) ||
-    [...resultMsgIndex.keys()].some((id) => !isAdjacentPair(id))
-  if (!needsRepair) return messages
-
-  // Drop blocks outside adjacent pairs and remove emptied messages
-  return messages
-    .map((message, index) => {
-      if (!Array.isArray(message.content)) return message
-      const filtered = message.content.filter((block) => {
-        const id = block["id"]
-        if (block.type === "tool_use" && typeof id === "string") {
-          return isAdjacentPair(id) && useMsgIndex.get(id) === index
-        }
-        const toolUseId = block["tool_use_id"]
-        if (block.type === "tool_result" && typeof toolUseId === "string") {
-          return (
-            isAdjacentPair(toolUseId) && resultMsgIndex.get(toolUseId) === index
-          )
-        }
-        return true
-      })
-      return { ...message, content: filtered }
+  if (synthesizedToolUseIds.length > 0 || removedOrphanResults > 0) {
+    log("repair_orphan_synthesized", {
+      synthesizedToolUseIds,
+      removedOrphanResultCount: removedOrphanResults,
     })
-    .filter(
-      (message) =>
-        !(Array.isArray(message.content) && message.content.length === 0),
-    )
+  }
+  return out
+}
+
+/** Dispatch to the configured repair strategy. */
+export function applyToolRepair(
+  messages: Message[],
+  mode: ToolRepairMode,
+): Message[] {
+  return mode === "drop"
+    ? repairToolPairs(messages)
+    : synthesizeMissingToolResults(messages)
 }
 
 export function transformBody(
   body: BodyInit | null | undefined,
+  mode: ToolRepairMode = resolveToolRepairMode(),
 ): BodyInit | null | undefined {
   if (typeof body !== "string") {
     return body
@@ -255,7 +496,7 @@ export function transformBody(
     }
 
     if (Array.isArray(parsed.messages)) {
-      parsed.messages = repairToolPairs(parsed.messages)
+      parsed.messages = applyToolRepair(parsed.messages, mode)
     }
 
     return JSON.stringify(parsed)
