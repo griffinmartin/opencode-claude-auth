@@ -241,6 +241,14 @@ export function extractOAuthError(raw: string): {
     return {}
   }
 
+  // JSON.parse succeeds for primitives and arrays too (`null`, `123`, `"str"`,
+  // `[...]`); dereferencing `data.error` on those would throw and, worse,
+  // escape into refreshViaOAuthDetailed's outer catch — erasing the HTTP status
+  // this function exists to preserve. Only object bodies carry an error shape.
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return {}
+  }
+
   const out: { oauthError?: string; oauthErrorDescription?: string } = {}
   if (typeof data.error === "string") {
     out.oauthError = data.error.slice(0, 200)
@@ -252,6 +260,8 @@ export function extractOAuthError(raw: string): {
       out.oauthErrorDescription = nested.message.slice(0, 500)
     }
   }
+  // The flat OAuth-standard `error_description` is canonical, so it deliberately
+  // wins over a nested-envelope `message` when a response carries both.
   if (typeof data.error_description === "string") {
     out.oauthErrorDescription = data.error_description.slice(0, 500)
   }

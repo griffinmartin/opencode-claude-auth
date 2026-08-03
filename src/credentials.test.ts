@@ -1855,6 +1855,24 @@ describe("extractOAuthError", () => {
     assert.equal(result.oauthError, "server_error")
     assert.equal(result.oauthErrorDescription?.length, 500)
   })
+
+  it("returns an empty object for JSON primitives and arrays without throwing", () => {
+    // JSON.parse("null") === null etc. — must not crash the error-logging path.
+    for (const body of ["null", "123", '"a string"', "[1,2,3]", "true"]) {
+      assert.deepEqual(extractOAuthError(body), {}, `body: ${body}`)
+    }
+  })
+
+  it("prefers the flat error_description over a nested message when both are present", () => {
+    const result = extractOAuthError(
+      JSON.stringify({
+        error: { type: "foo", message: "nested" },
+        error_description: "flat",
+      }),
+    )
+    assert.equal(result.oauthError, "foo")
+    assert.equal(result.oauthErrorDescription, "flat")
+  })
 })
 
 function makeAccount(expiresAt: number) {
