@@ -125,6 +125,7 @@ const SOURCE_FILES = [
   "signing.ts",
   "transforms.ts",
   "credentials.ts",
+  "refresh-backoff.ts",
   "logger.ts",
   "http.ts",
 ] as const

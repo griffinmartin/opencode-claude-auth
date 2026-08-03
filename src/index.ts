@@ -19,6 +19,8 @@ import {
 } from "./transforms.ts"
 import {
   getCachedCredentials,
+  getCredentialsWithBackoff,
+  getActiveRefreshFailureKind,
   reloadCredentialsFromSource,
   forceRefreshActiveAccount,
   getActiveAccount,
@@ -306,15 +308,49 @@ const plugin: Plugin = async () => {
           apiKey: "",
           baseURL: "https://api.anthropic.com/v1",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const latest = await getCachedCredentials()
+            const requestInit = init ?? {}
+            let latest = await getCachedCredentials()
             if (!latest) {
+              // A transient refresh rate-limit must not surface as a hard error.
+              // Wait (bounded, abort-aware) for our cooldown to clear or for a
+              // sibling OpenCode instance / the claude CLI to write a fresh
+              // token to the shared store.
+              latest = await getCredentialsWithBackoff({
+                signal: requestInit.signal ?? undefined,
+              })
+            }
+            if (!latest) {
+              if (getActiveRefreshFailureKind() === "transient") {
+                // Retryable: let OpenCode/the AI SDK back off and retry rather
+                // than telling the user to re-authenticate for a passing
+                // rate-limit that the refresh token would otherwise survive.
+                log("fetch_credentials_transient_exhausted", {
+                  modelId: "unknown",
+                })
+                return new Response(
+                  JSON.stringify({
+                    type: "error",
+                    error: {
+                      type: "overloaded_error",
+                      message:
+                        "Claude token refresh is rate-limited; retry shortly.",
+                    },
+                  }),
+                  {
+                    status: 429,
+                    headers: {
+                      "content-type": "application/json",
+                      "retry-after": "5",
+                    },
+                  },
+                )
+              }
               log("fetch_no_credentials", { modelId: "unknown" })
               throw new Error(
                 "Claude Code credentials are unavailable or expired. Run `claude` to refresh them.",
               )
             }
 
-            const requestInit = init ?? {}
             const bodyStr =
               typeof requestInit.body === "string"
                 ? requestInit.body

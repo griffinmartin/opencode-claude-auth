@@ -55,6 +55,15 @@ async function loadCredentialsWithCountingKeychain(
     forceRefreshActiveAccount: (
       refresh?: (refreshToken: string) => Promise<Creds | null>,
     ) => Promise<Creds | null>
+    getCredentialsWithBackoff: (opts?: {
+      maxWaitMs?: number
+      pollMs?: number
+      signal?: AbortSignal
+      now?: () => number
+      sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+      rng?: () => number
+    }) => Promise<Creds | null>
+    getActiveRefreshFailureKind: () => "transient" | "terminal" | null
   }
   keychainModule: {
     __getReadCount: () => number
@@ -96,6 +105,11 @@ async function loadCredentialsWithCountingKeychain(
   await writeFile(
     tempHttp,
     await readFile(new URL("./http.ts", import.meta.url), "utf8"),
+    "utf8",
+  )
+  await writeFile(
+    join(tempDir, "refresh-backoff.ts"),
+    await readFile(new URL("./refresh-backoff.ts", import.meta.url), "utf8"),
     "utf8",
   )
   const rewritten = sourceCredentials
@@ -1427,6 +1441,14 @@ describe("syncAuthJson file permissions", () => {
         await readFile(new URL("./http.ts", import.meta.url), "utf8"),
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "refresh-backoff.ts"),
+        await readFile(
+          new URL("./refresh-backoff.ts", import.meta.url),
+          "utf8",
+        ),
+        "utf8",
+      )
       const rewritten = sourceCredentials.replace(
         /from\s+["']\.\/(\w+)\.js["']/g,
         'from "./$1.ts"',
@@ -1515,6 +1537,14 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       await writeFile(
         join(tempDir, "http.ts"),
         await readFile(new URL("./http.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "refresh-backoff.ts"),
+        await readFile(
+          new URL("./refresh-backoff.ts", import.meta.url),
+          "utf8",
+        ),
         "utf8",
       )
       const rewritten = sourceCredentials.replace(
@@ -1953,7 +1983,8 @@ describe("refreshIfNeeded CLI fallback scope", () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now
     const now = 1_700_000_000_000
-    Date.now = () => now
+    let clock = now
+    Date.now = () => clock
 
     let fetchCount = 0
     globalThis.fetch = (async () => {
@@ -1975,6 +2006,11 @@ describe("refreshIfNeeded CLI fallback scope", () => {
         credentialsModule.getCachedCredentials(),
       ])
       const afterFirstRound = fetchCount
+
+      // Advance past the post-transient refresh cooldown so the next round
+      // actually re-attempts (rather than being cooldown-skipped) — the point
+      // of the assertion is that the retry still collapses to one attempt.
+      clock += 61_000
 
       const second = await Promise.all([
         credentialsModule.getCachedCredentials(),
@@ -2045,9 +2081,12 @@ describe("refreshIfNeeded CLI fallback scope", () => {
     const now = 1_700_000_000_000
     Date.now = () => now
 
-    globalThis.fetch = (async () => {
-      throw new Error("network unreachable")
-    }) as typeof fetch
+    // A terminal failure (dead refresh token) is what routes to the CLI now;
+    // a transient rate-limit/network error deliberately does not spawn it.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+      })) as typeof fetch
 
     try {
       const { credentialsModule, keychainModule, childProcessModule } =
@@ -2751,5 +2790,112 @@ describe("parseOAuthResponse", () => {
 
   it("returns null for empty string", () => {
     assert.equal(parseOAuthResponse("", currentRefresh, now), null)
+  })
+})
+
+describe("getCredentialsWithBackoff (transient rate-limit resilience)", () => {
+  it("returns fresh credentials immediately without waiting", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    try {
+      const { credentialsModule } = await loadCredentialsWithCountingKeychain(
+        now + 10 * 60_000,
+      )
+      credentialsModule.initAccounts([makeAccount(now + 10 * 60_000)])
+
+      let slept = 0
+      const creds = await credentialsModule.getCredentialsWithBackoff({
+        now: () => now,
+        sleep: async () => {
+          slept += 1
+        },
+      })
+
+      assert.ok(creds, "credentials returned immediately")
+      assert.equal(slept, 0, "no wait when credentials are already available")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  it("returns null promptly on a terminal failure, without exhausting the wait", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+      })) as typeof fetch
+    try {
+      const { credentialsModule } = await loadCredentialsWithCountingKeychain(
+        now - 1_000,
+      )
+      credentialsModule.initAccounts([makeAccount(now - 1_000)])
+
+      let slept = 0
+      const creds = await credentialsModule.getCredentialsWithBackoff({
+        maxWaitMs: 100_000,
+        now: () => now,
+        sleep: async () => {
+          slept += 1
+        },
+      })
+
+      assert.equal(creds, null)
+      assert.equal(credentialsModule.getActiveRefreshFailureKind(), "terminal")
+      assert.equal(slept, 0, "a dead refresh token is not waited out")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  it("adopts a token a sibling instance/CLI writes to the store during the cooldown", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    // The token endpoint is rate-limiting us (transient). A retry-after beyond
+    // the fetchWithRetry cap makes it return at once rather than backing off,
+    // keeping the test fast.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+        headers: { "retry-after": "3600" },
+      })) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const target = makeAccount(now - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentials({
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: now - 1_000,
+      })
+
+      // First refresh is rate-limited -> sets a cooldown, no credentials.
+      assert.equal(await credentialsModule.refreshIfNeeded(target), null)
+      assert.equal(credentialsModule.getActiveRefreshFailureKind(), "transient")
+
+      // A sibling OpenCode instance / the claude CLI rotates the shared store.
+      keychainModule.__setCredentials({
+        accessToken: "sibling-rotated-token",
+        refreshToken: "sibling-rotated-refresh",
+        expiresAt: now + 8 * 60 * 60_000,
+      })
+
+      // While still in cooldown we must NOT hit the endpoint again — we adopt
+      // the sibling's fresh token from the store instead.
+      const adopted = await credentialsModule.refreshIfNeeded(target)
+      assert.equal(adopted?.accessToken, "sibling-rotated-token")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
   })
 })
