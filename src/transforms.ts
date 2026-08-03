@@ -207,6 +207,10 @@ export function repairToolPairs(messages: Message[]): Message[] {
     if (!changed) return current
     current = next
   }
+  // Each pass strictly removes blocks/messages, so a fixed point is reached
+  // within messages.length passes; exhausting the cap means an unexpected
+  // non-converging shape. Surface it rather than returning silently.
+  log("repair_drop_max_iterations", { messageCount: messages.length })
   return current
 }
 
@@ -274,9 +278,11 @@ export function synthesizeMissingToolResults(messages: Message[]): Message[] {
     const synthetic = missing.map(makePlaceholderResult)
 
     if (next && next.role === "user" && Array.isArray(next.content)) {
-      // Prepend so tool_result blocks lead the user turn; mutate the copy the
-      // loop will push on its next iteration.
-      pass1[i + 1] = { ...next, content: [...synthetic, ...next.content] }
+      // Merge the synthetic results into the adjacent user turn (so tool_result
+      // blocks lead it) and skip that turn. Building `out` directly this way
+      // avoids mutating `pass1` while it is still being iterated.
+      out.push({ ...next, content: [...synthetic, ...next.content] })
+      i++
     } else {
       out.push({ role: "user", content: synthetic })
     }
