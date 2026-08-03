@@ -191,6 +191,8 @@ export function parseOAuthResponse(
     access_token?: string
     refresh_token?: string
     expires_in?: number
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    expires_at?: number
     error?: string
   }
   try {
@@ -201,10 +203,19 @@ export function parseOAuthResponse(
 
   if (!data.access_token) return null
 
+  // Prefer an absolute `expires_at` (ms) when the endpoint provides one, but
+  // only if it is a future millisecond timestamp — a seconds-precision value
+  // would land in 1970 and read as already-expired, so fall back to the
+  // relative `expires_in` (or a conservative default) in that case.
+  const expiresAt =
+    typeof data.expires_at === "number" && data.expires_at > now
+      ? Math.trunc(data.expires_at)
+      : Math.trunc(now + (data.expires_in ?? 36_000) * 1000)
+
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token ?? currentRefreshToken,
-    expiresAt: Math.trunc(now + (data.expires_in ?? 36_000) * 1000),
+    expiresAt,
   }
 }
 

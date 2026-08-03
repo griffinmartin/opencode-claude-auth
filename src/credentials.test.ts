@@ -2780,6 +2780,31 @@ describe("parseOAuthResponse", () => {
     assert.equal(Number.isInteger(result.expiresAt), true)
   })
 
+  it("honors an absolute future expires_at (ms) over expires_in", () => {
+    const expiresAt = now + 8 * 60 * 60_000
+    const raw = JSON.stringify({
+      access_token: "sk-ant-oat01-new",
+      expires_in: 60, // deliberately tiny; expires_at should win
+      expires_at: expiresAt,
+    })
+    const result = parseOAuthResponse(raw, currentRefresh, now)
+    assert.ok(result)
+    assert.equal(result.expiresAt, expiresAt)
+  })
+
+  it("ignores a non-future (e.g. seconds-precision) expires_at and falls back to expires_in", () => {
+    // A seconds-precision value read as ms lands in 1970 (<= now); must not be
+    // used, or the token would read as already-expired.
+    const raw = JSON.stringify({
+      access_token: "sk-ant-oat01-new",
+      expires_in: 28_800,
+      expires_at: 1_900_000_000, // seconds, not ms
+    })
+    const result = parseOAuthResponse(raw, currentRefresh, now)
+    assert.ok(result)
+    assert.equal(result.expiresAt, now + 28_800 * 1000)
+  })
+
   it("returns null when access_token is missing", () => {
     const raw = JSON.stringify({ refresh_token: "rt", expires_in: 3600 })
     assert.equal(parseOAuthResponse(raw, currentRefresh, now), null)
