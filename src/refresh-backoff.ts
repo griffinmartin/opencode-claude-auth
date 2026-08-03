@@ -54,7 +54,8 @@ interface BackoffOptions {
 
 /**
  * Delay before the next refresh attempt. An explicit `retry-after` from the
- * endpoint wins outright; otherwise an exponential schedule (base · 2^(n-1),
+ * endpoint wins (still clamped to `MAX_COOLDOWN_MS`); otherwise an exponential
+ * schedule (base · 2^(n-1),
  * capped) with jitter in the [50%, 100%] band to desynchronize the several
  * OpenCode instances / CLI invocations that all refresh the same account.
  */
@@ -63,7 +64,10 @@ export function computeBackoffMs(
   opts: BackoffOptions = {},
 ): number {
   if (opts.retryAfterMs !== undefined && opts.retryAfterMs > 0) {
-    return opts.retryAfterMs
+    // Honor the server's hint, but keep it under the documented cap so a large
+    // `Retry-After` (e.g. an hour-long quota reset) can't pin every request to
+    // the full wait budget for that whole window.
+    return Math.min(MAX_COOLDOWN_MS, opts.retryAfterMs)
   }
   const rng = opts.rng ?? Math.random
   const exponent = Math.max(0, consecutive - 1)

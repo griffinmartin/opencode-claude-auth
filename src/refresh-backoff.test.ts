@@ -58,6 +58,14 @@ describe("refresh-backoff", () => {
       )
     })
 
+    it("clamps a large retry-after to the cap", () => {
+      // A server sending Retry-After: 3600 must not pin the cooldown to an hour.
+      assert.equal(
+        computeBackoffMs(1, { retryAfterMs: 3_600_000, rng: () => 0 }),
+        MAX_COOLDOWN_MS,
+      )
+    })
+
     it("grows exponentially with consecutive failures and is capped", () => {
       const a = computeBackoffMs(1, { rng: () => 0 })
       const b = computeBackoffMs(2, { rng: () => 0 })
