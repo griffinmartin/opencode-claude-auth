@@ -29,6 +29,7 @@ import {
   noteRefreshTransient,
   type RefreshFailureKind,
 } from "./refresh-backoff.ts"
+import { acquireRefreshLock } from "./refresh-lock.ts"
 
 export type { ClaudeAccount } from "./keychain.ts"
 export type { ClaudeCredentials } from "./keychain.ts"
@@ -511,7 +512,28 @@ export async function refreshIfNeeded(
     return inFlight
   }
 
-  const pending = performRefresh(target, creds)
+  // Cross-process single-flight: only one OpenCode instance / the CLI should
+  // hit the token endpoint at a time. If another holds the lock, wait briefly
+  // and adopt its result rather than piling onto an already-strained endpoint.
+  const lock = acquireRefreshLock(target.source)
+  if (!lock) {
+    log("refresh_lock_busy", { source: target.source })
+    const adopted = await waitForAdopt(target, creds.accessToken)
+    if (adopted) return adopted
+    // The holder produced nothing within the window (likely crashed; its lock
+    // ages out by TTL). Defer rather than refresh lock-free, so we don't
+    // recreate the burst the lock exists to prevent — the request-level wait
+    // loop and the lock TTL drive eventual progress.
+    return null
+  }
+
+  const pending = (async () => {
+    try {
+      return await performRefresh(target, creds)
+    } finally {
+      lock.release()
+    }
+  })()
   inFlightRefreshes.set(target.source, pending)
   try {
     return await pending
@@ -545,6 +567,43 @@ function adoptFreshFromSource(
     clearRefreshOutcome(target.source)
     log("refresh_adopted_from_source", { source: target.source })
     return stored
+  }
+  return null
+}
+
+const LOCK_ADOPT_WAIT_MS = 5_000
+const LOCK_ADOPT_POLL_MS = 250
+
+interface AdoptWaitOptions {
+  maxMs?: number
+  pollMs?: number
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * Another instance holds the refresh lock and is presumably refreshing. Poll
+ * the shared store for the token it is about to write, up to a short budget,
+ * before giving up.
+ */
+async function waitForAdopt(
+  target: ClaudeAccount,
+  rejectedAccessToken: string,
+  opts: AdoptWaitOptions = {},
+): Promise<ClaudeCredentials | null> {
+  const now = opts.now ?? Date.now
+  const sleep = opts.sleep ?? ((ms: number) => sleepAbortable(ms))
+  const maxMs = opts.maxMs ?? LOCK_ADOPT_WAIT_MS
+  const pollMs = opts.pollMs ?? LOCK_ADOPT_POLL_MS
+
+  const immediate = adoptFreshFromSource(target, rejectedAccessToken)
+  if (immediate) return immediate
+
+  const deadline = now() + maxMs
+  while (now() < deadline) {
+    await sleep(pollMs)
+    const adopted = adoptFreshFromSource(target, rejectedAccessToken)
+    if (adopted) return adopted
   }
   return null
 }

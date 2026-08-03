@@ -8,9 +8,11 @@ import {
 } from "./credentials.ts"
 import { Writable } from "node:stream"
 import { closeLogger, initLogger } from "./logger.ts"
+import { acquireRefreshLock } from "./refresh-lock.ts"
 import {
   chmodSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -19,6 +21,12 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
+
+// Keep the cross-process refresh lock off the real OpenCode data dir during
+// tests, and isolated to this test process.
+process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
+  join(tmpdir(), "opencode-claude-auth-locktest-"),
+)
 
 type Creds = {
   accessToken: string
@@ -110,6 +118,11 @@ async function loadCredentialsWithCountingKeychain(
   await writeFile(
     join(tempDir, "refresh-backoff.ts"),
     await readFile(new URL("./refresh-backoff.ts", import.meta.url), "utf8"),
+    "utf8",
+  )
+  await writeFile(
+    join(tempDir, "refresh-lock.ts"),
+    await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
     "utf8",
   )
   const rewritten = sourceCredentials
@@ -1449,6 +1462,11 @@ describe("syncAuthJson file permissions", () => {
         ),
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "refresh-lock.ts"),
+        await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
       const rewritten = sourceCredentials.replace(
         /from\s+["']\.\/(\w+)\.js["']/g,
         'from "./$1.ts"',
@@ -1545,6 +1563,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
           new URL("./refresh-backoff.ts", import.meta.url),
           "utf8",
         ),
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "refresh-lock.ts"),
+        await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
         "utf8",
       )
       const rewritten = sourceCredentials.replace(
@@ -2896,6 +2919,64 @@ describe("getCredentialsWithBackoff (transient rate-limit resilience)", () => {
     } finally {
       globalThis.fetch = originalFetch
       Date.now = originalNow
+    }
+  })
+})
+
+describe("cross-process refresh lock (single-flight)", () => {
+  it("waits for and adopts a sibling's token while another process holds the lock", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    // If the lock path were ever bypassed, the endpoint must not hand back a
+    // usable token — this asserts the result came from the store, not a refresh.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+        headers: { "retry-after": "3600" },
+      })) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const target = makeAccount(now - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentials({
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: now - 1_000,
+      })
+
+      // The store looks stale on the up-front re-read, then a sibling (holding
+      // the lock) rotates it fresh on the very next read.
+      let reads = 0
+      keychainModule.__setReadHook(() => {
+        reads += 1
+        if (reads >= 2) {
+          keychainModule.__setCredentials({
+            accessToken: "holder-token",
+            refreshToken: "holder-refresh",
+            expiresAt: now + 8 * 60 * 60_000,
+          })
+        }
+      })
+
+      // A sibling process owns the refresh lock for this source.
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held, "test acquires the lock to simulate another process")
+      try {
+        const adopted = await credentialsModule.refreshIfNeeded(target)
+        assert.equal(
+          adopted?.accessToken,
+          "holder-token",
+          "waits for and adopts the lock holder's freshly stored token",
+        )
+      } finally {
+        held!.release()
+      }
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
     }
   })
 })
