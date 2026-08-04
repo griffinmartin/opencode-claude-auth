@@ -663,7 +663,7 @@ const plugin: Plugin = async () => {
                 options: currentAccounts.map((a) => ({
                   label: a.label,
                   value: a.source,
-                  hint: a.source === currentSource ? "active" : undefined,
+                  hint: a.source === currentSource ? "active" : a.source,
                 })),
               },
             ]
