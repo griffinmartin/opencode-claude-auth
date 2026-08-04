@@ -94,6 +94,41 @@ Select "Switch Claude Code account" and pick the account you want to use. Your s
 
 If only one account is found, the switcher is hidden and the plugin uses it directly.
 
+## Quota display
+
+Anthropic returns your subscription quota on every API response, so the plugin records it at no extra cost — no additional request, and nothing counted against your limits. It is the same source Claude Code's own status line reads.
+
+Recording is automatic and needs no configuration. The readings are written to `claude-usage.json` alongside `auth.json`.
+
+To show them in OpenCode, opt in from `tui.json`:
+
+```json
+{
+  "plugin": [["opencode-claude-auth/tui", { "slots": ["sidebar_title"] }]]
+}
+```
+
+The readout looks like `5h 46% 2h29m · 7d 15%` — utilization of the 5-hour and 7-day windows, and how long until the 5-hour one resets. It turns amber past 70% and red past 90%, and shows `limit` if Anthropic has started rejecting requests.
+
+### Options
+
+| Option  | Default             | Description                                             |
+| ------- | ------------------- | ------------------------------------------------------- |
+| `slots` | `["sidebar_title"]` | Where to render. Accepts any number of the slots below. |
+| `label` | `"Claude quota"`    | Heading shown above the readout in the sidebar.         |
+
+| Slot                   | Position                                        |
+| ---------------------- | ----------------------------------------------- |
+| `sidebar_title`        | Top of the sidebar, above the Context section   |
+| `sidebar_content`      | Bottom of the sidebar, below Models             |
+| `sidebar_footer`       | The sidebar's last line                         |
+| `session_prompt_right` | Right edge of the prompt bar                    |
+| `home_prompt_right`    | Right edge of the prompt bar on the home screen |
+
+Two slots are `single_winner`, meaning a plugin that takes one replaces what OpenCode draws there: `sidebar_title` displaces the session title (this plugin re-renders it), and `sidebar_footer` hides the "Open Code" footer line. The prompt-bar slots share their edge with the model and token counters, so a narrow terminal can clip them.
+
+If a window's reset time has passed, it is shown as empty rather than at its last recorded value — an idle session sends no requests, but its quota still replenishes.
+
 ## Troubleshooting
 
 | Problem                                             | Solution                                                                                                                                  |
