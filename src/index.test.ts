@@ -55,11 +55,11 @@ function resolveAccount(
 function buildSelectOptions(
   accounts: Account[],
   activeSource: string,
-): Array<{ label: string; value: string; hint?: string }> {
+): Array<{ label: string; value: string; hint: string }> {
   return accounts.map((a) => ({
     label: a.label,
     value: a.source,
-    hint: a.source === activeSource ? "active" : undefined,
+    hint: a.source === activeSource ? "active" : a.source,
   }))
 }
 
@@ -2025,8 +2025,14 @@ describe("auth hook — select prompt options", () => {
       "Claude Code-credentials-b28bbb7c",
     )
     assert.equal(options[1].hint, "active")
-    assert.equal(options[0].hint, undefined)
-    assert.equal(options[2].hint, undefined)
+    assert.equal(options[0].hint, "Claude Code-credentials")
+    assert.equal(options[2].hint, "Claude Code-credentials-abc123")
+  })
+
+  it("always sets hint to a string", () => {
+    for (const option of buildSelectOptions(accounts, accounts[0].source)) {
+      assert.equal(typeof option.hint, "string")
+    }
   })
 
   it("shows no prompts when only one account exists", () => {
