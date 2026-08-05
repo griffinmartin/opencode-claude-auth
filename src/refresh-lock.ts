@@ -15,15 +15,17 @@
  */
 import {
   closeSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
+  readFileSync,
   statSync,
   unlinkSync,
   writeSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { log } from "./logger.ts"
 
 /** How long before a held lock is considered stale (env-overridable). */
@@ -34,7 +36,36 @@ export const DEFAULT_LOCK_TTL_MS = (() => {
 })()
 
 export interface RefreshLock {
+  /**
+   * Hold the lock for `ms` from now instead of the base TTL.
+   *
+   * The refresh path can fall back to the `claude` CLI, which runs for far
+   * longer than the base TTL and does so inside `execSync` — blocking the event
+   * loop, so no heartbeat timer can fire. The lease therefore has to be
+   * declared up front rather than renewed as the work proceeds.
+   */
+  extend(ms: number): void
   release(): void
+}
+
+interface LockPayload {
+  pid: number
+  ts: number
+  /** Identifies this acquisition, so a release cannot delete a successor. */
+  owner?: string
+  /** Absolute time this lease expires. Absent in locks from older versions. */
+  expiresAt?: number
+}
+
+function readPayload(path: string): LockPayload | null {
+  try {
+    const raw = readFileSync(path, "utf-8")
+    const parsed: unknown = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? (parsed as LockPayload) : null
+  } catch {
+    // Missing, unreadable, or malformed. Callers fall back to mtime.
+    return null
+  }
 }
 
 export interface AcquireOptions {
@@ -59,7 +90,7 @@ function lockPathFor(source: string, dir: string): string {
   return join(dir, `claude-auth-refresh-${digest}.lock`)
 }
 
-const NOOP_LOCK: RefreshLock = { release() {} }
+const NOOP_LOCK: RefreshLock = { extend() {}, release() {} }
 
 /**
  * Try to acquire the refresh lock for `source`.
@@ -96,10 +127,16 @@ export function acquireRefreshLock(
         log("refresh_lock_error", { source, error: String(code ?? err) })
         return NOOP_LOCK
       }
-      // Someone holds it. Take over only if it is stale.
+      // Someone holds it. Take over only if its lease has run out.
       let stale = false
       try {
-        stale = now() - statSync(path).mtimeMs > ttlMs
+        const lease = readPayload(path)?.expiresAt
+        stale =
+          typeof lease === "number" && Number.isFinite(lease)
+            ? now() > lease
+            : // Written by a version that declared no lease, or unreadable.
+              // Fall back to mtime so one such file cannot wedge refreshes.
+              now() - statSync(path).mtimeMs > ttlMs
       } catch {
         // Vanished between open and stat — retry the acquire.
         stale = true
@@ -116,18 +153,42 @@ export function acquireRefreshLock(
       return null
     }
 
-    try {
-      writeSync(fd, JSON.stringify({ pid: process.pid, ts: now() }))
-    } catch {
-      // The lock is held regardless of whether the payload wrote.
+    const owner = randomUUID()
+    const writeLease = (expiresAt: number) => {
+      try {
+        ftruncateSync(fd, 0)
+        writeSync(
+          fd,
+          JSON.stringify({ pid: process.pid, ts: now(), owner, expiresAt }),
+          0,
+        )
+      } catch {
+        // The lock is held regardless of whether the payload wrote. A lease
+        // that never landed degrades to mtime staleness, which is the old
+        // behaviour rather than a new failure.
+      }
     }
+    writeLease(now() + ttlMs)
     log("refresh_lock_acquired", { source })
     return {
+      extend(ms: number) {
+        writeLease(now() + ms)
+        log("refresh_lock_extended", { source, ms })
+      },
       release() {
         try {
           closeSync(fd)
         } catch {
           // already closed
+        }
+        // Only remove the file if this acquisition still owns it. A holder
+        // whose lease ran out has already been taken over, and deleting the
+        // successor's lock would free it for every waiting instance at once —
+        // the exact stampede the lock exists to prevent.
+        const current = readPayload(path)
+        if (current && current.owner !== undefined && current.owner !== owner) {
+          log("refresh_lock_release_skipped", { source, reason: "taken_over" })
+          return
         }
         try {
           unlinkSync(path)
