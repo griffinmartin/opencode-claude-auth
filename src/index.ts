@@ -244,10 +244,23 @@ const plugin: Plugin = async () => {
           }
           proactiveRefreshWarned = false
         } else {
-          log("proactive_refresh_failed", { source: account?.source })
+          // A null here is not necessarily a failure. refreshIfNeeded also
+          // returns null when it deliberately steps aside — another instance
+          // holds the cross-process refresh lock, or a recent 429 put the
+          // account in cooldown. Both are routine when several OpenCode
+          // instances run at once, and both leave a perfectly usable token in
+          // hand. Telling the user to re-authenticate then is noise that
+          // trains them to ignore the message that matters.
+          const expiresAt = getActiveAccount()?.credentials?.expiresAt ?? 0
+          const stillUsable = expiresAt > Date.now() + 60_000
+          log("proactive_refresh_failed", {
+            source: account?.source,
+            stillUsable,
+            expiresAt,
+          })
           // Only warn once per outage — otherwise this fires every
           // SYNC_INTERVAL (5 min) for as long as refresh keeps failing.
-          if (!proactiveRefreshWarned) {
+          if (!stillUsable && !proactiveRefreshWarned) {
             proactiveRefreshWarned = true
             console.warn(
               "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
