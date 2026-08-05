@@ -93,6 +93,12 @@ function lockPathFor(source: string, dir: string): string {
 const NOOP_LOCK: RefreshLock = { extend() {}, release() {} }
 
 /**
+ * How close to its own expiry a lease may be and still delete its lock file.
+ * Guards against the lease lapsing between the ownership check and the unlink.
+ */
+const RELEASE_SAFETY_MARGIN_MS = 1_000
+
+/**
  * Try to acquire the refresh lock for `source`.
  *
  * Returns a {@link RefreshLock} when this process may refresh (either it won the
@@ -154,7 +160,9 @@ export function acquireRefreshLock(
     }
 
     const owner = randomUUID()
+    let leaseExpiresAt = now() + ttlMs
     const writeLease = (expiresAt: number) => {
+      leaseExpiresAt = expiresAt
       try {
         ftruncateSync(fd, 0)
         writeSync(
@@ -181,10 +189,26 @@ export function acquireRefreshLock(
         } catch {
           // already closed
         }
-        // Only remove the file if this acquisition still owns it. A holder
-        // whose lease ran out has already been taken over, and deleting the
-        // successor's lock would free it for every waiting instance at once —
-        // the exact stampede the lock exists to prevent.
+        // Deleting a successor's lock would free it for every waiting instance
+        // at once — the exact stampede the lock exists to prevent. Two guards,
+        // because reading the owner and unlinking cannot be made atomic:
+        //
+        // A successor can only exist once this lease has expired, so an
+        // expired holder does not touch the path at all. That is what closes
+        // the window between the read and the unlink, which an ownership check
+        // alone leaves open. The margin covers a lease that lapses during the
+        // release itself. An abandoned file ages out by its own lease, so
+        // refusing to delete wedges nothing.
+        if (now() > leaseExpiresAt - RELEASE_SAFETY_MARGIN_MS) {
+          log("refresh_lock_release_skipped", {
+            source,
+            reason: "lease_lapsed",
+          })
+          return
+        }
+        // Belt and braces for the case the lease says we are fine but the file
+        // has already been replaced — a clock jump, or a takeover by a peer
+        // reading a different lease than the one we wrote.
         const current = readPayload(path)
         if (current && current.owner !== undefined && current.owner !== owner) {
           log("refresh_lock_release_skipped", { source, reason: "taken_over" })

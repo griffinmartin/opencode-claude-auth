@@ -117,6 +117,30 @@ describe("refresh-lock", () => {
     takeover!.release()
   })
 
+  it("leaves the file alone when releasing on an expired lease", () => {
+    // Closes the read-then-unlink window in release(): a successor can only
+    // exist once this lease has expired, so an expired holder must not delete
+    // the path at all — checking ownership first still leaves room for a
+    // successor to appear between the read and the unlink. The abandoned file
+    // ages out by its own lease, so nothing is wedged.
+    let clock = Date.now()
+    const held = acquireRefreshLock(SRC, {
+      dir,
+      ttlMs: 20_000,
+      now: () => clock,
+    })
+    assert.ok(held)
+
+    clock += 60_000 // the lease lapses while the holder is still working
+    held!.release()
+
+    assert.equal(
+      readdirSync(dir).filter((f) => f.endsWith(".lock")).length,
+      1,
+      "an expired holder does not remove a lock a successor may now own",
+    )
+  })
+
   it("extends its lease so long work is not mistaken for a crash", () => {
     // The refresh path can fall back to the `claude` CLI, which runs far
     // longer than the base TTL. Extending must hold off takeover for the
