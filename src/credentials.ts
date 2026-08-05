@@ -40,6 +40,21 @@ const CREDENTIAL_CACHE_TTL_MS = 30_000
 // it is also the only window where spawning it is worth a real API request.
 const CLI_FALLBACK_THRESHOLD_MS = 60_000
 
+/** Per-attempt timeout for the `claude` CLI fallback. */
+const CLI_ATTEMPT_TIMEOUT_MS = 60_000
+const CLI_MAX_ATTEMPTS = 2
+
+/**
+ * Worst-case wall time the CLI fallback can occupy. The refresh lock's lease
+ * must cover this, or siblings treat the holder as crashed mid-refresh — these
+ * two numbers drifting apart is what turns one slow refresh into a rotation
+ * storm, so the budget is derived rather than restated.
+ */
+export const CLI_REFRESH_BUDGET_MS = CLI_ATTEMPT_TIMEOUT_MS * CLI_MAX_ATTEMPTS
+
+/** Slack added to a lease so it outlives the work it covers. */
+const LEASE_MARGIN_MS = 15_000
+
 const accountCacheMap = new Map<
   string,
   { creds: ClaudeCredentials; cachedAt: number }
@@ -410,12 +425,11 @@ function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
     ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
   }
 
-  const maxAttempts = 2
-  for (let i = 0; i < maxAttempts; i++) {
+  for (let i = 0; i < CLI_MAX_ATTEMPTS; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1, configDir })
     try {
       execSync("claude -p . --model haiku", {
-        timeout: 60_000,
+        timeout: CLI_ATTEMPT_TIMEOUT_MS,
         encoding: "utf-8",
         env,
         stdio: "ignore",
@@ -550,7 +564,7 @@ export async function refreshIfNeeded(
 
   const pending = (async () => {
     try {
-      return await performRefresh(target, creds)
+      return await performRefresh(target, creds, (ms) => lock.extend(ms))
     } finally {
       lock.release()
     }
@@ -632,6 +646,11 @@ async function waitForAdopt(
 async function performRefresh(
   target: ClaudeAccount,
   creds: ClaudeCredentials,
+  /**
+   * Extends the caller's cross-process lease before an operation that runs
+   * longer than the base lock TTL. Absent on paths that hold no lock.
+   */
+  extendLease?: (ms: number) => void,
 ): Promise<ClaudeCredentials | null> {
   if (borrowedCredentialAccounts.has(target)) {
     return refreshBorrowedAccount(target)
@@ -761,6 +780,12 @@ async function performRefresh(
   const isSuffixedAccount =
     target.source !== PRIMARY_SERVICE &&
     target.source.startsWith(PRIMARY_SERVICE + "-")
+  // The CLI can run for CLI_REFRESH_BUDGET_MS, several times the lock's base
+  // TTL. Without extending the lease first, every sibling instance declares
+  // this holder crashed and refreshes concurrently — and each rotation kills
+  // the refresh token the others are holding, so they fall through to their
+  // own CLI spawns against an endpoint that is already rate-limiting.
+  extendLease?.(CLI_REFRESH_BUDGET_MS + LEASE_MARGIN_MS)
   const cliSucceeded = refreshViaCli(target.configDir, isSuffixedAccount)
   if (!cliSucceeded) {
     const fallback = tryFallbackAccount(target.source)
