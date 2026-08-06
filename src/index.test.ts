@@ -18,6 +18,17 @@ process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
   join(tmpdir(), "opencode-claude-auth-locktest-"),
 )
 
+// Same for rotation cooldowns and the pasted-token store, so a test that
+// rate-limits an account cannot bench a real one in the user's state file.
+const stateTestDir = mkdtempSync(
+  join(tmpdir(), "opencode-claude-auth-statetest-"),
+)
+process.env.OPENCODE_CLAUDE_AUTH_ROTATION_FILE = join(
+  stateTestDir,
+  "rotation.json",
+)
+process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(stateTestDir, "tokens.json")
+
 interface ClaudeCredentials {
   accessToken: string
   refreshToken: string
@@ -51,16 +62,17 @@ function resolveAccount(
   return found ?? accounts[0]
 }
 
-// Mirrors the select prompt options builder
+// Mirrors the select prompt options builder. `hint` is omitted rather than set
+// to undefined: the server's auth-method schema rejects an undefined hint.
 function buildSelectOptions(
   accounts: Account[],
   activeSource: string,
 ): Array<{ label: string; value: string; hint?: string }> {
-  return accounts.map((a) => ({
-    label: a.label,
-    value: a.source,
-    hint: a.source === activeSource ? "active" : undefined,
-  }))
+  return accounts.map((a) =>
+    a.source === activeSource
+      ? { label: a.label, value: a.source, hint: "active" }
+      : { label: a.label, value: a.source },
+  )
 }
 
 // Mirrors syncToPath logic
@@ -135,6 +147,8 @@ const SOURCE_FILES = [
   "refresh-lock.ts",
   "logger.ts",
   "http.ts",
+  "token-store.ts",
+  "rotation.ts",
 ] as const
 
 async function copySourceFiles(
@@ -216,6 +230,15 @@ let credentials = {
 }
 
 export const PRIMARY_SERVICE = "Claude Code-credentials"
+
+export function isStaticCredential(creds) {
+  return creds.kind === "static"
+}
+
+export function isCredentialUsable(creds, now = Date.now(), thresholdMs = 60_000) {
+  if (isStaticCredential(creds)) return true
+  return creds.expiresAt > now + thresholdMs
+}
 
 export function readAllClaudeAccounts() {
   readCount += 1
@@ -307,6 +330,15 @@ export function refreshAccount(source) {
 export function writeBackCredentials() { return true }
 export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }
 export const PRIMARY_SERVICE = "Claude Code-credentials"
+
+export function isStaticCredential(creds) {
+  return creds.kind === "static"
+}
+
+export function isCredentialUsable(creds, now = Date.now(), thresholdMs = 60_000) {
+  if (isStaticCredential(creds)) return true
+  return creds.expiresAt > now + thresholdMs
+}
 `,
     "utf8",
   )
@@ -373,6 +405,15 @@ describe("exported helpers", () => {
     await writeFile(
       tempKeychain,
       `export const PRIMARY_SERVICE = "Claude Code-credentials"
+
+export function isStaticCredential(creds) {
+  return creds.kind === "static"
+}
+
+export function isCredentialUsable(creds, now = Date.now(), thresholdMs = 60_000) {
+  if (isStaticCredential(creds)) return true
+  return creds.expiresAt > now + thresholdMs
+}
 export function readAllClaudeAccounts() { return [{ label: "Account 1", source: "Claude Code-credentials", credentials: { accessToken: "token", refreshToken: "refresh", expiresAt: 1 } }] }
 export function refreshAccount() { return null }
 export function writeBackCredentials() { return true }
@@ -2025,8 +2066,9 @@ describe("auth hook — select prompt options", () => {
       "Claude Code-credentials-b28bbb7c",
     )
     assert.equal(options[1].hint, "active")
-    assert.equal(options[0].hint, undefined)
-    assert.equal(options[2].hint, undefined)
+    // Absent, not undefined — see buildSelectOptions.
+    assert.ok(!("hint" in options[0]))
+    assert.ok(!("hint" in options[2]))
   })
 
   it("shows no prompts when only one account exists", () => {
@@ -2349,5 +2391,431 @@ describe("refreshIfNeeded — token expiry", () => {
       refreshIfNeeded(makeCreds({ expiresAt: now + 60_001 }), now),
       "fresh",
     )
+  })
+})
+
+/**
+ * Fake keychain holding one OAuth account plus whatever pasted tokens the
+ * environment supplies, assembled the same way production `keychain.ts` does
+ * it. Using the real `token-store.ts` from the copied tree (rather than a
+ * hand-written static account) is deliberate: it keeps the static-credential
+ * path under test end to end, including `refreshIfNeeded`'s short-circuit.
+ */
+async function loadHelpersForRotation(opts: {
+  accountBToken?: string
+  bFailsToo?: boolean
+}): Promise<{ helpersModule: typeof import("./index.ts") }> {
+  const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-rotate-"))
+  const tempKeychain = join(tempDir, "keychain.ts")
+
+  await copySourceFiles(tempDir)
+  await writeFile(
+    tempKeychain,
+    `import { isTokenSource, readStaticCredentials, readTokenAccounts } from "./token-store.ts"
+
+const farFuture = Date.now() + 10 * 60 * 60 * 1000
+let credsA = { accessToken: "token-a", refreshToken: "rt-a", expiresAt: farFuture }
+let credsB = { accessToken: ${JSON.stringify(opts.accountBToken ?? "token-b")}, refreshToken: "rt-b", expiresAt: farFuture }
+
+export const PRIMARY_SERVICE = "Claude Code-credentials"
+
+export function isStaticCredential(creds) {
+  return creds.kind === "static"
+}
+
+export function isCredentialUsable(creds, now = Date.now(), thresholdMs = 60_000) {
+  if (isStaticCredential(creds)) return true
+  return creds.expiresAt > now + thresholdMs
+}
+
+export function readAllClaudeAccounts() {
+  return [
+    { label: "Account A", source: "acct-a", credentials: credsA },
+    { label: "Account B", source: "acct-b", credentials: credsB },
+    ...readTokenAccounts(),
+  ]
+}
+
+export function refreshAccount(source) {
+  if (isTokenSource(source)) return readStaticCredentials(source)
+  if (source === "acct-a") return credsA
+  if (source === "acct-b") return credsB
+  return null
+}
+
+export function writeBackCredentials() { return true }
+export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }
+`,
+    "utf8",
+  )
+
+  const helpersModule = await import(
+    pathToFileURL(join(tempDir, "index.ts")).href
+  )
+  return { helpersModule }
+}
+
+describe("auth fetch — automatic account rotation on rate limits", () => {
+  const ROTATION_TOKEN = "sk-ant-oat01-ROTATIONTESTTOKENAAAA"
+
+  /** Fresh cooldown + token state per test, so no test inherits a bench. */
+  function isolateRotationState(): void {
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATION_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-rotstate-")),
+      "rotation.json",
+    )
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-toktest-")),
+      "tokens.json",
+    )
+    delete process.env.OPENCODE_CLAUDE_AUTH_TOKENS
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE
+    delete process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER
+  }
+
+  async function withRotationEnv<T>(
+    body: () => Promise<T>,
+    setup?: () => void,
+  ): Promise<T> {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    isolateRotationState()
+    setup?.()
+    try {
+      return await body()
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  }
+
+  async function callFetch(
+    helpersModule: typeof import("./index.ts"),
+  ): Promise<Response> {
+    const plugin = await helpersModule.default({} as never)
+    const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+    const authConfig = await typedPlugin.auth!.loader!(
+      async () => ({
+        type: "oauth",
+        refresh: "refresh",
+        access: "access",
+        expires: Date.now() + 10 * 60 * 60 * 1000,
+      }),
+      { models: {} },
+    )
+    return authConfig.fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+    })
+  }
+
+  it("switches to the next account when the active one is rate-limited", async () => {
+    await withRotationEnv(async () => {
+      const tokens: string[] = []
+      globalThis.fetch = (async (_input, init) => {
+        tokens.push(new Headers(init?.headers).get("authorization") ?? "")
+        // Only the first account is exhausted.
+        if (tokens.length === 1) {
+          return new Response('{"error":{"type":"rate_limit_error"}}', {
+            status: 429,
+            headers: { "retry-after": "3600" },
+          })
+        }
+        return new Response("data: {}\n\n", { status: 200 })
+      }) as typeof fetch
+
+      const { helpersModule } = await loadHelpersForRotation({})
+      const response = await callFetch(helpersModule)
+
+      assert.equal(response.status, 200)
+      assert.equal(
+        tokens[tokens.length - 1],
+        "Bearer token-b",
+        "the retry must be sent with the next account's token",
+      )
+      assert.ok(
+        tokens.length >= 2,
+        "the request should have been retried on another account",
+      )
+    })
+  })
+
+  it("rotates onto a pasted setup-token, which needs no refresh", async () => {
+    await withRotationEnv(
+      async () => {
+        const tokens: string[] = []
+        globalThis.fetch = (async (_input, init) => {
+          tokens.push(new Headers(init?.headers).get("authorization") ?? "")
+          // Both keychain accounts are exhausted; only the pasted token works.
+          const auth = tokens[tokens.length - 1]
+          if (auth === `Bearer ${ROTATION_TOKEN}`) {
+            return new Response("data: {}\n\n", { status: 200 })
+          }
+          return new Response('{"error":{"type":"rate_limit_error"}}', {
+            status: 429,
+            headers: { "retry-after": "3600" },
+          })
+        }) as typeof fetch
+
+        const { helpersModule } = await loadHelpersForRotation({})
+        const response = await callFetch(helpersModule)
+
+        assert.equal(response.status, 200)
+        assert.equal(tokens[tokens.length - 1], `Bearer ${ROTATION_TOKEN}`)
+      },
+      () => {
+        process.env.OPENCODE_CLAUDE_AUTH_TOKENS = ROTATION_TOKEN
+      },
+    )
+  })
+
+  it("surfaces the rate limit once every account is exhausted", async () => {
+    await withRotationEnv(async () => {
+      let calls = 0
+      globalThis.fetch = (async () => {
+        calls += 1
+        return new Response('{"error":{"type":"rate_limit_error"}}', {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })
+      }) as typeof fetch
+
+      const { helpersModule } = await loadHelpersForRotation({})
+      const response = await callFetch(helpersModule)
+
+      assert.equal(response.status, 429, "the real limit must reach the caller")
+      // Bounded: the two accounts are each tried once, not retried forever.
+      assert.ok(calls <= 4, `rotation must be bounded, saw ${calls} requests`)
+    })
+  })
+
+  it("does not rotate when rotation is disabled", async () => {
+    await withRotationEnv(
+      async () => {
+        let calls = 0
+        globalThis.fetch = (async () => {
+          calls += 1
+          return new Response('{"error":{"type":"rate_limit_error"}}', {
+            status: 429,
+            headers: { "retry-after": "3600" },
+          })
+        }) as typeof fetch
+
+        const { helpersModule } = await loadHelpersForRotation({})
+        const response = await callFetch(helpersModule)
+
+        assert.equal(response.status, 429)
+        assert.equal(calls, 1, "no retry should be attempted")
+      },
+      () => {
+        process.env.OPENCODE_CLAUDE_AUTH_ROTATE = "0"
+      },
+    )
+  })
+
+  it("does not rotate on a long-context 429, which every account shares", async () => {
+    await withRotationEnv(async () => {
+      const tokens: string[] = []
+      globalThis.fetch = (async (_input, init) => {
+        tokens.push(new Headers(init?.headers).get("authorization") ?? "")
+        return new Response(
+          JSON.stringify({
+            type: "error",
+            error: {
+              type: "invalid_request_error",
+              message:
+                "Extra usage is required for long context requests. Please enable extra usage.",
+            },
+          }),
+          { status: 429, headers: { "retry-after": "3600" } },
+        )
+      }) as typeof fetch
+
+      const { helpersModule } = await loadHelpersForRotation({})
+      const response = await callFetch(helpersModule)
+
+      assert.equal(response.status, 429)
+      // Every attempt stays on the first account: the beta loop owns this case.
+      assert.ok(
+        tokens.every((t) => t === "Bearer token-a"),
+        `long-context handling must not switch accounts, saw ${JSON.stringify(tokens)}`,
+      )
+    })
+  })
+
+  it("honours a configured account order when choosing where to go next", async () => {
+    await withRotationEnv(
+      async () => {
+        const tokens: string[] = []
+        globalThis.fetch = (async (_input, init) => {
+          tokens.push(new Headers(init?.headers).get("authorization") ?? "")
+          if (tokens.length === 1) {
+            return new Response('{"error":{"type":"rate_limit_error"}}', {
+              status: 429,
+              headers: { "retry-after": "3600" },
+            })
+          }
+          return new Response("data: {}\n\n", { status: 200 })
+        }) as typeof fetch
+
+        const { helpersModule } = await loadHelpersForRotation({})
+        const response = await callFetch(helpersModule)
+
+        assert.equal(response.status, 200)
+        // acct-b is configured first, so it is both the starting account and
+        // the one the 429 rotates away from — landing on acct-a.
+        assert.equal(tokens[0], "Bearer token-b")
+        assert.equal(tokens[tokens.length - 1], "Bearer token-a")
+      },
+      () => {
+        process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER = "acct-b,acct-a"
+      },
+    )
+  })
+})
+
+describe("auth methods — server schema compatibility", () => {
+  /**
+   * GET /provider/auth validates every auth method against a schema that
+   * rejects `hint: undefined` (the key must be absent). That endpoint backs the
+   * TUI's /connect, so an undefined hint takes account switching offline inside
+   * OpenCode with an opaque 500.
+   *
+   * The mirror helper above cannot catch this — it reimplements the builder. This
+   * reads the real plugin's prompts, with the active account deliberately NOT
+   * first, which is the arrangement that produced the bug: rotation and pasted
+   * tokens both routinely leave a later account active.
+   */
+  it("omits hint entirely for accounts that are neither active nor benched", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATION_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-rotstate-")),
+      "rotation.json",
+    )
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-toktest-")),
+      "tokens.json",
+    )
+    delete process.env.OPENCODE_CLAUDE_AUTH_TOKENS
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE
+    delete process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER
+
+    try {
+      // Persist acct-b as active so the first option is a non-active account.
+      const stateDir = join(tempHome, ".local", "share", "opencode")
+      mkdirSync(stateDir, { recursive: true })
+      writeFileSync(join(stateDir, "claude-account-source.txt"), "acct-b")
+
+      const { helpersModule } = await loadHelpersForRotation({})
+      const plugin = await helpersModule.default({} as never)
+      const methods = (
+        plugin as {
+          auth?: { methods: Array<{ prompts?: unknown[] }> }
+        }
+      ).auth!.methods
+
+      const switcher = methods[0]!
+      const prompts = switcher.prompts as Array<{
+        options?: Array<Record<string, unknown>>
+      }>
+      const options = prompts[0]!.options!
+
+      assert.ok(options.length > 1, "expected a multi-account picker")
+      const active = options.filter((o) => o.hint === "active")
+      assert.equal(active.length, 1, "exactly one option is marked active")
+      assert.equal(active[0]!.value, "acct-b")
+
+      for (const option of options) {
+        assert.ok(
+          !("hint" in option) || typeof option.hint === "string",
+          `option ${JSON.stringify(option.value)} must omit hint rather than set it to undefined`,
+        )
+      }
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("never emits an undefined value anywhere in a prompt option", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-toktest-")),
+      "tokens.json",
+    )
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS =
+      "sk-ant-oat01-SCHEMATESTTOKENAAAAA"
+
+    try {
+      const { helpersModule } = await loadHelpersForRotation({})
+      const plugin = await helpersModule.default({} as never)
+      const methods = (
+        plugin as {
+          auth?: { methods: Array<{ label: string; prompts?: unknown[] }> }
+        }
+      ).auth!.methods
+
+      for (const method of methods) {
+        const prompts = (method.prompts ?? []) as Array<
+          Record<string, unknown> & { options?: Array<Record<string, unknown>> }
+        >
+        for (const prompt of prompts) {
+          for (const [key, value] of Object.entries(prompt)) {
+            if (key === "validate") continue
+            assert.notEqual(
+              value,
+              undefined,
+              `${method.label}: prompt key "${key}" is undefined`,
+            )
+          }
+          for (const option of prompt.options ?? []) {
+            for (const [key, value] of Object.entries(option)) {
+              assert.notEqual(
+                value,
+                undefined,
+                `${method.label}: option key "${key}" is undefined`,
+              )
+            }
+          }
+        }
+      }
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      delete process.env.OPENCODE_CLAUDE_AUTH_TOKENS
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
   })
 })
