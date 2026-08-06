@@ -9,6 +9,8 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
+  isCredentialUsable,
+  isStaticCredential,
   PRIMARY_SERVICE,
   readAllClaudeAccounts,
   refreshAccount,
@@ -16,6 +18,19 @@ import {
   type ClaudeAccount,
   type ClaudeCredentials,
 } from "./keychain.ts"
+import { readStaticCredentials } from "./token-store.ts"
+import {
+  clearCooldown,
+  cooldownFromResponse,
+  getRotationConfig,
+  // Aliased to keep it distinct from refresh-backoff's cooldown, which is a
+  // different mechanism: that one throttles the token endpoint, this one
+  // benches a rate-limited subscription.
+  isCoolingDown as isRotationCooldownActive,
+  markRateLimited,
+  pickInitialAccount,
+  pickNextAccount,
+} from "./rotation.ts"
 import { resetExcludedBetas } from "./betas.ts"
 import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
@@ -451,6 +466,26 @@ export async function refreshIfNeeded(
   const target = account ?? getActiveAccount()
   if (!target) return null
 
+  // A pasted token has no refresh mechanism at all: no refresh token to
+  // exchange, no keychain blob to write back, and an expiry that is a nominal
+  // one-year stamp rather than a deadline. Everything below this point exists
+  // to renew an OAuth credential, so a static one must leave before any of it
+  // runs — otherwise the empty refresh token reads as a broken credential and
+  // routes into `claude` CLI spawns and cross-account borrowing on every cache
+  // miss.
+  //
+  // The store is still re-read, for the same reason keychain sources are: a
+  // token the user has just removed should stop being offered.
+  if (isStaticCredential(target.credentials)) {
+    const stored = readStaticCredentials(target.source)
+    if (stored) {
+      target.credentials = stored
+      return stored
+    }
+    log("static_token_missing", { source: target.source })
+    return null
+  }
+
   // Pick up credentials replaced externally — cswap switching accounts, the
   // claude CLI in another terminal, or a second OpenCode instance. This was
   // once limited to file sources, on the false assumption that a keychain
@@ -873,13 +908,29 @@ async function refreshBorrowedAccount(
 
 function tryFallbackAccount(excludeSource: string): ClaudeCredentials | null {
   const now = Date.now()
-  const candidates = allAccounts.filter((a) => a.source !== excludeSource)
+  const config = getRotationConfig()
+  const candidates = allAccounts
+    .filter((a) => a.source !== excludeSource)
+    // Rate-limited accounts sort last rather than being excluded. Their tokens
+    // still authenticate, so one is strictly better than failing the request
+    // outright — but only after every account that can also serve it.
+    .sort((a, b) => {
+      if (!config.enabled) return 0
+      const aCooling = isRotationCooldownActive(a.source, now) ? 1 : 0
+      const bCooling = isRotationCooldownActive(b.source, now) ? 1 : 0
+      return aCooling - bCooling
+    })
 
   // Accounts whose in-memory credentials are still valid can be borrowed
   // directly — no keychain read needed. A 401 on a borrowed token is
   // handled by the existing reload-and-retry fetch path.
+  //
+  // Pasted tokens make particularly good lenders: they are always usable and
+  // borrowing one costs no refresh round trip. isCredentialUsable is what lets
+  // them qualify — their nominal expiry would otherwise be compared like an
+  // OAuth one.
   for (const account of candidates) {
-    if (account.credentials.expiresAt > now + 60_000) {
+    if (isCredentialUsable(account.credentials, now)) {
       log("refresh_fallback_account", {
         failedSource: excludeSource,
         usedSource: account.source,
@@ -898,7 +949,7 @@ function tryFallbackAccount(excludeSource: string): ClaudeCredentials | null {
     } catch {
       continue
     }
-    if (fresh && fresh.expiresAt > now + 60_000) {
+    if (fresh && isCredentialUsable(fresh, now)) {
       account.credentials = fresh
       log("refresh_fallback_account", {
         failedSource: excludeSource,
@@ -1192,4 +1243,101 @@ export function reloadCredentialsFromSource(): ClaudeCredentials | null {
     success: true,
   })
   return reloaded
+}
+
+/**
+ * Bench the account that just hit a rate limit and move the session to the
+ * next healthy one.
+ *
+ * Lives here rather than in rotation.ts because switching accounts means
+ * mutating the active-source and cache state this module owns; rotation.ts
+ * stays a pure policy layer over sources.
+ *
+ * `triedSources` accumulates across one request's rotation attempts so a
+ * single prompt cannot bounce between two exhausted accounts.
+ */
+export async function rotateAfterRateLimit(options: {
+  limitedSource: string
+  headers?: Headers
+  body?: string
+  triedSources?: Iterable<string>
+  now?: number
+}): Promise<{ account: ClaudeAccount; credentials: ClaudeCredentials } | null> {
+  const config = getRotationConfig()
+  if (!config.enabled) {
+    log("rotation_disabled", { limitedSource: options.limitedSource })
+    return null
+  }
+
+  const now = options.now ?? Date.now()
+  const { ms, reason } = cooldownFromResponse(
+    options.headers,
+    options.body,
+    config,
+    now,
+  )
+  markRateLimited(options.limitedSource, ms, reason, now)
+
+  const tried = new Set(options.triedSources ?? [])
+  tried.add(options.limitedSource)
+
+  // Re-read the roster first: a token added in another OpenCode window since
+  // this session started is a legitimate rotation target, and discovering it
+  // only on restart would be the difference between recovering and stalling.
+  const roster = refreshAccountsList()
+  const next = pickNextAccount(roster, tried, now, config)
+
+  if (!next) {
+    log("rotation_no_candidate", {
+      limitedSource: options.limitedSource,
+      poolSize: roster.length,
+      tried: tried.size,
+    })
+    return null
+  }
+
+  setActiveAccountSource(next.source)
+  saveAccountSource(next.source)
+
+  // Ask through the normal path so an OAuth account gets refreshed if its
+  // stored token went cold while it was benched. A static token returns
+  // immediately from its short-circuit.
+  const credentials = await getCachedCredentials()
+  if (!credentials) {
+    log("rotation_target_unusable", {
+      limitedSource: options.limitedSource,
+      target: next.source,
+    })
+    return null
+  }
+
+  log("rotation_switched", {
+    from: options.limitedSource,
+    to: next.source,
+    cooldownMs: ms,
+    reason,
+  })
+  return { account: next, credentials }
+}
+
+/**
+ * Clear a bench once an account is observed working again.
+ *
+ * Called on any successful response, so an account whose limit reset earlier
+ * than its recorded cooldown stops being skipped as soon as it proves itself,
+ * rather than sitting out the remainder of a capped estimate.
+ */
+export function noteAccountSucceeded(source: string): void {
+  if (!getRotationConfig().enabled) return
+  clearCooldown(source)
+}
+
+/**
+ * The account a starting session should use, skipping any that are benched.
+ */
+export function chooseInitialAccount(
+  accounts: ClaudeAccount[],
+  persistedSource: string | null,
+): ClaudeAccount | null {
+  return pickInitialAccount(accounts, persistedSource)
 }
