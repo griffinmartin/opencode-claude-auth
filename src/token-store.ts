@@ -16,8 +16,10 @@
  */
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -65,6 +67,14 @@ export interface TokenStoreFile {
   version: 1
   accounts: StoredToken[]
 }
+
+/**
+ * Tokens accepted this session that could not be persisted (unwritable store,
+ * read-only home). They behave exactly like environment tokens: usable now,
+ * gone on restart — which is what the paste flow promises when it reports the
+ * store could not be written.
+ */
+const sessionTokens: StoredToken[] = []
 
 export function getTokenStorePath(): string {
   return (
@@ -157,11 +167,19 @@ export function writeTokenStore(file: TokenStoreFile): boolean {
     // Write-then-rename so an interrupted write cannot leave a truncated file
     // where the only copy of a pasted token used to be. `setup-token` values
     // are not recoverable from anywhere else on the machine.
-    const tmp = `${path}.tmp`
-    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, {
-      encoding: "utf-8",
-      mode: 0o600,
-    })
+    //
+    // "wx" (O_CREAT|O_EXCL) rather than a plain write: the path is
+    // env-configurable, so a shared parent directory would otherwise let
+    // another local user pre-create the temp path as a symlink and capture a
+    // bearer token. Exclusive creation refuses to follow one. The pid keeps
+    // concurrent writers from colliding on the same name.
+    const tmp = `${path}.${process.pid}.tmp`
+    const fd = openSync(tmp, "wx", 0o600)
+    try {
+      writeFileSync(fd, `${JSON.stringify(file, null, 2)}\n`, "utf-8")
+    } finally {
+      closeSync(fd)
+    }
     if (process.platform !== "win32") chmodSync(tmp, 0o600)
     renameSync(tmp, path)
     if (process.platform !== "win32") chmodSync(path, 0o600)
@@ -263,6 +281,19 @@ export function addTokens(tokens: string[], label?: string): AddTokensResult {
   })
 
   const persisted = added.length > 0 ? writeTokenStore(store) : true
+
+  // A failed write must not throw the tokens away. Every reader resolves
+  // accounts from the file, so without this the roster is rebuilt from the
+  // unchanged store, the new token is absent, and the caller reports "applies
+  // to this session only" about a token that applies to nothing.
+  if (!persisted) {
+    for (const entry of added) {
+      if (!sessionTokens.some((t) => t.id === entry.id))
+        sessionTokens.push(entry)
+    }
+    log("token_store_session_fallback", { count: added.length })
+  }
+
   log("token_store_add", {
     added: added.length,
     duplicates: duplicates.length,
@@ -332,20 +363,28 @@ export function staticCredentialsFor(entry: StoredToken): ClaudeCredentials {
 }
 
 /**
- * Every pasted token, environment first, then the stored file, with
- * explicitly-prioritised entries ahead of unprioritised ones.
+ * Every pasted token: environment, then tokens accepted this session that
+ * could not be written to disk, then the stored file. Explicitly-prioritised
+ * entries sort ahead of unprioritised ones.
  */
 export function listTokenEntries(): StoredToken[] {
   const env = readEnvTokens()
   const seen = new Set(env.map((e) => e.id))
+  const session = sessionTokens.filter((t) => !seen.has(t.id))
+  for (const t of session) seen.add(t.id)
   const stored = readTokenStore().accounts.filter(
     (a) => !a.disabled && !seen.has(a.id),
   )
-  return [...env, ...stored].sort(
+  return [...env, ...session, ...stored].sort(
     (a, b) =>
       (a.priority ?? Number.MAX_SAFE_INTEGER) -
       (b.priority ?? Number.MAX_SAFE_INTEGER),
   )
+}
+
+/** Drops session-only tokens. Exists so tests start from a clean slate. */
+export function clearSessionTokens(): void {
+  sessionTokens.length = 0
 }
 
 /** Pasted tokens as accounts, ready to append to the discovered pool. */

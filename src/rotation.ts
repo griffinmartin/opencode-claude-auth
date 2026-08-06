@@ -20,8 +20,10 @@
  */
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -136,11 +138,16 @@ export function writeRotationState(state: RotationStateFile): boolean {
   try {
     const dir = dirname(path)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const tmp = `${path}.tmp`
-    writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, {
-      encoding: "utf-8",
-      mode: 0o600,
-    })
+    // Exclusive creation for the same reason as the token store: the path is
+    // env-configurable, and a plain write would follow a symlink pre-created by
+    // another local user and clobber whatever it points at.
+    const tmp = `${path}.${process.pid}.tmp`
+    const fd = openSync(tmp, "wx", 0o600)
+    try {
+      writeFileSync(fd, `${JSON.stringify(state, null, 2)}\n`, "utf-8")
+    } finally {
+      closeSync(fd)
+    }
     renameSync(tmp, path)
     if (process.platform !== "win32") chmodSync(path, 0o600)
     return true
