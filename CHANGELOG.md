@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (fork)
+
+### Features
+
+* accept long-lived tokens pasted from `claude setup-token`, as an additional credential source alongside the Keychain and credentials file. Multiple tokens can be pasted at once via `opencode auth login`, or supplied through `OPENCODE_CLAUDE_AUTH_TOKENS` / `CLAUDE_CODE_OAUTH_TOKEN` for headless use. Such tokens are modelled as static credentials: never refreshed, never written back.
+* rotate accounts automatically on rate limits. The limited account is benched for a cooldown derived from `retry-after` / `anthropic-ratelimit-unified-*-reset` (short default for an unexplained 429, capped at 6h), the request retries on the next healthy account in priority order, and benches persist across restarts. Configurable via `OPENCODE_CLAUDE_AUTH_ROTATE*` and `OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER`; long-context 429s are excluded, since they affect every account equally.
+
+### Bug Fixes
+
+* redact `sk-ant-*` values in the debug log. Only JWT-shaped values and three specific keys were redacted before, so a `sk-ant-oat…` or `sk-ant-api…` value logged under another key could reach a file the README describes as safe to attach to an issue.
+
 ## [2.1.6](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.5...v2.1.6) (2026-08-03)
 
 

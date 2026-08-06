@@ -31,8 +31,26 @@ import {
   saveAccountSource,
   refreshAccountsList,
   refreshIfNeeded,
+  rotateAfterRateLimit,
+  noteAccountSucceeded,
+  chooseInitialAccount,
   type ClaudeCredentials,
 } from "./credentials.ts"
+import {
+  activeCooldowns,
+  formatRemaining,
+  getCooldownUntil,
+  getRotationConfig,
+} from "./rotation.ts"
+import {
+  addTokens,
+  isTokenSource,
+  listTokenEntries,
+  parsePastedTokens,
+  removeToken,
+  tokenFingerprint,
+  validateTokenInput,
+} from "./token-store.ts"
 
 export {
   addExcludedBeta,
@@ -168,11 +186,80 @@ export function buildRequestHeaders(
   return headers
 }
 
+/**
+ * Tell the user an account switched, without touching stdout.
+ *
+ * `console.warn` is not available for this: it draws over the OpenCode TUI,
+ * which is why API errors were moved off it in 2.0.1 and why a test asserts a
+ * quota 429 prints nothing. A toast is the supported channel, and it is
+ * strictly best-effort — a failed notification must never fail the request
+ * that triggered it, and `client` is absent in unit tests and headless runs.
+ */
+type ToastClient = {
+  tui?: {
+    showToast?: (options: {
+      body: {
+        title?: string
+        message: string
+        variant: "info" | "success" | "warning" | "error"
+        duration?: number
+      }
+    }) => unknown
+  }
+}
+
+function notify(
+  client: ToastClient | undefined,
+  message: string,
+  variant: "info" | "success" | "warning" | "error",
+  title = "Claude auth",
+): void {
+  log("notify", { message, variant })
+  try {
+    const result = client?.tui?.showToast?.({
+      body: { title, message, variant, duration: 6000 },
+    })
+    void Promise.resolve(result).catch(() => {})
+  } catch {
+    // Never let notification failure surface as a request failure.
+  }
+}
+
+/** One-line summary of which accounts are benched, for warnings. */
+function describeCooldowns(now = Date.now()): string {
+  const cooling = activeCooldowns(now)
+  if (cooling.length === 0) return "No cooldowns are recorded."
+  return cooling
+    .map((c) => `${c.source} for ${formatRemaining(c.remainingMs)}`)
+    .join(", ")
+}
+
+/** Picker hint combining the active marker with any rate-limit cooldown. */
+function accountHint(
+  source: string,
+  activeSource: string | null,
+  now = Date.now(),
+): string | undefined {
+  const until = getCooldownUntil(source, now)
+  const parts: string[] = []
+  if (source === activeSource) parts.push("active")
+  if (until !== null) {
+    parts.push(`rate-limited, ${formatRemaining(until - now)} left`)
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined
+}
+
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const PROACTIVE_REFRESH_THRESHOLD_MS = 60 * 60 * 1000 // 1 hour before expiry
 
-const plugin: Plugin = async () => {
+// Named to avoid shadowing the `input` parameter of the auth loader's fetch.
+const plugin: Plugin = async (pluginInput) => {
   initLogger()
+
+  // Optional by design: unit tests construct the plugin with no input, and a
+  // headless server has no TUI to toast into. Rotation must work in both.
+  const toastClient = (pluginInput as { client?: ToastClient } | undefined)
+    ?.client
 
   let accounts: ClaudeAccount[] = []
   try {
@@ -193,9 +280,11 @@ const plugin: Plugin = async () => {
 
   if (accounts.length > 0) {
     const persistedSource = loadPersistedAccountSource()
+    // Steps over an account that is still benched from a rate limit hit in an
+    // earlier session, so restarting OpenCode during a usage limit lands on a
+    // working account instead of replaying the limit on the first prompt.
     const defaultAccount =
-      (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
-      accounts[0]
+      chooseInitialAccount(accounts, persistedSource) ?? accounts[0]
 
     setActiveAccountSource(defaultAccount.source)
 
@@ -203,6 +292,8 @@ const plugin: Plugin = async () => {
       accountCount: accounts.length,
       sources: accounts.map((a) => a.source),
       activeSource: defaultAccount.source,
+      pastedTokens: accounts.filter((a) => isTokenSource(a.source)).length,
+      cooldowns: activeCooldowns().length,
     })
 
     const initialCreds = await getCachedCredentials()
@@ -566,6 +657,109 @@ const plugin: Plugin = async () => {
               }
             }
 
+            // Still rate-limited after the external-switch check, so this
+            // account is genuinely out of allowance as far as this session can
+            // tell. Bench it and walk down the priority order.
+            //
+            // Ordered after the external-switch block on purpose: if another
+            // process already rotated us onto a healthy account, that costs no
+            // cooldown and no switch. Ordered before the long-context beta loop
+            // for the reason that loop documents from the other side — a
+            // long-context 429 is a header problem that every account shares,
+            // so rotating around it would bench the whole pool for a fault no
+            // account can avoid. That case is excluded explicitly below rather
+            // than by ordering alone, because reaching the beta loop first
+            // would mean the account was already benched by then.
+            if (response.status === 429 && getRotationConfig().enabled) {
+              const rotationConfig = getRotationConfig()
+              const triedSources = new Set<string>()
+              const startingAccount = getActiveAccount()
+              if (startingAccount) triedSources.add(startingAccount.source)
+
+              for (
+                let switchCount = 0;
+                switchCount < rotationConfig.maxSwitchesPerRequest;
+                switchCount++
+              ) {
+                if (response.status !== 429) break
+
+                // Body is needed both to exclude long-context errors and to
+                // tell an explained usage limit from a bare 429. Cloned so the
+                // response stays readable if we end up returning it.
+                let limitBody = ""
+                try {
+                  limitBody = await response.clone().text()
+                } catch {
+                  // An unreadable body is not a reason to skip rotation; it
+                  // only costs the body-derived reason label.
+                }
+
+                if (isLongContextError(limitBody)) {
+                  log("rotation_skipped_long_context", { modelId })
+                  break
+                }
+
+                const limitedSource =
+                  getActiveAccount()?.source ?? startingAccount?.source
+                if (!limitedSource) break
+
+                const rotated = await rotateAfterRateLimit({
+                  limitedSource,
+                  headers: response.headers,
+                  body: limitBody,
+                  triedSources,
+                })
+                if (!rotated) {
+                  // Nothing healthy left. Return the 429 so the user sees the
+                  // real limit rather than a silent stall, and say which
+                  // accounts are benched and for how long — that is the one
+                  // piece of information the raw API error cannot carry.
+                  notify(
+                    toastClient,
+                    `All Claude accounts are rate-limited. ${describeCooldowns()}`,
+                    "error",
+                  )
+                  break
+                }
+
+                triedSources.add(rotated.account.source)
+                tokenInUse = rotated.credentials.accessToken
+                syncAuthJson(rotated.credentials)
+                notify(
+                  toastClient,
+                  `Rate limit reached — switched to ${rotated.account.label}.`,
+                  "warning",
+                )
+
+                response = await fetchWithRetry(requestUrl, {
+                  ...requestInit,
+                  body,
+                  headers: buildRequestHeaders(
+                    input,
+                    requestInit,
+                    tokenInUse,
+                    modelId,
+                    getExcludedBetas(modelId),
+                  ),
+                })
+                log("rotation_retry_response", {
+                  modelId,
+                  source: rotated.account.source,
+                  status: response.status,
+                  switchCount: switchCount + 1,
+                })
+              }
+            }
+
+            // An account that just served a request is demonstrably not
+            // limited, so retire any bench it was still carrying — a cooldown
+            // derived from a capped estimate should not outlive the limit it
+            // was guessing at.
+            if (response.ok) {
+              const servingSource = getActiveAccount()?.source
+              if (servingSource) noteAccountSucceeded(servingSource)
+            }
+
             // Check for long-context beta errors and retry with betas excluded
             // Try up to LONG_CONTEXT_BETAS.length times, excluding one more beta each time
             for (
@@ -660,11 +854,16 @@ const plugin: Plugin = async () => {
                 type: "select" as const,
                 key: "account",
                 message: "Select which Claude Code account to use:",
-                options: currentAccounts.map((a) => ({
-                  label: a.label,
-                  value: a.source,
-                  hint: a.source === currentSource ? "active" : undefined,
-                })),
+                // Rate-limited accounts stay selectable; the hint carries the
+                // wait so the choice is informed.
+                options: currentAccounts.map((a) => {
+                  const hint = accountHint(a.source, currentSource)
+                  // `hint: undefined` fails the server's auth-method schema,
+                  // which serves GET /provider/auth for the TUI's /connect.
+                  return hint
+                    ? { label: a.label, value: a.source, hint }
+                    : { label: a.label, value: a.source }
+                }),
               },
             ]
           },
@@ -702,6 +901,178 @@ const plugin: Plugin = async () => {
                   access: creds.accessToken,
                   refresh: creds.refreshToken,
                   expires: creds.expiresAt,
+                }
+              },
+            }
+          },
+        },
+        {
+          type: "oauth",
+          label: "Add Claude token (paste from `claude setup-token`)",
+
+          get prompts() {
+            return [
+              {
+                type: "text" as const,
+                key: "tokens",
+                message:
+                  "Paste one or more tokens from `claude setup-token` (separate multiple with a space or comma):",
+                placeholder: "sk-ant-oat01-… sk-ant-oat01-…",
+                validate: validateTokenInput,
+              },
+              {
+                type: "text" as const,
+                key: "label",
+                message: "Label for these accounts (optional, e.g. work):",
+                placeholder: "work",
+              },
+            ]
+          },
+
+          async authorize(inputs) {
+            const { tokens, invalid } = parsePastedTokens(inputs?.tokens ?? "")
+            const result = addTokens(tokens, inputs?.label)
+
+            // Activate a newly added token straight away: pasting one is an
+            // explicit statement of intent to use it, and leaving the session
+            // on the old account would make the feature look inert.
+            const roster = refreshAccountsList()
+            const target = result.added[0]
+              ? roster.find(
+                  (a) => a.source === `token:${result.added[0]?.id ?? ""}`,
+                )
+              : undefined
+
+            let creds: ClaudeCredentials | null = null
+            if (target) {
+              setActiveAccountSource(target.source)
+              saveAccountSource(target.source)
+              creds = await getCachedCredentials()
+              if (creds) syncAuthJson(creds)
+            } else {
+              creds = await getCachedCredentials()
+            }
+
+            const parts: string[] = []
+            if (result.added.length > 0) {
+              parts.push(
+                `Added ${result.added.length} token${result.added.length === 1 ? "" : "s"}`,
+              )
+            }
+            if (result.duplicates.length > 0) {
+              parts.push(`${result.duplicates.length} already stored`)
+            }
+            if (invalid.length > 0) {
+              parts.push(`${invalid.length} ignored (not a valid token)`)
+            }
+            if (!result.persisted) {
+              parts.push(
+                "WARNING: could not write the token store — tokens apply to this session only",
+              )
+            }
+            if (target) parts.push(`now using ${target.label}`)
+            parts.push(`${roster.length} accounts available for rotation`)
+
+            const summary = parts.join("; ")
+
+            // A paste that produced nothing usable must not report success —
+            // OpenCode would record an auth entry for an account that cannot
+            // serve a request.
+            if (!creds) {
+              return {
+                url: "",
+                instructions: `${summary}. No usable credentials — run \`claude\` or paste a valid token.`,
+                method: "auto",
+                async callback() {
+                  return { type: "failed" }
+                },
+              }
+            }
+
+            const activeCreds = creds
+            return {
+              url: "",
+              instructions: `${summary}.`,
+              method: "auto",
+              async callback() {
+                return {
+                  type: "success",
+                  provider: "anthropic",
+                  access: activeCreds.accessToken,
+                  refresh: activeCreds.refreshToken,
+                  expires: activeCreds.expiresAt,
+                }
+              },
+            }
+          },
+        },
+        {
+          type: "oauth",
+          label: "Remove a stored Claude token",
+
+          get prompts() {
+            const entries = listTokenEntries().filter(
+              // Environment-supplied tokens have no stored record to delete;
+              // removing one means unsetting the variable.
+              (e) => e.addedAt !== 0,
+            )
+            if (entries.length === 0) return []
+            return [
+              {
+                type: "select" as const,
+                key: "id",
+                message: "Which stored token should be removed?",
+                options: entries.map((e) => ({
+                  label: e.label
+                    ? `${e.label} (${tokenFingerprint(e.token)})`
+                    : `Token ${tokenFingerprint(e.token)}`,
+                  value: e.id,
+                })),
+              },
+            ]
+          },
+
+          async authorize(inputs) {
+            const id = inputs?.id
+            const removed = id ? removeToken(id) : false
+            const roster = refreshAccountsList()
+
+            // The removed token may have been the active account, so re-resolve
+            // rather than assuming the session still has usable credentials.
+            const stillActive = getActiveAccount()
+            if (!stillActive && roster[0]) {
+              setActiveAccountSource(roster[0].source)
+              saveAccountSource(roster[0].source)
+            }
+            const creds = await getCachedCredentials()
+
+            const summary = removed
+              ? `Removed the token; ${roster.length} accounts remain`
+              : "No matching token was stored"
+
+            if (!creds) {
+              return {
+                url: "",
+                instructions: `${summary}. No usable credentials remain — run \`claude\` or paste a token.`,
+                method: "auto",
+                async callback() {
+                  return { type: "failed" }
+                },
+              }
+            }
+
+            const activeCreds = creds
+            return {
+              url: "",
+              instructions: `${summary}. Using ${getActiveAccount()?.label ?? "the remaining account"}.`,
+              method: "auto",
+              async callback() {
+                return {
+                  type: "success",
+                  provider: "anthropic",
+                  access: activeCreds.accessToken,
+                  refresh: activeCreds.refreshToken,
+                  expires: activeCreds.expiresAt,
                 }
               },
             }

@@ -10,12 +10,27 @@ import {
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
+import {
+  isTokenSource,
+  readStaticCredentials,
+  readTokenAccounts,
+} from "./token-store.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
   refreshToken: string
   expiresAt: number
   subscriptionType?: string
+  /**
+   * How this credential can be renewed. Absent means "oauth", so every
+   * credential parsed from the keychain or the credentials file keeps its
+   * existing behavior.
+   *
+   * "static" is a pasted `claude setup-token` value: no refresh token, no
+   * store to write back to, and an expiry that is a label rather than a
+   * deadline. See src/token-store.ts.
+   */
+  kind?: "oauth" | "static"
 }
 
 export interface ClaudeAccount {
@@ -26,6 +41,27 @@ export interface ClaudeAccount {
 }
 
 export const PRIMARY_SERVICE = "Claude Code-credentials"
+
+export function isStaticCredential(creds: ClaudeCredentials): boolean {
+  return creds.kind === "static"
+}
+
+/**
+ * Whether a credential can be used for a request right now.
+ *
+ * Static credentials are always usable: their expiry is a nominal one-year
+ * stamp, they cannot be refreshed, and the only authority on whether the token
+ * still works is a 401 from the API. Treating them as expiring would route
+ * them into refresh paths that have nothing to refresh with.
+ */
+export function isCredentialUsable(
+  creds: ClaudeCredentials,
+  now = Date.now(),
+  thresholdMs = 60_000,
+): boolean {
+  if (isStaticCredential(creds)) return true
+  return creds.expiresAt > now + thresholdMs
+}
 
 export function parseCredentials(raw: string): ClaudeCredentials | null {
   let parsed: unknown
@@ -315,7 +351,33 @@ export function buildAccountLabels(
   })
 }
 
+/**
+ * Every account the plugin can use: those discovered from Claude Code's own
+ * storage, then those pasted in as long-lived tokens.
+ *
+ * Discovery order is the priority order rotation follows, and pasted tokens go
+ * last deliberately — a Keychain account can refresh itself indefinitely,
+ * whereas a pasted token is a fixed, unrenewable allowance. Override with
+ * OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER when a different preference is wanted.
+ *
+ * A machine with no Claude Code login at all still works: discovery returns
+ * nothing and the pasted tokens stand alone as the whole pool.
+ */
 export function readAllClaudeAccounts(): ClaudeAccount[] {
+  const discovered = readDiscoveredAccounts()
+  const tokenAccounts = readTokenAccounts()
+
+  if (tokenAccounts.length > 0) {
+    log("accounts_assembled", {
+      discovered: discovered.length,
+      pastedTokens: tokenAccounts.length,
+    })
+  }
+
+  return [...discovered, ...tokenAccounts]
+}
+
+function readDiscoveredAccounts(): ClaudeAccount[] {
   if (process.platform !== "darwin") {
     const configDir =
       process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
@@ -480,6 +542,15 @@ export function writeBackCredentials(
   configDir?: string,
   expectedPriorAccessToken?: string,
 ): boolean {
+  // A pasted token has no rotating state to persist: the value in the store is
+  // the value in use, forever. Reported as success because nothing failed and
+  // nothing is pending — the compare-and-swap contract this return value feeds
+  // is about detecting a *lost* write, and there is no write to lose.
+  if (isTokenSource(source)) {
+    log("writeback_skipped_static", { source })
+    return true
+  }
+
   const newCreds = {
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
@@ -579,6 +650,12 @@ export function refreshAccount(
   source: string,
   configDir?: string,
 ): ClaudeCredentials | null {
+  // Re-reads the token file rather than returning a cached copy, so a token
+  // removed by the user drops out of the pool on the next cache miss — the
+  // same convergence a deleted keychain entry gets.
+  if (isTokenSource(source)) {
+    return readStaticCredentials(source)
+  }
   if (source === "file") {
     return readCredentialsFile(configDir)
   }
