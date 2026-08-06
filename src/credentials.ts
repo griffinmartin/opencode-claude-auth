@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve as resolvePath } from "node:path"
 import {
   PRIMARY_SERVICE,
   readAllClaudeAccounts,
@@ -30,6 +30,7 @@ import {
   type RefreshFailureKind,
 } from "./refresh-backoff.ts"
 import { acquireRefreshLock } from "./refresh-lock.ts"
+import { isRotatedAway, noteRotatedAway } from "./rotated-tokens.ts"
 
 export type { ClaudeAccount } from "./keychain.ts"
 export type { ClaudeCredentials } from "./keychain.ts"
@@ -410,6 +411,22 @@ export async function refreshViaOAuth(
   return outcome.kind === "ok" ? outcome.creds : null
 }
 
+/**
+ * Whether the `claude` CLI would authenticate from the very store this account
+ * reads. Deliberately compares the resolved path rather than testing
+ * `source === "file"`, so a macOS multi-account setup whose configDir genuinely
+ * differs still gets the fallback.
+ */
+function cliSharesStoreWith(target: ClaudeAccount): boolean {
+  if (target.source !== "file") return false
+  const ours =
+    target.configDir ??
+    process.env.CLAUDE_CONFIG_DIR ??
+    join(homedir(), ".claude")
+  const cli = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+  return resolvePath(ours) === resolvePath(cli)
+}
+
 function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
   if (requireConfigDir && !configDir) {
     log("refresh_cli_skipped", {
@@ -501,6 +518,12 @@ export async function refreshIfNeeded(
     const now = Date.now()
     if (
       stored &&
+      // A blob we rotated away is not "credentials replaced externally", it is
+      // our own failed write-back looking back at us. Its access token can
+      // still be an hour from expiry and its refresh token has been dead since
+      // the rotation, so adopting it silently trades the live pair for one
+      // that can never be refreshed again.
+      !isRotatedAway(target.source, stored.accessToken) &&
       (stored.expiresAt > now + 60_000 ||
         target.credentials.expiresAt <= now + 60_000)
     ) {
@@ -555,10 +578,20 @@ export async function refreshIfNeeded(
     log("refresh_lock_busy", { source: target.source })
     const adopted = await waitForAdopt(target, creds.accessToken)
     if (adopted) return adopted
-    // The holder produced nothing within the window (likely crashed; its lock
-    // ages out by TTL). Defer rather than refresh lock-free, so we don't
-    // recreate the burst the lock exists to prevent — the request-level wait
-    // loop and the lock TTL drive eventual progress.
+    // The holder produced nothing within the window. Defer rather than refresh
+    // lock-free, so we don't recreate the burst the lock exists to prevent.
+    //
+    // Recorded as transient because that is what it is: someone else is
+    // working and a token is expected shortly. Without this the caller cannot
+    // tell "deferred" from "dead refresh token" — both are a bare null — and
+    // reports a hard "credentials unavailable" error. It also decouples the
+    // holder's lease from the waiter's budget: the lease may exceed
+    // REFRESH_WAIT_MS as long as exhausting that budget yields a retryable
+    // response rather than a failure.
+    // Pinned to the adopt window rather than the escalating schedule: this
+    // process never touched the endpoint, so it has earned no backoff — the
+    // marker is the point, not the penalty.
+    noteRefreshTransient(target.source, { retryAfterMs: LOCK_ADOPT_WAIT_MS })
     return null
   }
 
@@ -595,6 +628,9 @@ function adoptFreshFromSource(
   if (
     stored &&
     stored.accessToken !== rejectedAccessToken &&
+    // Same reason as the re-read in refreshIfNeeded: an unexpired access token
+    // says nothing about whether its refresh token survived our own rotation.
+    !isRotatedAway(target.source, stored.accessToken) &&
     stored.expiresAt > Date.now() + 60_000
   ) {
     target.credentials = stored
@@ -662,6 +698,9 @@ async function performRefresh(
     expiresIn: creds.expiresAt - Date.now(),
   })
 
+  /** Set when the OAuth endpoint said the refresh token itself is dead. */
+  let sawTerminalOutcome = false
+
   if (creds.refreshToken) {
     const outcome = await refreshViaOAuthDetailed(creds.refreshToken)
 
@@ -670,6 +709,11 @@ async function performRefresh(
       outcome.creds.expiresAt > Date.now() + 60_000
     ) {
       clearRefreshOutcome(target.source)
+      // Before anything can fail: the pair we just refreshed from is dead as
+      // of this moment, whatever happens to the write-back below. Recording it
+      // is what stops the re-read at the top of refreshIfNeeded from adopting
+      // it back and throwing away the only live refresh token.
+      noteRotatedAway(target.source, creds.accessToken)
       target.credentials = outcome.creds
       if (
         !writeBackCredentials(
@@ -679,12 +723,10 @@ async function performRefresh(
           creds.accessToken,
         )
       ) {
-        // Mirrors force_refresh_writeback_failed on the forced path. The
-        // session continues from memory either way, so this stays a log
-        // rather than a control-flow change: acting on the two causes
-        // (I/O failure vs. CAS mismatch) differs, and the proactive-path
-        // consequence — a still-usable orphaned blob being re-adopted by
-        // the validated re-read — is tracked as a follow-up.
+        // Not fatal: memory holds the live pair and the store now holds a
+        // provably dead one, which noteRotatedAway lets both the reader and
+        // the next write-back recognise. Left as a log so the next tick
+        // repairs the store rather than this path having to.
         log("refresh_writeback_failed", { source: target.source })
       }
       return outcome.creds
@@ -723,6 +765,7 @@ async function performRefresh(
     if (outcome.kind === "terminal") {
       // The refresh token itself is dead (invalid_grant, ...). Fall through to
       // the CLI fallback / borrowed-account recovery below.
+      sawTerminalOutcome = true
       noteRefreshTerminal(target.source)
       log("refresh_terminal", {
         source: target.source,
@@ -758,7 +801,11 @@ async function performRefresh(
   // has none: a sibling process can write a file source mid-round-trip
   // exactly as it can a keychain entry. Left in place only to keep this
   // change off the file path; removing it is tracked as a follow-up.
-  if (target.source !== "file") {
+  // Runs for file sources too. The exclusion had no rationale by its own
+  // admission, and it removed the last recovery step before the CLI on exactly
+  // the platform with the fewest: Windows resolves to a single "file" account,
+  // so tryFallbackAccount below has nothing to offer either.
+  {
     let stored: ClaudeCredentials | null = null
     try {
       stored = refreshAccount(target.source, target.configDir)
@@ -768,12 +815,38 @@ async function performRefresh(
     if (
       stored &&
       stored.accessToken !== creds.accessToken &&
+      !isRotatedAway(target.source, stored.accessToken) &&
       stored.expiresAt > Date.now() + 60_000
     ) {
       target.credentials = stored
       log("refresh_adopted_external", { source: target.source })
       return stored
     }
+  }
+
+  // A dead refresh token cannot be revived by `claude -p`: it authenticates
+  // from the same credentials file we just failed against, so it fails the
+  // same way. Spawning it costs up to CLI_REFRESH_BUDGET_MS of blocked event
+  // loop — the whole instance, not just this refresh — for a guaranteed
+  // failure. Only an interactive login recovers this, which the caller
+  // surfaces.
+  if (sawTerminalOutcome && cliSharesStoreWith(target)) {
+    log("refresh_cli_skipped", {
+      source: target.source,
+      reason: "cli_reads_the_same_dead_store",
+    })
+    const fallback = tryFallbackAccount(target.source)
+    if (fallback) {
+      target.credentials = fallback
+      borrowedCredentialAccounts.add(target)
+      return fallback
+    }
+    log("refresh_exhausted", {
+      source: target.source,
+      hadCredentials: false,
+      expiresAt: undefined,
+    })
+    return null
   }
 
   log("refresh_fallback_cli", { source: target.source })
@@ -999,6 +1072,9 @@ export async function forceRefreshActiveAccount(
   const priorAccessToken = account.credentials.accessToken
   const oauthCreds = await refresh(account.credentials.refreshToken)
   if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
+    // Same reasoning as the proactive path: this rotation killed the pair we
+    // refreshed from, and that is true whether or not the write-back lands.
+    noteRotatedAway(account.source, priorAccessToken)
     account.credentials = oauthCreds
     if (
       !writeBackCredentials(
