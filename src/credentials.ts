@@ -1285,9 +1285,35 @@ export async function rotateAfterRateLimit(options: {
   // this session started is a legitimate rotation target, and discovering it
   // only on restart would be the difference between recovering and stalling.
   const roster = refreshAccountsList()
-  const next = pickNextAccount(roster, tried, now, config)
+  const previousSource = activeAccountSource
 
-  if (!next) {
+  // Walk candidates until one can actually serve a request. A candidate that
+  // cannot produce credentials must not be left active, let alone persisted:
+  // doing so strands this session — and every later one, via the state file —
+  // on a broken account, which is strictly worse than the rate limit that
+  // triggered the rotation.
+  let next: ClaudeAccount | null
+  let credentials: ClaudeCredentials | null = null
+  while ((next = pickNextAccount(roster, tried, now, config))) {
+    tried.add(next.source)
+
+    // Must be active before asking: getCachedCredentials resolves the active
+    // account. Restored below if this candidate turns out to be unusable.
+    setActiveAccountSource(next.source)
+
+    // Through the normal path, so an OAuth account gets refreshed if its stored
+    // token went cold while benched. A static token short-circuits.
+    credentials = await getCachedCredentials()
+    if (credentials) break
+
+    log("rotation_target_unusable", {
+      limitedSource: options.limitedSource,
+      target: next.source,
+    })
+  }
+
+  if (!next || !credentials) {
+    if (previousSource) setActiveAccountSource(previousSource)
     log("rotation_no_candidate", {
       limitedSource: options.limitedSource,
       poolSize: roster.length,
@@ -1296,20 +1322,8 @@ export async function rotateAfterRateLimit(options: {
     return null
   }
 
-  setActiveAccountSource(next.source)
+  // Persisted only now that the target is known to work.
   saveAccountSource(next.source)
-
-  // Ask through the normal path so an OAuth account gets refreshed if its
-  // stored token went cold while it was benched. A static token returns
-  // immediately from its short-circuit.
-  const credentials = await getCachedCredentials()
-  if (!credentials) {
-    log("rotation_target_unusable", {
-      limitedSource: options.limitedSource,
-      target: next.source,
-    })
-    return null
-  }
 
   log("rotation_switched", {
     from: options.limitedSource,

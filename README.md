@@ -109,7 +109,9 @@ Pasting a token switches to it immediately. Re-pasting a token you already have 
 
 To remove one, run `opencode auth login` and pick **"Remove a stored Claude token"**.
 
-Tokens are stored in `~/.local/share/opencode/claude-auth-tokens.json` with `0600` permissions. They are secrets — treat that file like an SSH key.
+Tokens are stored in `~/.local/share/opencode/claude-auth-tokens.json` with `0600` permissions. They are secrets — treat that file like an SSH key. If the store can't be written, the paste still applies for the rest of the session and says so.
+
+If you point `OPENCODE_CLAUDE_AUTH_TOKENS_FILE` somewhere other than your own data directory, keep the parent directory private to you — the store holds bearer tokens.
 
 ### Headless and CI
 

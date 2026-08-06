@@ -1,10 +1,19 @@
 import { describe, it, beforeEach } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, statSync, writeFileSync } from "node:fs"
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   addTokens,
+  clearSessionTokens,
+  writeTokenStore,
   isTokenSource,
   listTokenEntries,
   parsePastedTokens,
@@ -333,5 +342,84 @@ describe("store resilience", () => {
     delete process.env.OPENCODE_CLAUDE_AUTH_TOKENS
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN
     assert.deepEqual(readTokenStore().accounts, [])
+  })
+})
+
+describe("token store hardening", () => {
+  beforeEach(() => {
+    clearSessionTokens()
+    isolateStore()
+  })
+
+  it("keeps tokens usable for the session when the store cannot be written", () => {
+    // A directory in place of the file makes every write fail.
+    const dir = mkdtempSync(join(tmpdir(), "claude-auth-unwritable-"))
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(dir, "sub")
+    mkdirSync(join(dir, "sub"), { recursive: true })
+
+    const result = addTokens([TOKEN_A], "fallback")
+    assert.equal(result.persisted, false, "the write is expected to fail here")
+    assert.equal(result.added.length, 1)
+
+    // The promise made to the user — "applies to this session only" — has to
+    // hold: the token must be resolvable through the normal reader path.
+    const entries = listTokenEntries()
+    assert.equal(entries.length, 1)
+    assert.equal(entries[0]?.token, TOKEN_A)
+
+    const source = `token:${tokenIdFor(TOKEN_A)}`
+    assert.equal(readStaticCredentials(source)?.accessToken, TOKEN_A)
+    assert.equal(readTokenAccounts()[0]?.source, source)
+  })
+
+  it("does not duplicate a session token added twice", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-auth-unwritable-"))
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(dir, "sub")
+    mkdirSync(join(dir, "sub"), { recursive: true })
+
+    addTokens([TOKEN_A])
+    addTokens([TOKEN_A])
+    assert.equal(listTokenEntries().length, 1)
+  })
+
+  it("drops session tokens once cleared, mirroring a restart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-auth-unwritable-"))
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(dir, "sub")
+    mkdirSync(join(dir, "sub"), { recursive: true })
+
+    addTokens([TOKEN_A])
+    assert.equal(listTokenEntries().length, 1)
+    clearSessionTokens()
+    assert.equal(listTokenEntries().length, 0)
+  })
+
+  it("refuses to write through a pre-created symlink at the temp path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-auth-symlink-"))
+    const storePath = join(dir, "tokens.json")
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = storePath
+
+    // Stand in for a hostile local user who guessed the temp path. Both the
+    // legacy name and the pid-qualified one are planted, so the test fails if
+    // the implementation reverts to either without exclusive creation.
+    const victim = join(dir, "victim.txt")
+    writeFileSync(victim, "original\n")
+    symlinkSync(victim, `${storePath}.tmp`)
+    symlinkSync(victim, `${storePath}.${process.pid}.tmp`)
+
+    const ok = writeTokenStore({
+      version: 1,
+      accounts: [{ id: "a", token: TOKEN_A, addedAt: 1 }],
+    })
+
+    assert.equal(ok, false, "the write must fail rather than follow a symlink")
+    assert.equal(
+      readFileSync(victim, "utf8"),
+      "original\n",
+      "the symlink target must not be overwritten",
+    )
+    assert.ok(
+      !readFileSync(victim, "utf8").includes("sk-ant"),
+      "no token may reach the attacker-chosen file",
+    )
   })
 })

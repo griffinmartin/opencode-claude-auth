@@ -2404,6 +2404,12 @@ describe("refreshIfNeeded — token expiry", () => {
 async function loadHelpersForRotation(opts: {
   accountBToken?: string
   bFailsToo?: boolean
+  /**
+   * Add a static-token account whose id is absent from the token store, so it
+   * appears in the roster but yields no credentials. Models a rotation
+   * candidate that cannot serve a request.
+   */
+  phantomToken?: boolean
 }): Promise<{ helpersModule: typeof import("./index.ts") }> {
   const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-rotate-"))
   const tempKeychain = join(tempDir, "keychain.ts")
@@ -2428,12 +2434,27 @@ export function isCredentialUsable(creds, now = Date.now(), thresholdMs = 60_000
   return creds.expiresAt > now + thresholdMs
 }
 
+const phantom = ${opts.phantomToken ? "true" : "false"}
+
 export function readAllClaudeAccounts() {
-  return [
+  const accounts = [
     { label: "Account A", source: "acct-a", credentials: credsA },
     { label: "Account B", source: "acct-b", credentials: credsB },
     ...readTokenAccounts(),
   ]
+  if (phantom) {
+    accounts.push({
+      label: "Phantom token",
+      source: "token:deadbeef",
+      credentials: {
+        accessToken: "token-phantom",
+        refreshToken: "",
+        expiresAt: farFuture,
+        kind: "static",
+      },
+    })
+  }
+  return accounts
 }
 
 export function refreshAccount(source) {
@@ -2811,6 +2832,183 @@ describe("auth methods — server schema compatibility", () => {
     } finally {
       globalThis.setInterval = originalSetInterval
       delete process.env.OPENCODE_CLAUDE_AUTH_TOKENS
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+})
+
+describe("auth fetch — rotation target validation", () => {
+  function stateDirFor(home: string): string {
+    return join(home, ".local", "share", "opencode")
+  }
+
+  function persistedSource(home: string): string | null {
+    try {
+      return readFileSync(
+        join(stateDirFor(home), "claude-account-source.txt"),
+        "utf8",
+      ).trim()
+    } catch {
+      return null
+    }
+  }
+
+  async function setup(): Promise<string> {
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATION_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-rotstate-")),
+      "rotation.json",
+    )
+    process.env.OPENCODE_CLAUDE_AUTH_TOKENS_FILE = join(
+      mkdtempSync(join(tmpdir(), "opencode-claude-auth-toktest-")),
+      "tokens.json",
+    )
+    delete process.env.OPENCODE_CLAUDE_AUTH_TOKENS
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE
+    return tempHome
+  }
+
+  it("skips a candidate that cannot produce credentials and lands on a working one", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    try {
+      const tempHome = await setup()
+      // Phantom sits between the limited account and the working one, so a
+      // rotation that committed the first candidate would strand here.
+      process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER =
+        "acct-a,token:deadbeef,acct-b"
+
+      const tokens: string[] = []
+      globalThis.fetch = (async (_input, init) => {
+        tokens.push(new Headers(init?.headers).get("authorization") ?? "")
+        if (tokens.length === 1) {
+          return new Response('{"error":{"type":"rate_limit_error"}}', {
+            status: 429,
+            headers: { "retry-after": "3600" },
+          })
+        }
+        return new Response("data: {}\n\n", { status: 200 })
+      }) as typeof fetch
+
+      const { helpersModule } = await loadHelpersForRotation({
+        phantomToken: true,
+      })
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 10 * 60 * 60 * 1000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 200)
+      assert.equal(
+        tokens[tokens.length - 1],
+        "Bearer token-b",
+        "must land on the working account, not the unusable candidate",
+      )
+      assert.notEqual(
+        tokens[tokens.length - 1],
+        "Bearer token-phantom",
+        "the unusable candidate must never serve a request",
+      )
+      assert.equal(
+        persistedSource(tempHome),
+        "acct-b",
+        "only a candidate proven usable may be persisted as active",
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      delete process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("leaves the persisted account untouched when no candidate is usable", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    try {
+      const tempHome = await setup()
+      // Only the phantom is available to rotate onto, and it cannot serve.
+      process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER = "acct-a,token:deadbeef"
+      mkdirSync(stateDirFor(tempHome), { recursive: true })
+      writeFileSync(
+        join(stateDirFor(tempHome), "claude-account-source.txt"),
+        "acct-a",
+      )
+
+      globalThis.fetch = (async () =>
+        new Response('{"error":{"type":"rate_limit_error"}}', {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })) as typeof fetch
+
+      const { helpersModule } = await loadHelpersForRotation({
+        phantomToken: true,
+      })
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 10 * 60 * 60 * 1000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 429, "the real limit must reach the caller")
+      assert.notEqual(
+        persistedSource(tempHome),
+        "token:deadbeef",
+        "an unusable account must not be persisted as active",
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      delete process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {

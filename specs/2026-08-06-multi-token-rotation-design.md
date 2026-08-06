@@ -123,6 +123,13 @@ On any successful response the serving account's bench is cleared, so an account
 whose limit reset earlier than the capped estimate stops being skipped as soon as
 it proves itself.
 
+A selected candidate is only **persisted** as active once it has produced usable
+credentials. Committing before that check would strand the session — and, through
+the state file, every later one — on a broken account, which is strictly worse
+than the rate limit that triggered the rotation. Candidates that cannot produce
+credentials are skipped in turn, and if none can, the previous active account is
+restored and nothing is written.
+
 ### 4. Notification
 
 Rotation is invisible otherwise, so it toasts via `client.tui.showToast`.
@@ -147,7 +154,7 @@ to an account shown in the picker without carrying a usable secret.
 | Failure                              | Behaviour                                                                    |
 | ------------------------------------ | ---------------------------------------------------------------------------- |
 | Malformed or hand-broken token store | Individually invalid entries are skipped; the rest of the file still loads   |
-| Token store unwritable               | Paste applies to the session; the summary says it was not persisted          |
+| Token store unwritable               | Added tokens are held in memory for the session; the summary says so         |
 | Rotation state unreadable            | Treated as "nothing benched" — costs one wasted request                      |
 | Every account benched                | The 429 is returned, with a toast naming each bench and its remaining time   |
 | Pasted token removed while active    | `refreshAccount` returns null, the account drops out on the next cache miss  |
