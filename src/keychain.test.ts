@@ -70,6 +70,15 @@ async function loadKeychainWithMockedSecurity(
     "utf8",
   )
 
+  // Copied rather than stubbed: writeBackCredentials consults it to decide
+  // whether a compare-and-swap mismatch is a store worth protecting or one it
+  // has proof is dead, so a stub would silently disable that branch.
+  await writeFile(
+    join(tempDir, "rotated-tokens.ts"),
+    await readFile(new URL("./rotated-tokens.ts", import.meta.url), "utf8"),
+    "utf8",
+  )
+
   await writeFile(
     tempChildProcess,
     `const securityDump = ${JSON.stringify(securityDump)}
