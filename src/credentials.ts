@@ -62,6 +62,9 @@ const accountCacheMap = new Map<
 >()
 const inFlightRefreshes = new Map<string, Promise<ClaudeCredentials | null>>()
 
+/** Cooldown deadline most recently logged per source, to log one line per window. */
+const lastLoggedCooldownUntil = new Map<string, number>()
+
 // Accounts currently running on credentials borrowed from another account.
 // Those tokens belong to the lender: they must never be used as this
 // account's refresh source, and never written back to its store.
@@ -564,10 +567,18 @@ export async function refreshIfNeeded(
   ) {
     const adopted = adoptFreshFromSource(target, creds.accessToken)
     if (adopted) return adopted
-    log("refresh_cooldown_skip", {
-      source: target.source,
-      until: getRefreshCooldownUntil(target.source),
-    })
+    // Once per cooldown window, not once per caller. The request path polls
+    // every ~2.5s while it waits, so an unthrottled line here produced a few
+    // hundred identical entries per outage — burying, in the very log added to
+    // diagnose these, the handful of events that explain one.
+    const until = getRefreshCooldownUntil(target.source)
+    if (
+      until !== null &&
+      lastLoggedCooldownUntil.get(target.source) !== until
+    ) {
+      lastLoggedCooldownUntil.set(target.source, until)
+      log("refresh_cooldown_skip", { source: target.source, until })
+    }
     return null
   }
 
