@@ -339,12 +339,23 @@ export async function refreshViaOAuthDetailed(
 
   try {
     log("refresh_started", { source: "oauth" })
-    const response = await fetchWithRetry(OAUTH_TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      signal: controller.signal,
-    })
+    const response = await fetchWithRetry(
+      OAUTH_TOKEN_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        signal: controller.signal,
+      },
+      3,
+      fetch,
+      // Retry only when the endpoint says how long to wait. It answers
+      // rate_limit_error with no `retry-after` and a window of minutes, so the
+      // blind two-second retry could not succeed and turned every logical
+      // refresh into three POSTs against a limit it was helping to sustain.
+      // A hinted retry is still honoured, since that one the server asked for.
+      { onlyRetryWithHint: true },
+    )
 
     if (!response.ok) {
       // Capture the token endpoint's own failure reason (invalid_grant,

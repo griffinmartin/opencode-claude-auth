@@ -253,17 +253,25 @@ const plugin: Plugin = async () => {
           // trains them to ignore the message that matters.
           const expiresAt = getActiveAccount()?.credentials?.expiresAt ?? 0
           const stillUsable = expiresAt > Date.now() + 60_000
+          const failureKind = getActiveRefreshFailureKind()
           log("proactive_refresh_failed", {
             source: account?.source,
             stillUsable,
             expiresAt,
+            failureKind,
           })
           // Only warn once per outage — otherwise this fires every
           // SYNC_INTERVAL (5 min) for as long as refresh keeps failing.
           if (!stillUsable && !proactiveRefreshWarned) {
             proactiveRefreshWarned = true
+            // Re-authenticating is the fix for a dead refresh token and a
+            // waste of the user's time for a rate limit, where the credentials
+            // are intact and waiting is the whole remedy. Saying the wrong one
+            // sends them to a login prompt they did not need.
             console.warn(
-              "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
+              failureKind === "transient"
+                ? "opencode-claude-auth: Claude's token endpoint is rate-limiting refreshes. Your credentials are still valid; OpenCode will keep retrying with a longer backoff."
+                : "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
             )
           }
         }
