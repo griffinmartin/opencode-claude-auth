@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import crypto from "node:crypto"
-import { config } from "./model-config.ts"
+import { getUserAgent } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
 import { fetchWithRetry } from "./http.ts"
@@ -62,17 +62,6 @@ export {
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from "./signing.ts"
-
-function getCliVersion(): string {
-  return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
-}
-
-function getUserAgent(): string {
-  return (
-    process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, sdk-cli)`
-  )
-}
 
 function getStainlessHeaders(): Record<string, string> {
   return {

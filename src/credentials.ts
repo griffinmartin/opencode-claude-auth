@@ -19,6 +19,7 @@ import {
 import { resetExcludedBetas } from "./betas.ts"
 import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
+import { getUserAgent } from "./model-config.ts"
 import {
   classifyRefreshFailure,
   clearRefreshOutcome,
@@ -370,7 +371,14 @@ export async function refreshViaOAuthDetailed(
       OAUTH_TOKEN_URL,
       {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          // Without this, claude.ai's bot protection refuses the request with
+          // 429 rate_limit_error before it ever reaches the token handler.
+          // It reads as a rate limit, which is why it was mistaken for one.
+          "User-Agent": getUserAgent(),
+          Accept: "application/json",
+        },
         body: body.toString(),
         signal: controller.signal,
       },
