@@ -327,6 +327,30 @@ function parseRetryAfterMs(headerValue: string | null): number | undefined {
  * Exchange a refresh token for fresh credentials and classify the result.
  * See {@link RefreshOutcome}. Uses the runtime's own fetch (no subprocess).
  */
+/**
+ * Response headers worth recording when a refresh is refused. Allow-listed
+ * rather than filtered, so nothing sensitive can be logged by accident.
+ */
+function diagnosticHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    const k = key.toLowerCase()
+    if (
+      k === "server" ||
+      k === "cf-ray" ||
+      k === "retry-after" ||
+      k === "x-should-retry" ||
+      k === "request-id" ||
+      k === "x-request-id" ||
+      k.startsWith("anthropic-ratelimit") ||
+      k.startsWith("x-ratelimit")
+    ) {
+      out[k] = value
+    }
+  })
+  return out
+}
+
 export async function refreshViaOAuthDetailed(
   refreshToken: string,
   timeoutMs = OAUTH_TIMEOUT_MS,
@@ -374,6 +398,13 @@ export async function refreshViaOAuthDetailed(
         error: `HTTP ${response.status}`,
         kind,
         ...detail,
+        // Which layer refused, and on what grounds. A 429 here has been seen
+        // carrying Anthropic's API error shape rather than OAuth's, so it is
+        // not necessarily the token handler answering: these headers say
+        // whether it came from the edge (server/cf-ray), and whether it is the
+        // account's own usage quota (anthropic-ratelimit-*) rather than a
+        // limit on refreshing. Only diagnostic headers, never credentials.
+        responseHeaders: diagnosticHeaders(response.headers),
       })
       return kind === "terminal"
         ? { kind, status: response.status, oauthError: detail.oauthError }
