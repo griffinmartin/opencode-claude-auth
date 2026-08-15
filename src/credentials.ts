@@ -520,7 +520,7 @@ export async function refreshIfNeeded(
       source: target.source,
       until: getRefreshCooldownUntil(target.source),
     })
-    return null
+    return deferToUsableCredentials(target, creds, "cooldown")
   }
 
   // The proactive sync timer calls this directly while the request path
@@ -545,7 +545,7 @@ export async function refreshIfNeeded(
     // ages out by TTL). Defer rather than refresh lock-free, so we don't
     // recreate the burst the lock exists to prevent — the request-level wait
     // loop and the lock TTL drive eventual progress.
-    return null
+    return deferToUsableCredentials(target, creds, "lock_busy")
   }
 
   const pending = (async () => {
@@ -561,6 +561,40 @@ export async function refreshIfNeeded(
   } finally {
     inFlightRefreshes.delete(target.source)
   }
+}
+
+/**
+ * Outcome for the two branches that decline to refresh right now — an armed
+ * rate-limit cooldown, or a sibling process holding the cross-process lock.
+ *
+ * Neither is a credential failure, but returning null says it is: null is this
+ * module's signal that no usable token exists, and index.ts's proactive sync
+ * timer turns it straight into "Run `claude` to re-authenticate". That timer
+ * asks an hour ahead of expiry, so the token it is asking about is almost
+ * always still perfectly good, and with several OpenCode instances sharing one
+ * credential every rotation puts all but the lock winner down these branches.
+ * The result was a re-authenticate warning on a healthy token, roughly once
+ * per token rotation, on every instance that lost the race.
+ *
+ * So hand the still-usable credentials back and let the next tick retry. This
+ * is the same guard the transient and CLI-fallback paths in performRefresh
+ * already apply; only these two deferrals were missing it. Below the reactive
+ * window there is genuinely nothing usable to serve, so null still stands and
+ * the request path's wait loop (getCredentialsWithBackoff) takes over.
+ */
+function deferToUsableCredentials(
+  target: ClaudeAccount,
+  creds: ClaudeCredentials,
+  reason: "cooldown" | "lock_busy",
+): ClaudeCredentials | null {
+  const expiresIn = creds.expiresAt - Date.now()
+  if (expiresIn <= CLI_FALLBACK_THRESHOLD_MS) return null
+  log("refresh_deferred_still_usable", {
+    source: target.source,
+    reason,
+    expiresIn,
+  })
+  return creds
 }
 
 /**

@@ -1069,6 +1069,75 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     }
   })
 
+  // End-to-end regression for the false "Run `claude` to re-authenticate"
+  // toast. The timer asks for a refresh an hour before expiry, so a deferral —
+  // an armed rate-limit cooldown here, or a sibling process holding the
+  // cross-process lock (same deferral helper, covered in credentials.test.ts)
+  // — used to surface as null and be reported to the user as a dead token,
+  // while the credential still had half an hour of life left.
+  it("proactive refresh timer stays quiet when a refresh is merely deferred", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalWarn = console.warn
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+
+    let tickCallback: (() => void | Promise<void>) | undefined
+    globalThis.setInterval = ((cb: () => void | Promise<void>) => {
+      tickCallback = cb
+      return { unref() {} }
+    }) as unknown as typeof setInterval
+
+    const warnMessages: string[] = []
+    console.warn = ((...args: unknown[]) => {
+      warnMessages.push(String(args[0]))
+    }) as typeof console.warn
+
+    try {
+      // Inside the 1h proactive window but well outside the 60s reactive one:
+      // the timer will try to refresh, and the token stays usable when it can't.
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 30 * 60_000,
+      )
+      // The token endpoint is rate-limiting every instance that shares this
+      // credential. A retry-after past the fetchWithRetry cap makes the 429
+      // return at once rather than backing off, keeping the test fast.
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ error: "rate_limit_error" }), {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })) as typeof fetch
+
+      await helpersModule.default({} as never)
+      assert.ok(tickCallback)
+      warnMessages.length = 0 // ignore anything emitted during init
+
+      // Tick 1 arms the cooldown; tick 2 (five minutes later) is turned away
+      // by it. Neither is a credential failure.
+      await tickCallback!()
+      await tickCallback!()
+
+      const proactiveWarnings = warnMessages.filter((m) =>
+        m.includes("Proactive token refresh failed"),
+      )
+      assert.deepEqual(
+        proactiveWarnings,
+        [],
+        "a deferred refresh must not tell the user to re-authenticate",
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      console.warn = originalWarn
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
   it("auth fetch forwards original input URL unchanged", async () => {
     const originalNow = Date.now
     const originalSetInterval = globalThis.setInterval
