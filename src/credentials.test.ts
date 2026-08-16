@@ -294,6 +294,7 @@ export function __setAccounts(list) {
       forceRefreshActiveAccount: (
         refresh?: (refreshToken: string) => Promise<Creds | null>,
       ) => Promise<Creds | null>
+      wasRefreshDeferred: (source: string) => boolean
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
