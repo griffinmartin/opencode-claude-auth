@@ -72,6 +72,7 @@ async function loadCredentialsWithCountingKeychain(
       rng?: () => number
     }) => Promise<Creds | null>
     getActiveRefreshFailureKind: () => "transient" | "terminal" | null
+    wasRefreshDeferred: (source: string) => boolean
   }
   keychainModule: {
     __getReadCount: () => number
@@ -3189,6 +3190,102 @@ describe("cross-process refresh lock (single-flight)", () => {
       } finally {
         held!.release()
       }
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // At expiry the herd converges: the winner can be inside a CLI fallback for
+  // up to 120s while the losers give up waiting after 5s with under a minute
+  // of life left. They have nothing usable to return, but the caller still has
+  // to be able to tell "a sibling is refreshing" apart from "this token is
+  // dead" — otherwise it tells the user to re-authenticate mid-rotation.
+  it("marks a busy-lock deferral as deferred even when it must return null", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const start = 1_700_000_000_000
+    let clock = start
+    Date.now = () => clock
+    globalThis.fetch = (async () => {
+      throw new Error("the lock-busy path must never hit the token endpoint")
+    }) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(start - 1_000)
+      const target = makeAccount(start - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: start - 1_000,
+      })
+      keychainModule.__setReadHook(() => {
+        clock += 1_000
+      })
+
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held, "test acquires the lock to simulate another process")
+      try {
+        assert.equal(await credentialsModule.refreshIfNeeded(target), null)
+        assert.equal(
+          credentialsModule.wasRefreshDeferred(target.source),
+          true,
+          "a busy lock is a deferral, not a credential failure",
+        )
+      } finally {
+        held!.release()
+      }
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // The marker must describe only the call that just ran. If it leaked across
+  // calls it would suppress the warning for a real, later failure.
+  it("clears the deferral marker once a refresh actually runs and fails", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const start = 1_700_000_000_000
+    let clock = start
+    Date.now = () => clock
+    globalThis.fetch = (async () => {
+      throw new Error("network unreachable")
+    }) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(start - 1_000)
+      const target = makeAccount(start - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: start - 1_000,
+      })
+      const readHook = () => {
+        clock += 1_000
+      }
+      keychainModule.__setReadHook(readHook)
+
+      // First: deferred by a sibling holding the lock.
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held)
+      try {
+        await credentialsModule.refreshIfNeeded(target)
+        assert.equal(credentialsModule.wasRefreshDeferred(target.source), true)
+      } finally {
+        held!.release()
+      }
+
+      // Then: the lock is free, the refresh genuinely runs and is exhausted.
+      keychainModule.__setReadHook(null)
+      assert.equal(await credentialsModule.refreshIfNeeded(target), null)
+      assert.equal(
+        credentialsModule.wasRefreshDeferred(target.source),
+        false,
+        "a real exhausted refresh must not be reported as a deferral",
+      )
     } finally {
       Date.now = originalNow
       globalThis.fetch = originalFetch

@@ -451,6 +451,10 @@ export async function refreshIfNeeded(
   const target = account ?? getActiveAccount()
   if (!target) return null
 
+  // This call's deferral state starts clean, so a marker left by an earlier
+  // call can never suppress the warning for a later, genuine failure.
+  deferredRefreshes.delete(target.source)
+
   // Pick up credentials replaced externally — cswap switching accounts, the
   // claude CLI in another terminal, or a second OpenCode instance. This was
   // once limited to file sources, on the false assumption that a keychain
@@ -563,32 +567,62 @@ export async function refreshIfNeeded(
   }
 }
 
+// Sources whose most recent refreshIfNeeded call ended in a deferral rather
+// than an attempt: a rate-limit cooldown was armed, or a sibling process held
+// the cross-process refresh lock. Distinct from a failure, and callers need
+// to tell them apart — see wasRefreshDeferred.
+const deferredRefreshes = new Set<string>()
+
+/**
+ * Whether the most recent refreshIfNeeded call for `source` ended in a
+ * deferral instead of an actual refresh attempt.
+ *
+ * A deferral means another refresher owns the work right now, so nothing is
+ * known to be wrong with the credentials. Callers that would otherwise report
+ * a null as a credential failure — index.ts's proactive sync timer telling the
+ * user to run `claude` — must check this first. Reset at the top of every
+ * refreshIfNeeded call, so it only ever describes the call that just ran.
+ */
+export function wasRefreshDeferred(source: string): boolean {
+  return deferredRefreshes.has(source)
+}
+
 /**
  * Outcome for the two branches that decline to refresh right now — an armed
  * rate-limit cooldown, or a sibling process holding the cross-process lock.
  *
- * Neither is a credential failure, but returning null says it is: null is this
- * module's signal that no usable token exists, and index.ts's proactive sync
- * timer turns it straight into "Run `claude` to re-authenticate". That timer
- * asks an hour ahead of expiry, so the token it is asking about is almost
- * always still perfectly good, and with several OpenCode instances sharing one
- * credential every rotation puts all but the lock winner down these branches.
- * The result was a re-authenticate warning on a healthy token, roughly once
- * per token rotation, on every instance that lost the race.
+ * Neither is a credential failure, but returning a bare null says it is: null
+ * is this module's signal that no usable token exists, and index.ts's
+ * proactive sync timer turns it straight into "Run `claude` to
+ * re-authenticate". That timer asks an hour ahead of expiry, so with several
+ * OpenCode instances sharing one credential every rotation puts all but the
+ * lock winner down these branches. The result was a re-authenticate warning on
+ * a healthy token, on every instance that lost the race.
  *
- * So hand the still-usable credentials back and let the next tick retry. This
- * is the same guard the transient and CLI-fallback paths in performRefresh
- * already apply; only these two deferrals were missing it. Below the reactive
- * window there is genuinely nothing usable to serve, so null still stands and
- * the request path's wait loop (getCredentialsWithBackoff) takes over.
+ * Two things follow. Still-usable credentials are handed back so the caller
+ * carries on and the next tick retries — the same guard the transient and
+ * CLI-fallback paths in performRefresh already apply. And the deferral is
+ * recorded either way, because the TTL guard alone is not enough: when the
+ * herd converges at expiry the winner may be running a CLI fallback for up to
+ * 120s while the losers give up waiting after 5s with under a minute of life
+ * left. Those losers have nothing usable to return, but "a sibling is
+ * refreshing" is still not grounds for telling the user to re-authenticate.
  */
 function deferToUsableCredentials(
   target: ClaudeAccount,
   creds: ClaudeCredentials,
   reason: "cooldown" | "lock_busy",
 ): ClaudeCredentials | null {
+  deferredRefreshes.add(target.source)
   const expiresIn = creds.expiresAt - Date.now()
-  if (expiresIn <= CLI_FALLBACK_THRESHOLD_MS) return null
+  if (expiresIn <= CLI_FALLBACK_THRESHOLD_MS) {
+    log("refresh_deferred_unusable", {
+      source: target.source,
+      reason,
+      expiresIn,
+    })
+    return null
+  }
   log("refresh_deferred_still_usable", {
     source: target.source,
     reason,
