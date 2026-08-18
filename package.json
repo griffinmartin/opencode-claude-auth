@@ -1,7 +1,7 @@
 {
   "name": "opencode-claude-auth",
   "version": "2.1.6",
-  "description": "OpenCode plugin that uses your Claude Code credentials — no separate login needed.",
+  "description": "OpenCode 2 plugin that uses your Claude Code subscription credentials — no separate login needed.",
   "keywords": [
     "anthropic",
     "auth",
@@ -63,15 +63,16 @@
     "format": "oxfmt --write .",
     "prepublishOnly": "pnpm run build && pnpm test"
   },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.39",
+    "@opencode-ai/plugin": "0.0.0-beta-17519",
+    "effect": "4.0.0-beta.101"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "latest",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
     "typescript": "^5.0.0"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*"
   },
   "packageManager": "pnpm@10.32.1"
 }
