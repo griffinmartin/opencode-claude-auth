@@ -65,8 +65,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.39",
-    "@opencode-ai/plugin": "0.0.0-beta-17595",
-    "effect": "4.0.0-beta.107"
+    "@opencode-ai/plugin": "beta"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

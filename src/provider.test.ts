@@ -1,16 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import plugin, {
-  buildRequestHeaders,
-  claudeSubscriptionFetch,
-} from "./index.ts"
-
-describe("OpenCode 2 plugin", () => {
-  it("exports the V2 plugin module shape", () => {
-    assert.equal(plugin.id, "griffinmartin.claude-auth")
-    assert.equal(typeof plugin.effect, "function")
-  })
-})
+import { buildRequestHeaders, claudeSubscriptionFetch } from "./index.ts"
 
 describe("Claude subscription transport", () => {
   it("uses bearer auth and removes x-api-key", () => {

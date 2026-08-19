@@ -12,11 +12,8 @@ importers:
         specifier: 4.0.39
         version: 4.0.39(zod@4.1.8)
       '@opencode-ai/plugin':
-        specifier: 0.0.0-beta-17595
-        version: 0.0.0-beta-17595
-      effect:
-        specifier: 4.0.0-beta.107
-        version: 4.0.0-beta.107
+        specifier: beta
+        version: 0.0.0-beta-17639
     devDependencies:
       '@types/node':
         specifier: ^25.5.0
@@ -98,11 +95,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@opencode-ai/ai@0.0.0-beta-17595':
-    resolution: {integrity: sha512-Dwxmw9tv5tw2t8p9Bmjo8XQqkdlNOc8SM8av8jRZYr2/c3NX38+rvOsLl5q85oAVqEKAHEqgXlMITwm60QhAEw==}
+  '@opencode-ai/ai@0.0.0-beta-17639':
+    resolution: {integrity: sha512-5x34QNcmo0nxoMYZu8G/FdoNvGQFwJ/JBm1DayGXag0SBIM/P5qRaaozpmTlxLP1iHsx+kn1qCO/NmfDgWsgfQ==}
 
-  '@opencode-ai/client@0.0.0-beta-17595':
-    resolution: {integrity: sha512-uDM6jztQiyXulYQL9G7kx283cv+0WhgQ98AzfClKQnV5mOB5wVBTGIjD1FGRwyxhUNGJBrfaP+NqOwWFjZhoeg==}
+  '@opencode-ai/client@0.0.0-beta-17639':
+    resolution: {integrity: sha512-78+JAVLWS/0MEDX1Q2ggJdPRuqroRedynnUlBwE7sNA7rK/QJWaX7Vxo2AKe5VlEtDMCh2Fa9yP4wg0KUCJTtw==}
     peerDependencies:
       effect: 4.0.0-beta.107
       solid-js: '>=1.9.0'
@@ -112,13 +109,13 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode-ai/plugin@0.0.0-beta-17595':
-    resolution: {integrity: sha512-AeK5lPPpy/3IO7zgmLvn9uaQD4OzN8EYQlxFk8P5WxOb1THLAzNs3c8eQJ8ZY2k6SFgdZJ/Vr+0Czo06yEI0RA==}
+  '@opencode-ai/plugin@0.0.0-beta-17639':
+    resolution: {integrity: sha512-TsnF7+hn1OlnBgvFNGetCMqiJdtY2YPb+T3QhKPGOcgJA9z5D8836QOEYTFYGzQs5EWi2LWemuOOHXWN67mXIw==}
     peerDependencies:
-      '@opencode-ai/theme': 0.0.0-beta-17595
-      '@opentui/core': '>=0.5.3'
-      '@opentui/keymap': '>=0.5.3'
-      '@opentui/solid': '>=0.5.3'
+      '@opencode-ai/theme': 0.0.0-beta-17639
+      '@opentui/core': '>=0.5.4'
+      '@opentui/keymap': '>=0.5.4'
+      '@opentui/solid': '>=0.5.4'
       solid-js: '>=1.9.0'
     peerDependenciesMeta:
       '@opencode-ai/theme':
@@ -132,11 +129,11 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode-ai/protocol@0.0.0-beta-17595':
-    resolution: {integrity: sha512-du77bQXIvOvqzyqS/I5gJMY3FZhXH2Oi3gs3ywAOnHCGRkwmVE9ofvFwR4G/Rzx/oVUOuGkyN28si29AluXGWw==}
+  '@opencode-ai/protocol@0.0.0-beta-17639':
+    resolution: {integrity: sha512-3ZPO+1NBJ9MvXO+6XY8ACOA4DlRzsbycvD5XVPt5YHGAvXaLqD9i8VnOfRvfsPY+ldoy+iR4ePylqmcGXXw7gQ==}
 
-  '@opencode-ai/schema@0.0.0-beta-17595':
-    resolution: {integrity: sha512-448/fW6HIHd2JT+TSgm4izcAWl51f17GR6WcfGbS9SyWmXFNnX1Fi03xNRgf7dnul9yyceXEsMbreUvteKxAYg==}
+  '@opencode-ai/schema@0.0.0-beta-17639':
+    resolution: {integrity: sha512-hcV+9R955SUU11vhHJoggb9mK2/5AVJmJCz6tPjD5aCEfXgW/JE/hxaFLLHfl6+1CCHsHYFJP5mG0bA4LsCDFA==}
 
   '@opencode-ai/sdk@1.18.5':
     resolution: {integrity: sha512-7KgMvP5/1oxbhHj6kYBtPSTEdFKYpUeEYOzBTKdzSaRpapUpFFdn6Hkus3rr0rljO0kukWZIgRd3DrVBwTULGA==}
@@ -810,9 +807,9 @@ snapshots:
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4':
     optional: true
 
-  '@opencode-ai/ai@0.0.0-beta-17595':
+  '@opencode-ai/ai@0.0.0-beta-17639':
     dependencies:
-      '@opencode-ai/schema': 0.0.0-beta-17595
+      '@opencode-ai/schema': 0.0.0-beta-17639
       '@smithy/eventstream-codec': 4.2.14
       '@smithy/util-utf8': 4.2.2
       aws4fetch: 1.0.20
@@ -821,20 +818,20 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@opencode-ai/client@0.0.0-beta-17595(effect@4.0.0-beta.107)':
+  '@opencode-ai/client@0.0.0-beta-17639(effect@4.0.0-beta.107)':
     dependencies:
-      '@opencode-ai/protocol': 0.0.0-beta-17595
-      '@opencode-ai/schema': 0.0.0-beta-17595
+      '@opencode-ai/protocol': 0.0.0-beta-17639
+      '@opencode-ai/schema': 0.0.0-beta-17639
     optionalDependencies:
       effect: 4.0.0-beta.107
 
-  '@opencode-ai/plugin@0.0.0-beta-17595':
+  '@opencode-ai/plugin@0.0.0-beta-17639':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@opencode-ai/ai': 0.0.0-beta-17595
-      '@opencode-ai/client': 0.0.0-beta-17595(effect@4.0.0-beta.107)
-      '@opencode-ai/protocol': 0.0.0-beta-17595
-      '@opencode-ai/schema': 0.0.0-beta-17595
+      '@opencode-ai/ai': 0.0.0-beta-17639
+      '@opencode-ai/client': 0.0.0-beta-17639(effect@4.0.0-beta.107)
+      '@opencode-ai/protocol': 0.0.0-beta-17639
+      '@opencode-ai/schema': 0.0.0-beta-17639
       '@opencode-ai/sdk': 1.18.5
       '@standard-schema/spec': 1.1.0
       effect: 4.0.0-beta.107
@@ -842,12 +839,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@opencode-ai/protocol@0.0.0-beta-17595':
+  '@opencode-ai/protocol@0.0.0-beta-17639':
     dependencies:
-      '@opencode-ai/schema': 0.0.0-beta-17595
+      '@opencode-ai/schema': 0.0.0-beta-17639
       effect: 4.0.0-beta.107
 
-  '@opencode-ai/schema@0.0.0-beta-17595':
+  '@opencode-ai/schema@0.0.0-beta-17639':
     dependencies:
       '@standard-schema/spec': 1.1.0
       effect: 4.0.0-beta.107
