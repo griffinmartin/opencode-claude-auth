@@ -4,6 +4,7 @@ import {
   refreshViaOAuth,
   parseOAuthResponse,
   extractOAuthError,
+  OAUTH_SCOPE,
   OAUTH_TOKEN_URL,
 } from "./credentials.ts"
 import { Writable } from "node:stream"
@@ -1639,6 +1640,7 @@ describe("refreshViaOAuth", () => {
     let requestUrl: string | null = null
     let requestBody: string | null = null
     let requestMethod: string | undefined
+    let requestHeaders: HeadersInit | undefined
 
     globalThis.fetch = (async (
       url: string | URL,
@@ -1647,6 +1649,7 @@ describe("refreshViaOAuth", () => {
       requestUrl = String(url)
       requestBody = String(init?.body ?? "")
       requestMethod = init?.method
+      requestHeaders = init?.headers
       return new Response(
         JSON.stringify({
           access_token: "sk-ant-oat01-fresh",
@@ -1666,8 +1669,13 @@ describe("refreshViaOAuth", () => {
       assert.equal(result.expiresAt, now + 28_800 * 1000)
       assert.equal(requestUrl, OAUTH_TOKEN_URL)
       assert.equal(requestMethod, "POST")
-      assert.match(String(requestBody), /grant_type=refresh_token/)
-      assert.match(String(requestBody), /refresh_token=sk-ant-ort01-current/)
+      assert.deepEqual(requestHeaders, { "Content-Type": "application/json" })
+      assert.deepEqual(JSON.parse(String(requestBody)), {
+        grant_type: "refresh_token",
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        refresh_token: "sk-ant-ort01-current",
+        scope: OAUTH_SCOPE,
+      })
     } finally {
       globalThis.fetch = originalFetch
       Date.now = originalNow
@@ -2188,9 +2196,7 @@ describe("borrowed fallback credentials", () => {
     let oauthFails = true
     const sentRefreshTokens: string[] = []
     globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
-      const sent = new URLSearchParams(String(init?.body ?? "")).get(
-        "refresh_token",
-      )
+      const sent = JSON.parse(String(init?.body ?? "{}")).refresh_token
       sentRefreshTokens.push(String(sent))
       if (oauthFails) throw new Error("network unreachable")
       return new Response(
@@ -2381,9 +2387,7 @@ describe("borrowed credentials after exhaustion", () => {
     const sentRefreshTokens: string[] = []
     globalThis.fetch = (async (_u: string | URL, init?: RequestInit) => {
       sentRefreshTokens.push(
-        String(
-          new URLSearchParams(String(init?.body ?? "")).get("refresh_token"),
-        ),
+        String(JSON.parse(String(init?.body ?? "{}")).refresh_token),
       )
       throw new Error("network unreachable")
     }) as typeof fetch

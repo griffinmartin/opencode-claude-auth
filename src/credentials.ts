@@ -179,8 +179,15 @@ export function syncAuthJson(creds: ClaudeCredentials): void {
   }
 }
 
-export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
+export const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+export const OAUTH_SCOPE = [
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code",
+  "user:mcp_servers",
+  "user:file_upload",
+].join(" ")
 
 export function parseOAuthResponse(
   raw: string,
@@ -312,11 +319,12 @@ export async function refreshViaOAuthDetailed(
   refreshToken: string,
   timeoutMs = OAUTH_TIMEOUT_MS,
 ): Promise<RefreshOutcome> {
-  const body = new URLSearchParams({
+  const body = {
     grant_type: "refresh_token",
     client_id: OAUTH_CLIENT_ID,
     refresh_token: refreshToken,
-  })
+    scope: OAUTH_SCOPE,
+  }
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -325,8 +333,8 @@ export async function refreshViaOAuthDetailed(
     log("refresh_started", { source: "oauth" })
     const response = await fetchWithRetry(OAUTH_TOKEN_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
       signal: controller.signal,
     })
 
