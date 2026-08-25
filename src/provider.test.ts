@@ -45,10 +45,12 @@ describe("Claude subscription transport", () => {
         system: [
           {
             type: "text",
-            text: "You are Claude Code, Anthropic's official CLI for Claude.",
+            text: "You are Claude Code, Anthropic's official CLI for Claude.\nStable OpenCode prompt",
           },
         ],
-        messages: [{ role: "user", content: "hello" }],
+        messages: [
+          { role: "user", content: [{ type: "text", text: "hello" }] },
+        ],
         tools: [{ name: "read", input_schema: { type: "object" } }],
       }),
     })
@@ -60,11 +62,28 @@ describe("Claude subscription transport", () => {
     assert.equal(headers.get("authorization"), "Bearer oauth-token")
     assert.equal(headers.has("x-api-key"), false)
     const body = JSON.parse(String(capturedInit?.body)) as {
-      system: Array<{ text: string }>
-      tools: Array<{ name: string }>
+      cache_control?: unknown
+      system: Array<{ text: string; cache_control?: { type: string } }>
+      tools: Array<{ name: string; cache_control?: { type: string } }>
+      messages: Array<{
+        content: Array<{
+          text: string
+          cache_control?: { type: string }
+        }>
+      }>
     }
     assert.match(body.system[0].text, /^x-anthropic-billing-header/)
+    assert.equal(body.system[0].cache_control, undefined)
+    assert.equal(body.system[1].cache_control, undefined)
     assert.equal(body.tools[0].name, "mcp_Read")
+    assert.deepEqual(body.tools[0].cache_control, { type: "ephemeral" })
+    assert.equal(body.messages[0].content[0].text, "Stable OpenCode prompt")
+    assert.deepEqual(body.messages[0].content[0].cache_control, {
+      type: "ephemeral",
+    })
+    assert.equal(body.messages[0].content[1].text, "hello")
+    assert.equal(body.messages[0].content[1].cache_control, undefined)
+    assert.deepEqual(body.cache_control, { type: "ephemeral" })
     assert.match(await response.text(), /"name": "read"/)
   })
 
