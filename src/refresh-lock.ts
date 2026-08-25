@@ -15,8 +15,10 @@
  */
 import {
   closeSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
+  readFileSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -34,6 +36,12 @@ export const DEFAULT_LOCK_TTL_MS = (() => {
 })()
 
 export interface RefreshLock {
+  /**
+   * Extend the lease before an operation that outlives the base TTL. Siblings
+   * honour the recorded expiry, so a holder doing long work is not mistaken
+   * for a crashed one and taken over mid-refresh.
+   */
+  extend(ms: number): void
   release(): void
 }
 
@@ -59,7 +67,24 @@ function lockPathFor(source: string, dir: string): string {
   return join(dir, `claude-auth-refresh-${digest}.lock`)
 }
 
-const NOOP_LOCK: RefreshLock = { release() {} }
+const NOOP_LOCK: RefreshLock = { extend() {}, release() {} }
+
+/**
+ * Expiry recorded by the holder, or null when the file predates leases or
+ * cannot be read — those fall back to the mtime comparison.
+ */
+function readLease(path: string): number | null {
+  try {
+    const { expiresAt } = JSON.parse(readFileSync(path, "utf8")) as {
+      expiresAt?: unknown
+    }
+    return typeof expiresAt === "number" && Number.isFinite(expiresAt)
+      ? expiresAt
+      : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Try to acquire the refresh lock for `source`.
@@ -99,7 +124,11 @@ export function acquireRefreshLock(
       // Someone holds it. Take over only if it is stale.
       let stale = false
       try {
-        stale = now() - statSync(path).mtimeMs > ttlMs
+        const lease = readLease(path)
+        stale =
+          lease === null
+            ? now() - statSync(path).mtimeMs > ttlMs
+            : now() > lease
       } catch {
         // Vanished between open and stat — retry the acquire.
         stale = true
@@ -116,13 +145,26 @@ export function acquireRefreshLock(
       return null
     }
 
-    try {
-      writeSync(fd, JSON.stringify({ pid: process.pid, ts: now() }))
-    } catch {
-      // The lock is held regardless of whether the payload wrote.
+    const writeLease = (expiresAt: number) => {
+      try {
+        ftruncateSync(fd, 0)
+        writeSync(
+          fd,
+          JSON.stringify({ pid: process.pid, ts: now(), expiresAt }),
+          0,
+        )
+      } catch {
+        // The lock is held regardless of whether the payload wrote.
+      }
     }
+
+    writeLease(now() + ttlMs)
     log("refresh_lock_acquired", { source })
     return {
+      extend(ms: number) {
+        writeLease(now() + ms)
+        log("refresh_lock_extended", { source, ms })
+      },
       release() {
         try {
           closeSync(fd)

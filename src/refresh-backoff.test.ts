@@ -1,5 +1,8 @@
-import { describe, it, beforeEach } from "node:test"
+import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from "node:assert/strict"
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   classifyRefreshFailure,
   computeBackoffMs,
@@ -7,17 +10,32 @@ import {
   noteRefreshTerminal,
   clearRefreshOutcome,
   isRefreshCooldownActive,
+  isCliFallbackCooldownActive,
+  noteCliFallbackAttempt,
   getRefreshCooldownUntil,
   getRefreshFailureKind,
   resetRefreshBackoffState,
   BASE_COOLDOWN_MS,
   MAX_COOLDOWN_MS,
+  CLI_FALLBACK_COOLDOWN_MS,
 } from "./refresh-backoff.ts"
 
 const SRC = "Claude Code-credentials"
 
 describe("refresh-backoff", () => {
-  beforeEach(() => resetRefreshBackoffState())
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "opencode-claude-auth-state-"))
+    process.env.OPENCODE_CLAUDE_AUTH_REFRESH_STATE_DIR = dir
+    resetRefreshBackoffState()
+  })
+
+  afterEach(() => {
+    resetRefreshBackoffState()
+    delete process.env.OPENCODE_CLAUDE_AUTH_REFRESH_STATE_DIR
+    rmSync(dir, { recursive: true, force: true })
+  })
 
   describe("classifyRefreshFailure", () => {
     it("treats rate limiting as transient", () => {
@@ -108,6 +126,25 @@ describe("refresh-backoff", () => {
       assert.equal(isRefreshCooldownActive(SRC, Date.now()), false)
     })
 
+    it("shares and expires the CLI fallback cooldown", async () => {
+      const now = 1_000_000
+      noteRefreshTransient(SRC, { now, rng: () => 0 })
+      noteCliFallbackAttempt(SRC, now)
+
+      const freshModule = await import(
+        `./refresh-backoff.ts?cli-instance=${Date.now()}-${Math.random()}`
+      )
+      assert.equal(freshModule.isCliFallbackCooldownActive(SRC, now + 1), true)
+
+      noteRefreshTransient(SRC, { now: now + 1, rng: () => 0 })
+      assert.equal(isCliFallbackCooldownActive(SRC, now + 2), true)
+      assert.equal(
+        isCliFallbackCooldownActive(SRC, now + CLI_FALLBACK_COOLDOWN_MS + 1),
+        false,
+      )
+      freshModule.resetRefreshBackoffState()
+    })
+
     it("clears cooldown, consecutive count, and failure kind on success", () => {
       const now = 1_000_000
       noteRefreshTransient(SRC, { now, rng: () => 0 })
@@ -133,6 +170,33 @@ describe("refresh-backoff", () => {
       })
       assert.equal(ms, 25_000)
       assert.equal(getRefreshCooldownUntil(SRC), now + 25_000)
+    })
+
+    it("shares cooldown and consecutive failures across module instances", async () => {
+      const now = 1_000_000
+      const first = noteRefreshTransient(SRC, { now, rng: () => 0 })
+      const freshModule = await import(
+        `./refresh-backoff.ts?instance=${Date.now()}-${Math.random()}`
+      )
+
+      assert.equal(freshModule.isRefreshCooldownActive(SRC, now + 1), true)
+      assert.equal(freshModule.getRefreshFailureKind(SRC), "transient")
+      const second = freshModule.noteRefreshTransient(SRC, {
+        now,
+        rng: () => 0,
+      })
+      assert.ok(second > first)
+      freshModule.resetRefreshBackoffState()
+    })
+
+    it("ignores malformed shared state", () => {
+      noteRefreshTransient(SRC, { now: 1_000_000, rng: () => 0 })
+      const path = readdirSync(dir).find((entry) => entry.endsWith(".json"))
+      assert.ok(path)
+      writeFileSync(join(dir, path), "{not json")
+
+      assert.equal(isRefreshCooldownActive(SRC, 1_000_001), false)
+      assert.equal(getRefreshFailureKind(SRC), null)
     })
   })
 })

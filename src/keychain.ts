@@ -366,7 +366,11 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
 
   const resolved = keychainAccounts.map((a) => {
     const configDir =
-      a.suffix === null ? join(homedir(), ".claude") : suffixToDir.get(a.suffix)
+      a.source === PRIMARY_SERVICE
+        ? join(homedir(), ".claude")
+        : a.suffix
+          ? suffixToDir.get(a.suffix)
+          : undefined
     const email = configDir ? readEmailFromConfigDir(configDir) : null
     log("account_config_dir", {
       source: a.source,

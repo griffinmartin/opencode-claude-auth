@@ -17,14 +17,15 @@ import {
   type ClaudeCredentials,
 } from "./keychain.ts"
 import { resetExcludedBetas } from "./betas.ts"
-import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
 import {
   classifyRefreshFailure,
   clearRefreshOutcome,
   getRefreshCooldownUntil,
   getRefreshFailureKind,
+  isCliFallbackCooldownActive,
   isRefreshCooldownActive,
+  noteCliFallbackAttempt,
   noteRefreshTerminal,
   noteRefreshTransient,
   type RefreshFailureKind,
@@ -40,16 +41,27 @@ const CREDENTIAL_CACHE_TTL_MS = 30_000
 // it is also the only window where spawning it is worth a real API request.
 const CLI_FALLBACK_THRESHOLD_MS = 60_000
 
+/** Per-attempt timeout for the `claude` CLI fallback. */
+const CLI_ATTEMPT_TIMEOUT_MS = 60_000
+const CLI_MAX_ATTEMPTS = 1
+
+/**
+ * Worst-case wall time the CLI fallback can occupy. The refresh lock's lease
+ * must cover this, or siblings treat the holder as crashed mid-refresh — these
+ * two numbers drifting apart is what turns one slow refresh into a rotation
+ * storm, so the budget is derived rather than restated.
+ */
+export const CLI_REFRESH_BUDGET_MS = CLI_ATTEMPT_TIMEOUT_MS * CLI_MAX_ATTEMPTS
+
+/** Slack added to a lease so it outlives the work it covers. */
+const LEASE_MARGIN_MS = 15_000
+
 const accountCacheMap = new Map<
   string,
   { creds: ClaudeCredentials; cachedAt: number }
 >()
 const inFlightRefreshes = new Map<string, Promise<ClaudeCredentials | null>>()
 
-// Accounts currently running on credentials borrowed from another account.
-// Those tokens belong to the lender: they must never be used as this
-// account's refresh source, and never written back to its store.
-const borrowedCredentialAccounts = new WeakSet<ClaudeAccount>()
 let activeAccountSource: string | null = null
 let allAccounts: ClaudeAccount[] = []
 
@@ -84,6 +96,8 @@ export function getActiveAccount(): ClaudeAccount | null {
   if (activeAccountSource) {
     const found = allAccounts.find((a) => a.source === activeAccountSource)
     if (found) return found
+    log("active_account_missing", { source: activeAccountSource })
+    return null
   }
   return allAccounts[0]
 }
@@ -275,20 +289,8 @@ export function extractOAuthError(raw: string): {
   return out
 }
 
-const OAUTH_TIMEOUT_MS = 15_000
+const OAUTH_TIMEOUT_MS = 30_000
 
-/**
- * Exchanges a refresh token for fresh credentials using the runtime's own
- * fetch.
- *
- * This previously ran the request inside a child process spawned as
- * `process.execPath -e <script>`. That assumed process.execPath is a
- * JavaScript runtime, which does not hold inside OpenCode: the plugin runs
- * in a compiled single-file executable, so process.execPath is the OpenCode
- * binary itself and `-e` is not a script to evaluate. Every refresh exited
- * non-zero with empty stdout and silently fell through to the claude CLI.
- * Node 18+ and Bun both expose a global fetch, so no subprocess is needed.
- */
 /**
  * Classified result of an OAuth refresh. A `transient` outcome (429/5xx/network
  * /`rate_limit_error`) means the refresh token is still good and the caller
@@ -305,10 +307,37 @@ export type RefreshOutcome =
     }
   | { kind: "terminal"; status: number; oauthError?: string }
 
+type RefreshFailureOutcome = Exclude<RefreshOutcome, { kind: "ok" }>
+
 function parseRetryAfterMs(headerValue: string | null): number | undefined {
   if (!headerValue) return undefined
   const seconds = Number.parseInt(headerValue, 10)
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined
+}
+
+function recordRefreshFailure(
+  source: string,
+  outcome: RefreshFailureOutcome,
+): void {
+  if (outcome.kind === "transient") {
+    const cooldownMs = noteRefreshTransient(source, {
+      retryAfterMs: outcome.retryAfterMs,
+    })
+    log("refresh_transient", {
+      source,
+      status: outcome.status,
+      oauthError: outcome.oauthError,
+      cooldownMs,
+    })
+    return
+  }
+
+  noteRefreshTerminal(source)
+  log("refresh_terminal", {
+    source,
+    status: outcome.status,
+    oauthError: outcome.oauthError,
+  })
 }
 
 /**
@@ -331,7 +360,7 @@ export async function refreshViaOAuthDetailed(
 
   try {
     log("refresh_started", { source: "oauth" })
-    const response = await fetchWithRetry(OAUTH_TOKEN_URL, {
+    const response = await fetch(OAUTH_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -403,8 +432,8 @@ export async function refreshViaOAuth(
   return outcome.kind === "ok" ? outcome.creds : null
 }
 
-function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
-  if (requireConfigDir && !configDir) {
+function refreshViaCli(configDir?: string, useConfigDir = false): boolean {
+  if (useConfigDir && !configDir) {
     log("refresh_cli_skipped", {
       source: "cli",
       reason: "configDir unknown for suffixed account",
@@ -412,18 +441,18 @@ function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
     return false
   }
 
-  const env = {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     TERM: "dumb",
-    ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
   }
+  if (useConfigDir && configDir) env.CLAUDE_CONFIG_DIR = configDir
+  else delete env.CLAUDE_CONFIG_DIR
 
-  const maxAttempts = 2
-  for (let i = 0; i < maxAttempts; i++) {
+  for (let i = 0; i < CLI_MAX_ATTEMPTS; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1, configDir })
     try {
       execSync("claude -p . --model haiku", {
-        timeout: 60_000,
+        timeout: CLI_ATTEMPT_TIMEOUT_MS,
         encoding: "utf-8",
         env,
         stdio: "ignore",
@@ -478,7 +507,7 @@ export async function refreshIfNeeded(
   // On the reactive path that blob has under 60s left — that window is the
   // only reason we refreshed — so adopting it re-enters performRefresh with
   // a refresh token our own refresh just rotated dead: OAuth fails and we
-  // fall through to two 60s claude spawns, on every cache miss, forever.
+  // fall through to a 60s Claude spawn on every cache miss, forever.
   //
   // Two accepted residuals. An external switch installing an already-expired
   // token while ours is usable is ignored until ours expires; cswap freshens
@@ -493,15 +522,16 @@ export async function refreshIfNeeded(
   try {
     const stored = refreshAccount(target.source, target.configDir)
     const now = Date.now()
+    const changed = stored?.accessToken !== target.credentials.accessToken
     if (
       stored &&
       (stored.expiresAt > now + 60_000 ||
         target.credentials.expiresAt <= now + 60_000)
     ) {
       target.credentials = stored
-      // Read from this account's own source, so what it returned is this
-      // account's own credentials — it is no longer running on a lender's.
-      borrowedCredentialAccounts.delete(target)
+      if (changed && stored.expiresAt > now + 60_000) {
+        clearRefreshOutcome(target.source)
+      }
     }
   } catch (err) {
     log("source_reread_failed", {
@@ -516,19 +546,20 @@ export async function refreshIfNeeded(
   // If a recent refresh was rate-limited, don't re-hit the endpoint until the
   // cooldown clears — adopt a sibling instance's / the CLI's fresh token if one
   // has appeared, else defer. This is what stops N OpenCode instances from
-  // turning a single transient 429 into a sustained storm. Borrowed accounts
-  // are exempt: their recovery (refreshBorrowedAccount) is a distinct path.
-  if (
-    !borrowedCredentialAccounts.has(target) &&
-    isRefreshCooldownActive(target.source)
-  ) {
+  // turning a single transient 429 into a sustained storm.
+  if (isRefreshCooldownActive(target.source)) {
     const adopted = adoptFreshFromSource(target, creds.accessToken)
     if (adopted) return adopted
     log("refresh_cooldown_skip", {
       source: target.source,
       until: getRefreshCooldownUntil(target.source),
     })
-    return null
+    if (
+      creds.expiresAt > Date.now() + CLI_FALLBACK_THRESHOLD_MS ||
+      isCliFallbackCooldownActive(target.source)
+    ) {
+      return null
+    }
   }
 
   // The proactive sync timer calls this directly while the request path
@@ -558,7 +589,20 @@ export async function refreshIfNeeded(
 
   const pending = (async () => {
     try {
-      return await performRefresh(target, creds)
+      const adopted = adoptFreshFromSource(target, creds.accessToken)
+      if (adopted) return adopted
+      // A cooldown that landed while we queued for the lock. Terminal state is
+      // handled in performRefresh without retrying the rejected token.
+      if (isRefreshCooldownActive(target.source)) {
+        log("refresh_state_skip_after_lock", { source: target.source })
+        if (
+          creds.expiresAt > Date.now() + CLI_FALLBACK_THRESHOLD_MS ||
+          isCliFallbackCooldownActive(target.source)
+        ) {
+          return null
+        }
+      }
+      return await performRefresh(target, creds, (ms) => lock.extend(ms))
     } finally {
       lock.release()
     }
@@ -592,7 +636,6 @@ function adoptFreshFromSource(
     stored.expiresAt > Date.now() + 60_000
   ) {
     target.credentials = stored
-    borrowedCredentialAccounts.delete(target)
     clearRefreshOutcome(target.source)
     log("refresh_adopted_from_source", { source: target.source })
     return stored
@@ -640,18 +683,31 @@ async function waitForAdopt(
 async function performRefresh(
   target: ClaudeAccount,
   creds: ClaudeCredentials,
+  /**
+   * Extends the caller's cross-process lease before an operation that runs
+   * longer than the base lock TTL. Absent on paths that hold no lock.
+   */
+  extendLease?: (ms: number) => void,
 ): Promise<ClaudeCredentials | null> {
-  if (borrowedCredentialAccounts.has(target)) {
-    return refreshBorrowedAccount(target)
-  }
-
   log("refresh_needed", {
     source: target.source,
     expiresAt: creds.expiresAt,
     expiresIn: creds.expiresAt - Date.now(),
   })
 
-  if (creds.refreshToken) {
+  // A refresh token already rejected as dead cannot be revived by another
+  // exchange, and the CLI fallback performs that same exchange — so once a
+  // terminal failure is on record, both are skipped. Read before the
+  // attempt below, so a terminal failure recorded by THIS call still gets its
+  // one CLI try.
+  const priorTerminal = getRefreshFailureKind(target.source) === "terminal"
+
+  if (
+    creds.refreshToken &&
+    !priorTerminal &&
+    !isRefreshCooldownActive(target.source)
+  ) {
+    extendLease?.(OAUTH_TIMEOUT_MS + LEASE_MARGIN_MS)
     const outcome = await refreshViaOAuthDetailed(creds.refreshToken)
 
     if (
@@ -681,43 +737,22 @@ async function performRefresh(
 
     if (outcome.kind === "transient") {
       // A rate-limit / 5xx / network blip: the refresh token is still valid.
-      // Back off so we (and our sibling OpenCode instances) stop hammering the
-      // endpoint, adopt a token another instance/CLI may have just written,
-      // and — crucially — do NOT spawn the claude CLI, which hits the same
-      // rate-limited endpoint and only deepens the limit.
-      const cooldownMs = noteRefreshTransient(target.source, {
-        retryAfterMs: outcome.retryAfterMs,
-      })
-      log("refresh_transient", {
-        source: target.source,
-        status: outcome.status,
-        oauthError: outcome.oauthError,
-        cooldownMs,
-      })
+      // Back off direct requests and adopt a token another process may have
+      // written. If the access token is already unusable, fall through to one
+      // Claude CLI attempt: its startup refresh is the same recovery users run
+      // manually, and avoids leaving OpenCode stuck until another terminal does
+      // it for us.
+      recordRefreshFailure(target.source, outcome)
       const adopted = adoptFreshFromSource(target, creds.accessToken)
       if (adopted) return adopted
       // Keep serving still-usable credentials on the proactive path.
       if (creds.expiresAt > Date.now() + CLI_FALLBACK_THRESHOLD_MS) return creds
-      // Borrow a sibling account's still-valid token rather than spawning the
-      // claude CLI, which hits the same rate-limited endpoint.
-      const borrowed = tryFallbackAccount(target.source)
-      if (borrowed) {
-        target.credentials = borrowed
-        borrowedCredentialAccounts.add(target)
-        return borrowed
-      }
-      return null
     }
 
     if (outcome.kind === "terminal") {
       // The refresh token itself is dead (invalid_grant, ...). Fall through to
-      // the CLI fallback / borrowed-account recovery below.
-      noteRefreshTerminal(target.source)
-      log("refresh_terminal", {
-        source: target.source,
-        status: outcome.status,
-        oauthError: outcome.oauthError,
-      })
+      // the CLI fallback below.
+      recordRefreshFailure(target.source, outcome)
     }
   }
 
@@ -759,45 +794,62 @@ async function performRefresh(
       stored.accessToken !== creds.accessToken &&
       stored.expiresAt > Date.now() + 60_000
     ) {
+      clearRefreshOutcome(target.source)
       target.credentials = stored
       log("refresh_adopted_external", { source: target.source })
       return stored
     }
   }
 
-  log("refresh_fallback_cli", { source: target.source })
-  const isSuffixedAccount =
-    target.source !== PRIMARY_SERVICE &&
-    target.source.startsWith(PRIMARY_SERVICE + "-")
-  const cliSucceeded = refreshViaCli(target.configDir, isSuffixedAccount)
-  if (!cliSucceeded) {
-    const fallback = tryFallbackAccount(target.source)
-    if (fallback) {
-      target.credentials = fallback
-      borrowedCredentialAccounts.add(target)
-      return fallback
-    }
-
-    log("refresh_exhausted", {
+  if (priorTerminal) {
+    log("refresh_cli_skipped", {
       source: target.source,
-      hadCredentials: false,
-      expiresAt: undefined,
+      reason: "refresh token already rejected",
     })
     return null
   }
 
-  let refreshed = refreshAccount(target.source, target.configDir)
-  if (
-    (!refreshed || refreshed.expiresAt <= Date.now() + 60_000) &&
-    isSuffixedAccount
-  ) {
-    const primaryRefreshed = refreshAccount(PRIMARY_SERVICE)
-    if (primaryRefreshed && primaryRefreshed.expiresAt > Date.now() + 60_000) {
-      refreshed = primaryRefreshed
-    }
+  if (isCliFallbackCooldownActive(target.source)) {
+    log("refresh_cli_skipped", {
+      source: target.source,
+      reason: "CLI fallback cooldown active",
+    })
+    return null
+  }
+
+  noteCliFallbackAttempt(target.source)
+  log("refresh_fallback_cli", { source: target.source })
+  const isSuffixedAccount =
+    target.source !== PRIMARY_SERVICE &&
+    target.source.startsWith(PRIMARY_SERVICE + "-")
+  const useConfigDir = target.source === "file" || isSuffixedAccount
+  // The CLI can run for CLI_REFRESH_BUDGET_MS, several times the lock's base
+  // TTL. Without extending the lease first, every sibling instance declares
+  // this holder crashed and refreshes concurrently — and each rotation kills
+  // the refresh token the others are holding, so they fall through to their
+  // own CLI spawns against an endpoint that is already rate-limiting.
+  extendLease?.(CLI_REFRESH_BUDGET_MS + LEASE_MARGIN_MS)
+  const cliSucceeded = refreshViaCli(target.configDir, useConfigDir)
+  if (!cliSucceeded) {
+    noteCliFallbackAttempt(target.source)
+    if (!creds.refreshToken) noteRefreshTerminal(target.source)
+    return null
+  }
+
+  let refreshed: ClaudeCredentials | null
+  try {
+    refreshed = refreshAccount(target.source, target.configDir)
+  } catch (err) {
+    noteCliFallbackAttempt(target.source)
+    log("refresh_source_reread_failed", {
+      source: target.source,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return null
   }
 
   if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
+    clearRefreshOutcome(target.source)
     target.credentials = refreshed
     return refreshed
   }
@@ -807,114 +859,8 @@ async function performRefresh(
     hadCredentials: !!refreshed,
     expiresAt: refreshed?.expiresAt,
   })
-  return null
-}
-
-/**
- * Refresh path for an account running on borrowed credentials. The tokens it
- * currently holds belong to another account, so they cannot be exchanged at
- * the OAuth endpoint on this account's behalf, and the result must never be
- * written to this account's store. Re-read our own source first — the claude
- * CLI or another process may have repaired it — and otherwise borrow again.
- */
-async function refreshBorrowedAccount(
-  target: ClaudeAccount,
-): Promise<ClaudeCredentials | null> {
-  log("refresh_borrowed", { source: target.source })
-
-  let own: ClaudeCredentials | null = null
-  try {
-    own = refreshAccount(target.source, target.configDir)
-  } catch {
-    own = null
-  }
-
-  if (own && own.expiresAt > Date.now() + 60_000) {
-    borrowedCredentialAccounts.delete(target)
-    target.credentials = own
-    log("refresh_borrowed_recovered", { source: target.source, via: "source" })
-    return own
-  }
-
-  // A refresh token outlives its access token by weeks, so this account's
-  // own stored token is likely still exchangeable even though the access
-  // token it came with has expired. This is the only token we may present
-  // on its behalf, and the only result we may write to its store.
-  if (own?.refreshToken) {
-    const oauthCreds = await refreshViaOAuth(own.refreshToken)
-    if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
-      borrowedCredentialAccounts.delete(target)
-      target.credentials = oauthCreds
-      writeBackCredentials(
-        target.source,
-        oauthCreds,
-        target.configDir,
-        own.accessToken,
-      )
-      log("refresh_borrowed_recovered", { source: target.source, via: "oauth" })
-      return oauthCreds
-    }
-  }
-
-  const again = tryFallbackAccount(target.source)
-  if (again) {
-    target.credentials = again
-    return again
-  }
-
-  // Recovery failed. The account must not be left holding the lender's
-  // tokens, or the next cycle would take the normal path and exchange them.
-  // Restore its own credentials if we managed to read them — expired, but
-  // ours to refresh — and otherwise keep the guard in place.
-  if (own) {
-    borrowedCredentialAccounts.delete(target)
-    target.credentials = own
-  }
-
-  log("refresh_exhausted", {
-    source: target.source,
-    hadCredentials: !!own,
-    expiresAt: own?.expiresAt,
-  })
-  return null
-}
-
-function tryFallbackAccount(excludeSource: string): ClaudeCredentials | null {
-  const now = Date.now()
-  const candidates = allAccounts.filter((a) => a.source !== excludeSource)
-
-  // Accounts whose in-memory credentials are still valid can be borrowed
-  // directly — no keychain read needed. A 401 on a borrowed token is
-  // handled by the existing reload-and-retry fetch path.
-  for (const account of candidates) {
-    if (account.credentials.expiresAt > now + 60_000) {
-      log("refresh_fallback_account", {
-        failedSource: excludeSource,
-        usedSource: account.source,
-      })
-      return account.credentials
-    }
-  }
-
-  // Last resort: live-read the stale-looking ones too — another process
-  // (e.g. the Claude CLI in a different terminal) may have refreshed their
-  // keychain entry since we last read it.
-  for (const account of candidates) {
-    let fresh: ClaudeCredentials | null = null
-    try {
-      fresh = refreshAccount(account.source, account.configDir)
-    } catch {
-      continue
-    }
-    if (fresh && fresh.expiresAt > now + 60_000) {
-      account.credentials = fresh
-      log("refresh_fallback_account", {
-        failedSource: excludeSource,
-        usedSource: account.source,
-      })
-      return fresh
-    }
-  }
+  noteCliFallbackAttempt(target.source)
+  if (!creds.refreshToken) noteRefreshTerminal(target.source)
   return null
 }
 
@@ -963,51 +909,87 @@ export function reloadActiveAccount(): void {
  * On success the account, its source, and the cache are all updated.
  * The refresh function is injectable for tests.
  */
+function storeForcedCredentials(
+  account: ClaudeAccount,
+  oauthCreds: ClaudeCredentials | null,
+  priorAccessToken: string,
+): ClaudeCredentials | null {
+  if (!oauthCreds || oauthCreds.expiresAt <= Date.now() + 60_000) {
+    log("force_refresh_failed", { source: account.source })
+    return null
+  }
+
+  account.credentials = oauthCreds
+  clearRefreshOutcome(account.source)
+  if (
+    !writeBackCredentials(
+      account.source,
+      oauthCreds,
+      account.configDir,
+      priorAccessToken,
+    )
+  ) {
+    log("force_refresh_writeback_failed", { source: account.source })
+  }
+  accountCacheMap.set(account.source, {
+    creds: oauthCreds,
+    cachedAt: Date.now(),
+  })
+  return oauthCreds
+}
+
 export async function forceRefreshActiveAccount(
-  refresh: (
-    refreshToken: string,
-  ) => Promise<ClaudeCredentials | null> = refreshViaOAuth,
+  refresh?: (refreshToken: string) => Promise<ClaudeCredentials | null>,
 ): Promise<ClaudeCredentials | null> {
   const account = getActiveAccount()
   if (!account?.credentials.refreshToken) return null
 
-  // These tokens belong to another account: exchanging them here would
-  // rotate the lender's refresh token and persist the result to this
-  // account's store. Borrowed-account recovery belongs to refreshIfNeeded.
-  if (borrowedCredentialAccounts.has(account)) {
-    log("force_refresh_skipped_borrowed", { source: account.source })
+  const priorAccessToken = account.credentials.accessToken
+  if (refresh) {
+    return storeForcedCredentials(
+      account,
+      await refresh(account.credentials.refreshToken),
+      priorAccessToken,
+    )
+  }
+
+  if (
+    getRefreshFailureKind(account.source) === "terminal" ||
+    isRefreshCooldownActive(account.source)
+  ) {
     return null
   }
 
-  const priorAccessToken = account.credentials.accessToken
-  const oauthCreds = await refresh(account.credentials.refreshToken)
-  if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
-    account.credentials = oauthCreds
-    if (
-      !writeBackCredentials(
-        account.source,
-        oauthCreds,
-        account.configDir,
-        priorAccessToken,
-      )
-    ) {
-      // Session continues from memory/cache either way, but the two causes
-      // diverge on a later source re-read. An I/O failure leaves our own
-      // rejected token in the store, so the re-read resurrects it and
-      // triggers another refresh. A CAS mismatch means the store now holds
-      // another account's token, so the re-read adopts that instead and this
-      // account stops using the credentials it just refreshed.
-      log("force_refresh_writeback_failed", { source: account.source })
-    }
-    accountCacheMap.set(account.source, {
-      creds: oauthCreds,
-      cachedAt: Date.now(),
-    })
-    return oauthCreds
+  const lock = acquireRefreshLock(account.source)
+  if (!lock) {
+    log("refresh_lock_busy", { source: account.source })
+    return waitForAdopt(account, priorAccessToken)
   }
 
-  log("force_refresh_failed", { source: account.source })
-  return null
+  try {
+    const adopted = adoptFreshFromSource(account, priorAccessToken)
+    if (adopted) return adopted
+    if (
+      getRefreshFailureKind(account.source) === "terminal" ||
+      isRefreshCooldownActive(account.source)
+    ) {
+      return null
+    }
+
+    lock.extend(OAUTH_TIMEOUT_MS + LEASE_MARGIN_MS)
+    const outcome = await refreshViaOAuthDetailed(
+      account.credentials.refreshToken,
+    )
+    if (outcome.kind === "ok") {
+      return storeForcedCredentials(account, outcome.creds, priorAccessToken)
+    } else {
+      recordRefreshFailure(account.source, outcome)
+      log("force_refresh_failed", { source: account.source })
+      return null
+    }
+  } finally {
+    lock.release()
+  }
 }
 
 /**
@@ -1058,15 +1040,6 @@ export async function getCachedCredentials(): Promise<ClaudeCredentials | null> 
   return fresh
 }
 
-/** Max time a single request will wait through a transient refresh rate-limit. */
-const REFRESH_WAIT_MS = (() => {
-  const raw = process.env.OPENCODE_CLAUDE_AUTH_REFRESH_WAIT_MS
-  const parsed = raw ? Number.parseInt(raw, 10) : NaN
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 45_000
-})()
-
-const REFRESH_POLL_MS = 2_500
-
 function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) {
@@ -1081,57 +1054,6 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms)
     signal?.addEventListener("abort", done, { once: true })
   })
-}
-
-export interface CredentialWaitOptions {
-  maxWaitMs?: number
-  pollMs?: number
-  signal?: AbortSignal
-  now?: () => number
-  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
-  rng?: () => number
-}
-
-/**
- * Resolve credentials, waiting through a transient refresh rate-limit rather
- * than failing hard. Returns as soon as a token is available — ours refreshed
- * once the cooldown clears, or a sibling OpenCode instance / the `claude` CLI
- * wrote a fresh one to the shared store. Returns null promptly on a terminal
- * failure (dead refresh token) or when the wait budget is exhausted, so the
- * caller can decide between a retryable response and a hard error.
- */
-export async function getCredentialsWithBackoff(
-  opts: CredentialWaitOptions = {},
-): Promise<ClaudeCredentials | null> {
-  const first = await getCachedCredentials()
-  if (first) return first
-
-  const source = getActiveAccount()?.source
-  // No active account means no in-progress refresh could ever produce a token,
-  // so waiting is pointless — fail fast instead of spinning the wait budget.
-  if (!source) return null
-  // A dead refresh token will not fix itself by waiting.
-  if (getRefreshFailureKind(source) === "terminal") return null
-
-  const now = opts.now ?? Date.now
-  const sleep = opts.sleep ?? sleepAbortable
-  const rng = opts.rng ?? Math.random
-  const maxWaitMs = opts.maxWaitMs ?? REFRESH_WAIT_MS
-  const pollMs = opts.pollMs ?? REFRESH_POLL_MS
-  const deadline = now() + maxWaitMs
-
-  log("fetch_credentials_wait", { source: source ?? null, maxWaitMs })
-
-  while (now() < deadline) {
-    if (opts.signal?.aborted) return null
-    // Jittered poll so sibling instances desynchronize their re-reads.
-    await sleep(Math.round(pollMs * (0.5 + rng() * 0.5)), opts.signal)
-    if (opts.signal?.aborted) return null
-    const creds = await getCachedCredentials()
-    if (creds) return creds
-    if (source && getRefreshFailureKind(source) === "terminal") return null
-  }
-  return null
 }
 
 /**
@@ -1187,13 +1109,6 @@ export function reloadCredentialsFromSource(): ClaudeCredentials | null {
   }
 
   account.credentials = reloaded
-  // Read from this account's own source, so what it returned is this
-  // account's own credentials — it is no longer running on a lender's.
-  // Same invariant as refreshIfNeeded's up-front re-read: leaving the flag
-  // set here makes forceRefreshActiveAccount decline to exchange a token
-  // that is legitimately this account's, which strands the 401 recovery
-  // loop's second attempt on a credential it could have refreshed.
-  borrowedCredentialAccounts.delete(account)
   accountCacheMap.set(account.source, { creds: reloaded, cachedAt: now })
   log("credentials_source_reload", {
     source: account.source,

@@ -479,11 +479,9 @@ describe("readAllClaudeAccounts", () => {
       const accounts = readAllClaudeAccounts()
       assert.equal(accounts.length, 1)
       assert.equal(accounts[0].source, "Claude Code-credentials-abc")
-      // A non-8-char suffix cannot be mapped back to a config dir hash, so
-      // the entry falls back to the primary config dir — matching the CLI
-      // refresh behaviour these legacy entries had before suffix mapping
-      // existed.
-      assert.equal(accounts[0].configDir, primaryDir)
+      // A non-8-char suffix cannot be mapped safely. Leaving configDir unset
+      // prevents its CLI fallback from rotating the primary account.
+      assert.equal(accounts[0].configDir, undefined)
     } finally {
       if (originalHome === undefined) {
         delete process.env.HOME

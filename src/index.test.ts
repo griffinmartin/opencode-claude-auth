@@ -163,6 +163,21 @@ async function copySourceFiles(
           'import { execSync } from "./child-process.ts"',
         )
       }
+      // Per-harness refresh state and locks: both are shared across processes
+      // by design, so without this one test's cooldown suppresses the next
+      // test's refresh.
+      if (file === "refresh-backoff.ts") {
+        source = source.replace(
+          "process.env.OPENCODE_CLAUDE_AUTH_REFRESH_STATE_DIR ??",
+          `${JSON.stringify(tempDir)} ??`,
+        )
+      }
+      if (file === "refresh-lock.ts") {
+        source = source.replace(
+          "process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR ??",
+          `${JSON.stringify(tempDir)} ??`,
+        )
+      }
       await writeFile(join(tempDir, file), source, "utf8")
     }),
   )
@@ -1061,6 +1076,72 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     } finally {
       globalThis.setInterval = originalSetInterval
       console.warn = originalWarn
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("auth fetch fails without a retryable response when a refresh is deferred", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    globalThis.setInterval = (() => ({
+      unref() {},
+    })) as unknown as typeof setInterval
+
+    let apiCalls = 0
+
+    try {
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() - 1_000,
+      )
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : String(input)
+        if (url.includes("/oauth/token")) {
+          return new Response('{"error":"rate_limit_error"}', { status: 429 })
+        }
+        apiCalls += 1
+        return new Response("unexpected", { status: 200 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() - 1_000,
+        }),
+        { models: {} },
+      )
+
+      const startedAt = performance.now()
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+      const elapsedMs = performance.now() - startedAt
+      const body = await response.json()
+
+      // A retryable body here is what turned one deferred refresh into a burst
+      // of provider calls, none of which can succeed before the cooldown ends.
+      assert.equal(response.status, 401)
+      assert.equal(response.headers.get("retry-after"), null)
+      assert.equal(body.error.type, "authentication_error")
+      assert.ok(elapsedMs < 1_000, `credential failure took ${elapsedMs}ms`)
+      assert.equal(apiCalls, 0)
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {

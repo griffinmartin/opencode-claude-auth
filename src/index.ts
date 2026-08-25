@@ -19,7 +19,6 @@ import {
 } from "./transforms.ts"
 import {
   getCachedCredentials,
-  getCredentialsWithBackoff,
   getActiveRefreshFailureKind,
   reloadCredentialsFromSource,
   forceRefreshActiveAccount,
@@ -209,9 +208,16 @@ const plugin: Plugin = async () => {
     if (initialCreds) {
       syncAuthJson(initialCreds)
     } else {
-      console.warn(
-        "opencode-claude-auth: Claude credentials are expired and could not be refreshed. Run `claude` to re-authenticate.",
-      )
+      const failureKind = getActiveRefreshFailureKind()
+      log("initial_refresh_unavailable", { failureKind })
+      // A transient rate-limit leaves the refresh token usable, so the fetch
+      // path can still recover. Only a terminal failure is worth sending the
+      // user to `claude`.
+      if (failureKind !== "transient") {
+        console.warn(
+          "opencode-claude-auth: Claude credentials are expired and could not be refreshed. Run `claude` to re-authenticate.",
+        )
+      }
     }
 
     // Keep auth.json synced and proactively refresh before expiry.
@@ -244,10 +250,15 @@ const plugin: Plugin = async () => {
           }
           proactiveRefreshWarned = false
         } else {
-          log("proactive_refresh_failed", { source: account?.source })
+          const failureKind = getActiveRefreshFailureKind()
+          log("proactive_refresh_failed", {
+            source: account?.source,
+            failureKind,
+          })
           // Only warn once per outage — otherwise this fires every
-          // SYNC_INTERVAL (5 min) for as long as refresh keeps failing.
-          if (!proactiveRefreshWarned) {
+          // SYNC_INTERVAL (5 min) for as long as refresh keeps failing — and
+          // never for a transient rate-limit, which the next tick recovers.
+          if (failureKind !== "transient" && !proactiveRefreshWarned) {
             proactiveRefreshWarned = true
             console.warn(
               "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
@@ -309,38 +320,29 @@ const plugin: Plugin = async () => {
           baseURL: "https://api.anthropic.com/v1",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             const requestInit = init ?? {}
-            let latest = await getCachedCredentials()
-            if (!latest) {
-              // A transient refresh rate-limit must not surface as a hard error.
-              // Wait (bounded, abort-aware) for our cooldown to clear or for a
-              // sibling OpenCode instance / the claude CLI to write a fresh
-              // token to the shared store.
-              latest = await getCredentialsWithBackoff({
-                signal: requestInit.signal ?? undefined,
-              })
-            }
+            const latest = await getCachedCredentials()
             if (!latest) {
               if (getActiveRefreshFailureKind() === "transient") {
-                // Retryable: let OpenCode/the AI SDK back off and retry rather
-                // than telling the user to re-authenticate for a passing
-                // rate-limit that the refresh token would otherwise survive.
                 log("fetch_credentials_transient_exhausted", {
                   modelId: "unknown",
                 })
+                // Deliberately not a 429: OpenCode retries a rate-limit five
+                // times and also matches "rate limit" in the message, so a
+                // retryable body turns one deferred refresh into a burst of
+                // provider calls that cannot succeed until the cooldown ends.
                 return new Response(
                   JSON.stringify({
                     type: "error",
                     error: {
-                      type: "overloaded_error",
+                      type: "authentication_error",
                       message:
-                        "Claude token refresh is rate-limited; retry shortly.",
+                        "Claude credentials could not be renewed. Try again later or run `claude` for the selected account.",
                     },
                   }),
                   {
-                    status: 429,
+                    status: 401,
                     headers: {
                       "content-type": "application/json",
-                      "retry-after": "5",
                     },
                   },
                 )
@@ -672,13 +674,16 @@ const plugin: Plugin = async () => {
           async authorize(inputs) {
             const latestAccounts = refreshAccountsList()
 
-            const source =
-              inputs?.account ?? latestAccounts[0]?.source ?? accounts[0].source
-            const chosen =
-              latestAccounts.find((a) => a.source === source) ??
-              accounts.find((a) => a.source === source) ??
-              latestAccounts[0] ??
-              accounts[0]
+            // Fail closed on an explicit selection that no longer exists.
+            // Substituting another account here silently signs the user in as
+            // somebody else and spends that account's quota.
+            const requestedSource = inputs?.account
+            const chosen = requestedSource
+              ? latestAccounts.find((a) => a.source === requestedSource)
+              : latestAccounts[0]
+            if (!chosen) {
+              throw new Error("Selected Claude account is no longer available")
+            }
 
             setActiveAccountSource(chosen.source)
             const creds = (await getCachedCredentials()) ?? chosen.credentials
