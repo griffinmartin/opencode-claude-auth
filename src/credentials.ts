@@ -37,6 +37,9 @@ export type { ClaudeCredentials } from "./keychain.ts"
 
 const CREDENTIAL_CACHE_TTL_MS = 30_000
 
+/** The directory the Claude CLI uses when CLAUDE_CONFIG_DIR is unset. */
+const PRIMARY_CONFIG_DIR = join(homedir(), ".claude")
+
 // Only inside this window will the claude CLI actually rotate a token, so
 // it is also the only window where spawning it is worth a real API request.
 const CLI_FALLBACK_THRESHOLD_MS = 60_000
@@ -432,11 +435,24 @@ export async function refreshViaOAuth(
   return outcome.kind === "ok" ? outcome.creds : null
 }
 
-function refreshViaCli(configDir?: string, useConfigDir = false): boolean {
-  if (useConfigDir && !configDir) {
+/**
+ * Scope a CLI refresh to one account.
+ *
+ * `CLAUDE_CONFIG_DIR` must be set for an account that lives in its own
+ * directory, and must NOT be set for the default one: pointing it at
+ * `~/.claude` makes the CLI look for `~/.claude/.claude.json`, miss the config
+ * it would otherwise find at `~/.claude.json`, and report `loggedIn: false` —
+ * so the refresh cannot happen at all. Any account whose directory we cannot
+ * name is refused rather than run against the default, which would rotate the
+ * primary account's tokens instead of the intended one.
+ */
+function refreshViaCli(source: string, configDir?: string): boolean {
+  const usesDefaultDir =
+    source === PRIMARY_SERVICE || !configDir || configDir === PRIMARY_CONFIG_DIR
+  if (usesDefaultDir && source !== PRIMARY_SERVICE && source !== "file") {
     log("refresh_cli_skipped", {
-      source: "cli",
-      reason: "configDir unknown for suffixed account",
+      source,
+      reason: "configDir unknown, refusing to refresh the default account",
     })
     return false
   }
@@ -445,8 +461,8 @@ function refreshViaCli(configDir?: string, useConfigDir = false): boolean {
     ...process.env,
     TERM: "dumb",
   }
-  if (useConfigDir && configDir) env.CLAUDE_CONFIG_DIR = configDir
-  else delete env.CLAUDE_CONFIG_DIR
+  if (usesDefaultDir) delete env.CLAUDE_CONFIG_DIR
+  else env.CLAUDE_CONFIG_DIR = configDir
 
   for (let i = 0; i < CLI_MAX_ATTEMPTS; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1, configDir })
@@ -819,17 +835,13 @@ async function performRefresh(
 
   noteCliFallbackAttempt(target.source)
   log("refresh_fallback_cli", { source: target.source })
-  const isSuffixedAccount =
-    target.source !== PRIMARY_SERVICE &&
-    target.source.startsWith(PRIMARY_SERVICE + "-")
-  const useConfigDir = target.source === "file" || isSuffixedAccount
   // The CLI can run for CLI_REFRESH_BUDGET_MS, several times the lock's base
   // TTL. Without extending the lease first, every sibling instance declares
   // this holder crashed and refreshes concurrently — and each rotation kills
   // the refresh token the others are holding, so they fall through to their
   // own CLI spawns against an endpoint that is already rate-limiting.
   extendLease?.(CLI_REFRESH_BUDGET_MS + LEASE_MARGIN_MS)
-  const cliSucceeded = refreshViaCli(target.configDir, useConfigDir)
+  const cliSucceeded = refreshViaCli(target.source, target.configDir)
   if (!cliSucceeded) {
     noteCliFallbackAttempt(target.source)
     if (!creds.refreshToken) noteRefreshTerminal(target.source)

@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -221,7 +221,7 @@ export const PRIMARY_SERVICE = "Claude Code-credentials"
 export function readAllClaudeAccounts() {
   readCount += 1
   if (accounts !== null) return accounts
-  return [{ label: "Account 1", source: "keychain", credentials }]
+  return [{ label: "Account 1", source: "Claude Code-credentials", credentials }]
 }
 
 export function refreshAccount(source, configDir) {
@@ -368,7 +368,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "old-token",
             refreshToken: "old-refresh",
@@ -379,7 +379,7 @@ describe("credential caching", () => {
 
       // The source agrees with memory to begin with, so priming the cache
       // (which re-reads the source) leaves the account on "old-token".
-      keychainModule.__setCredentialsForSource("keychain", {
+      keychainModule.__setCredentialsForSource("Claude Code-credentials", {
         accessToken: "old-token",
         refreshToken: "old-refresh",
         expiresAt: now + 10 * 60_000,
@@ -390,7 +390,7 @@ describe("credential caching", () => {
         "old-token",
       )
 
-      keychainModule.__setCredentialsForSource("keychain", {
+      keychainModule.__setCredentialsForSource("Claude Code-credentials", {
         accessToken: "new-token",
         refreshToken: "new-refresh",
         expiresAt: now + 8 * 60 * 60_000,
@@ -427,7 +427,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "old-token",
             refreshToken: "old-refresh",
@@ -457,7 +457,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "old-token",
             refreshToken: "old-refresh",
@@ -487,7 +487,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "old-token",
             refreshToken: "old-refresh",
@@ -515,7 +515,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "old-token",
             refreshToken: "old-refresh",
@@ -547,7 +547,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "token",
             refreshToken: "refresh",
@@ -584,7 +584,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "token",
             refreshToken: "refresh",
@@ -619,7 +619,7 @@ describe("credential caching", () => {
 
       const account = {
         label: "Account 1",
-        source: "keychain",
+        source: "Claude Code-credentials",
         credentials: {
           accessToken: "old-token",
           refreshToken: "old-refresh",
@@ -684,7 +684,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "token",
             refreshToken: "refresh",
@@ -769,7 +769,7 @@ describe("credential caching", () => {
     credentialsModule.initAccounts([
       {
         label: "Account 1",
-        source: "keychain",
+        source: "Claude Code-credentials",
         credentials: {
           accessToken: "token",
           refreshToken: "refresh",
@@ -910,7 +910,7 @@ describe("credential caching", () => {
     // next refreshIfNeeded, which the 30s credential cache can defer.
     const account = {
       label: "Account 1",
-      source: "keychain",
+      source: "Claude Code-credentials",
       credentials: {
         accessToken: "token",
         refreshToken: "refresh",
@@ -1004,7 +1004,7 @@ describe("credential caching", () => {
 
     const account = {
       label: "Account 1",
-      source: "keychain",
+      source: "Claude Code-credentials",
       credentials: {
         accessToken: "rejected-token",
         refreshToken: "refresh-token",
@@ -1056,7 +1056,7 @@ describe("credential caching", () => {
 
     const account = {
       label: "Account 1",
-      source: "keychain",
+      source: "Claude Code-credentials",
       credentials: {
         accessToken: "rejected-token",
         refreshToken: "refresh-token",
@@ -1092,7 +1092,7 @@ describe("credential caching", () => {
 
     const account = {
       label: "Account 1",
-      source: "keychain",
+      source: "Claude Code-credentials",
       credentials: {
         accessToken: "rejected-token",
         refreshToken: "refresh-token",
@@ -1124,7 +1124,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "rejected-token",
             refreshToken: "refresh-token",
@@ -1254,7 +1254,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "before-switch",
             refreshToken: "rt-before",
@@ -1300,7 +1300,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "fresh-in-memory",
             refreshToken: "rt-fresh",
@@ -1344,7 +1344,7 @@ describe("credential caching", () => {
 
       const account = {
         label: "Account 1",
-        source: "keychain",
+        source: "Claude Code-credentials",
         credentials: {
           accessToken: "in-memory-valid",
           refreshToken: "rt-memory",
@@ -1384,7 +1384,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "in-memory",
             refreshToken: "rt",
@@ -1422,7 +1422,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "stale-token",
             refreshToken: "rt-stale",
@@ -1477,7 +1477,7 @@ describe("credential caching", () => {
       credentialsModule.initAccounts([
         {
           label: "Account 1",
-          source: "keychain",
+          source: "Claude Code-credentials",
           credentials: {
             accessToken: "stale-token",
             refreshToken: "rt-stale",
@@ -1963,7 +1963,7 @@ describe("extractOAuthError", () => {
 function makeAccount(expiresAt: number) {
   return {
     label: "Account 1",
-    source: "keychain",
+    source: "Claude Code-credentials",
     credentials: {
       accessToken: "existing-token",
       refreshToken: "existing-refresh",
@@ -2030,7 +2030,7 @@ describe("refreshIfNeeded CLI fallback scope", () => {
 
       // Pin the target's own stored value so the up-front re-read is a no-op
       // and the assertion below speaks to the CLI, not to source adoption.
-      keychainModule.__setCredentialsForSource("keychain", {
+      keychainModule.__setCredentialsForSource("Claude Code-credentials", {
         accessToken: "existing-token",
         refreshToken: "existing-refresh",
         expiresAt: now + 30 * 60_000,
@@ -2324,6 +2324,87 @@ describe("refreshIfNeeded CLI fallback scope", () => {
     }
   })
 
+  // Pointing CLAUDE_CONFIG_DIR at the default directory makes the CLI look for
+  // ~/.claude/.claude.json, miss ~/.claude.json, and report loggedIn: false, so
+  // the file account could never refresh itself.
+  it("leaves CLAUDE_CONFIG_DIR unset for a file account in the default dir", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+      })) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule, childProcessModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const target = {
+        label: "Account 1",
+        source: "file",
+        configDir: join(homedir(), ".claude"),
+        credentials: {
+          accessToken: "expired-token",
+          refreshToken: "expired-refresh",
+          expiresAt: now - 1_000,
+        },
+      }
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentials({ ...target.credentials })
+
+      await credentialsModule.refreshIfNeeded(target)
+      const [call] = childProcessModule.__getExecSyncCalls()
+
+      assert.equal(childProcessModule.__getExecSyncCount(), 1)
+      assert.equal(call.options?.env?.CLAUDE_CONFIG_DIR, undefined)
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  it("refuses the CLI for a suffixed account whose config dir is unknown", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+      })) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule, childProcessModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const target = {
+        label: "Account 2",
+        source: "Claude Code-credentials-deadbeef",
+        credentials: {
+          accessToken: "expired-token",
+          refreshToken: "expired-refresh",
+          expiresAt: now - 1_000,
+        },
+      }
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentials({ ...target.credentials })
+
+      const result = await credentialsModule.refreshIfNeeded(target)
+
+      assert.equal(result, null)
+      assert.equal(
+        childProcessModule.__getExecSyncCount(),
+        0,
+        "an unscoped CLI run would rotate the primary account's tokens",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
   it("uses the CLI immediately when expired during an OAuth cooldown", async () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now
@@ -2506,7 +2587,7 @@ describe("refreshIfNeeded CLI fallback scope", () => {
 
       const target = {
         label: "Account 1",
-        source: "keychain",
+        source: "Claude Code-credentials",
         credentials: {
           accessToken: "dead-token",
           refreshToken: "dead-refresh",
@@ -2517,7 +2598,7 @@ describe("refreshIfNeeded CLI fallback scope", () => {
         target,
         {
           label: "Account 2",
-          source: "keychain-sibling",
+          source: "Claude Code-credentials-11223344",
           credentials: {
             accessToken: "sibling-token",
             refreshToken: "sibling-refresh",
@@ -2527,7 +2608,7 @@ describe("refreshIfNeeded CLI fallback scope", () => {
       ])
       // The store keeps agreeing with memory, so nothing is ever adopted and
       // the terminal record is what drives both rounds.
-      keychainModule.__setCredentialsForSource("keychain", {
+      keychainModule.__setCredentialsForSource("Claude Code-credentials", {
         accessToken: "dead-token",
         refreshToken: "dead-refresh",
         expiresAt: now - 1_000,
