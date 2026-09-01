@@ -12,7 +12,7 @@ export interface ModelConfig {
 }
 
 export const config: ModelConfig = {
-  ccVersion: "2.1.217",
+  ccVersion: "2.1.257",
   baseBetas: [
     "claude-code-20250219",
     "oauth-2025-04-20",
