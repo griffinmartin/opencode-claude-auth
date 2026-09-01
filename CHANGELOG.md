@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.6...v2.2.0) (2026-09-01)
+
+
+### Features
+
+* update model config for Claude CLI 2.1.257 ([#279](https://github.com/griffinmartin/opencode-claude-auth/issues/279)) ([09a13b4](https://github.com/griffinmartin/opencode-claude-auth/commit/09a13b4c3d5cf7c303cf234207627e667efa5277))
+
 ## [2.1.6](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.5...v2.1.6) (2026-08-03)
 
 
