@@ -29,6 +29,134 @@ type Message = {
   role?: string
   content?: string | ContentBlock[]
 }
+type RequestBody = {
+  model?: string
+  cache_control?: unknown
+  system?: string | SystemEntry[]
+  thinking?: Record<string, unknown>
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  output_config?: Record<string, unknown>
+  tools?: Array<{ name?: string } & Record<string, unknown>>
+  messages?: Message[]
+}
+
+const CACHEABLE_MESSAGE_BLOCK_TYPES = new Set([
+  "image",
+  "document",
+  "tool_use",
+  "server_tool_use",
+  "tool_result",
+  "web_search_tool_result",
+  "tool_search_tool_result",
+  "code_execution_tool_result",
+  "text_editor_code_execution_tool_result",
+  "bash_code_execution_tool_result",
+  "advisor_tool_result",
+  "web_fetch_tool_result",
+  "mcp_tool_use",
+  "mcp_tool_result",
+  "compaction",
+])
+
+function relocateSystemEntries(
+  body: RequestBody,
+  keptSystem: SystemEntry[],
+  movedSystem: ContentBlock[],
+): ContentBlock | undefined {
+  if (movedSystem.length === 0 || !Array.isArray(body.messages)) return
+  const firstUser = body.messages.find((message) => message.role === "user")
+  if (!firstUser) return
+
+  body.system = keptSystem
+  const blocks = movedSystem.map((block, index) => ({
+    ...block,
+    text: `${block.text ?? ""}${
+      index < movedSystem.length - 1 || typeof firstUser.content === "string"
+        ? "\n\n"
+        : ""
+    }`,
+  }))
+  if (typeof firstUser.content === "string") {
+    firstUser.content = [...blocks, { type: "text", text: firstUser.content }]
+    return blocks.at(-1)
+  }
+  if (Array.isArray(firstUser.content)) firstUser.content.unshift(...blocks)
+  return blocks.at(-1)
+}
+
+function applyPromptCaching(
+  body: RequestBody,
+  movedSystemBoundary: ContentBlock | undefined,
+): void {
+  markCacheBoundary(findLastCustomTool(body.tools))
+  markCacheBoundary(movedSystemBoundary)
+  markCacheBoundary(findPreviousMessageBoundary(body.messages))
+  body.cache_control = { type: "ephemeral" }
+}
+
+function markCacheBoundary(block: Record<string, unknown> | undefined): void {
+  if (!block || hasCacheControl(block["cache_control"])) return
+  block["cache_control"] = { type: "ephemeral" }
+}
+
+function findLastCustomTool(
+  tools: RequestBody["tools"],
+): Record<string, unknown> | undefined {
+  for (let index = (tools?.length ?? 0) - 1; index >= 0; index--) {
+    if (tools![index].type === undefined) return tools![index]
+  }
+}
+
+function findPreviousMessageBoundary(
+  messages: Message[] | undefined,
+): ContentBlock | undefined {
+  for (let index = (messages?.length ?? 0) - 2; index >= 0; index--) {
+    const message = messages![index]
+    if (typeof message.content === "string") {
+      if (message.content.length === 0) continue
+      const block = { type: "text", text: message.content }
+      message.content = [block]
+      return block
+    }
+    if (!Array.isArray(message.content)) continue
+    for (
+      let blockIndex = message.content.length - 1;
+      blockIndex >= 0;
+      blockIndex--
+    ) {
+      const block = message.content[blockIndex]
+      if (isCacheableMessageBlock(block)) return block
+    }
+  }
+}
+
+function isCacheableMessageBlock(block: ContentBlock): boolean {
+  if (block.type === "text")
+    return typeof block.text === "string" && block.text.length > 0
+  return CACHEABLE_MESSAGE_BLOCK_TYPES.has(block.type ?? "")
+}
+
+function hasPromptCaching(body: RequestBody): boolean {
+  return Boolean(
+    hasCacheControl(body.cache_control) ||
+    (Array.isArray(body.system) &&
+      body.system.some((entry) => hasCacheControl(entry["cache_control"]))) ||
+    (Array.isArray(body.tools) &&
+      body.tools.some((tool) => hasCacheControl(tool["cache_control"]))) ||
+    (Array.isArray(body.messages) &&
+      body.messages.some(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content.some((block) =>
+            hasCacheControl(block["cache_control"]),
+          ),
+      )),
+  )
+}
+
+function hasCacheControl(value: unknown): boolean {
+  return value !== undefined && value !== null
+}
 
 /**
  * Strategy for reconciling `tool_use` / `tool_result` adjacency that OpenCode's
@@ -338,20 +466,8 @@ export function transformBody(
   }
 
   try {
-    const parsed = JSON.parse(body) as {
-      model?: string
-      system?: SystemEntry[]
-      thinking?: Record<string, unknown>
-      // eslint-disable-next-line @typescript-eslint/naming-convention
-      output_config?: Record<string, unknown>
-      tools?: Array<{ name?: string } & Record<string, unknown>>
-      messages?: Array<{
-        role?: string
-        content?:
-          | string
-          | Array<{ type?: string; text?: string } & Record<string, unknown>>
-      }>
-    }
+    const parsed = JSON.parse(body) as RequestBody
+    const hasInputPromptCaching = hasPromptCaching(parsed)
 
     // --- Billing header: inject as system[0] (no cache_control) ---
     const version = process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
@@ -365,9 +481,11 @@ export function transformBody(
       entrypoint,
     )
 
-    if (!Array.isArray(parsed.system)) {
-      parsed.system = []
-    }
+    if (!Array.isArray(parsed.system))
+      parsed.system =
+        typeof parsed.system === "string"
+          ? [{ type: "text", text: parsed.system }]
+          : []
 
     // Remove any existing billing header entries
     parsed.system = parsed.system.filter(
@@ -407,6 +525,13 @@ export function transformBody(
         if (rest.length > 0) {
           splitSystem.push({ ...entryProps, text: rest })
         }
+      } else if (
+        entry.type === "text" &&
+        entry.text === SYSTEM_IDENTITY &&
+        entry["cache_control"] !== undefined
+      ) {
+        const { cache_control: _cacheControl, ...identity } = entry
+        splitSystem.push(identity)
       } else {
         splitSystem.push(entry)
       }
@@ -424,27 +549,26 @@ export function transformBody(
     // message where it is functionally equivalent but avoids the check.
     const BILLING_PREFIX = "x-anthropic-billing-header"
     const keptSystem: SystemEntry[] = []
-    const movedTexts: string[] = []
+    const movedSystem: ContentBlock[] = []
     for (const entry of parsed.system) {
-      const txt = typeof entry === "string" ? entry : (entry.text ?? "")
+      const txt = entry.text ?? ""
       if (txt.startsWith(BILLING_PREFIX) || txt.startsWith(SYSTEM_IDENTITY)) {
         keptSystem.push(entry)
       } else if (txt.length > 0) {
-        movedTexts.push(txt)
+        movedSystem.push({
+          type: "text",
+          text: txt,
+          ...(!hasCacheControl(entry["cache_control"])
+            ? {}
+            : { cache_control: entry["cache_control"] }),
+        })
       }
     }
-    if (movedTexts.length > 0 && Array.isArray(parsed.messages)) {
-      const firstUser = parsed.messages.find((m) => m.role === "user")
-      if (firstUser) {
-        parsed.system = keptSystem
-        const prefix = movedTexts.join("\n\n")
-        if (typeof firstUser.content === "string") {
-          firstUser.content = prefix + "\n\n" + firstUser.content
-        } else if (Array.isArray(firstUser.content)) {
-          firstUser.content.unshift({ type: "text", text: prefix })
-        }
-      }
-    }
+    const movedSystemBoundary = relocateSystemEntries(
+      parsed,
+      keptSystem,
+      movedSystem,
+    )
 
     // Strip effort for models that don't support it (e.g. haiku).
     // OpenCode sends { output_config: { effort: "high" } } but haiku
@@ -498,6 +622,8 @@ export function transformBody(
     if (Array.isArray(parsed.messages)) {
       parsed.messages = applyToolRepair(parsed.messages, mode)
     }
+
+    if (!hasInputPromptCaching) applyPromptCaching(parsed, movedSystemBoundary)
 
     return JSON.stringify(parsed)
   } catch {

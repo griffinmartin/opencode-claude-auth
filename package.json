@@ -15,22 +15,23 @@
     "url": "git+https://github.com/griffinmartin/opencode-claude-auth.git"
   },
   "files": [
+    "index.js",
     "opencode-claude-auth.js",
     "dist",
     "installation.md"
   ],
   "type": "module",
-  "main": "opencode-claude-auth.js",
-  "module": "opencode-claude-auth.js",
+  "main": "index.js",
+  "module": "index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./index.js"
     },
     "./server": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./index.js"
     },
     "./claude-auth-plugin": {
       "types": "./dist/index.d.ts",
@@ -63,15 +64,15 @@
     "format": "oxfmt --write .",
     "prepublishOnly": "pnpm run build && pnpm test"
   },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.39",
+    "@opencode-ai/plugin": "beta"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "latest",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
     "typescript": "^5.0.0"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*"
   },
   "packageManager": "pnpm@10.32.1"
 }
