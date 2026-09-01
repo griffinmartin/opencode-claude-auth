@@ -15,22 +15,23 @@
     "url": "git+https://github.com/griffinmartin/opencode-claude-auth.git"
   },
   "files": [
+    "index.js",
     "opencode-claude-auth.js",
     "dist",
     "installation.md"
   ],
   "type": "module",
-  "main": "opencode-claude-auth.js",
-  "module": "opencode-claude-auth.js",
+  "main": "index.js",
+  "module": "index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./index.js"
     },
     "./server": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./index.js"
     },
     "./claude-auth-plugin": {
       "types": "./dist/index.d.ts",
