@@ -72,6 +72,7 @@ async function loadCredentialsWithCountingKeychain(
       rng?: () => number
     }) => Promise<Creds | null>
     getActiveRefreshFailureKind: () => "transient" | "terminal" | null
+    wasRefreshDeferred: (source: string) => boolean
   }
   keychainModule: {
     __getReadCount: () => number
@@ -293,6 +294,7 @@ export function __setAccounts(list) {
       forceRefreshActiveAccount: (
         refresh?: (refreshToken: string) => Promise<Creds | null>,
       ) => Promise<Creds | null>
+      wasRefreshDeferred: (source: string) => boolean
     },
     keychainModule: keychainModule as {
       __getReadCount: () => number
@@ -2990,6 +2992,97 @@ describe("getCredentialsWithBackoff (transient rate-limit resilience)", () => {
       Date.now = originalNow
     }
   })
+
+  // Regression: the cooldown is a "cannot refresh right now" signal, not a
+  // "there are no usable credentials" one. Conflating the two makes the
+  // proactive sync timer — which asks an hour ahead of expiry — see null and
+  // tell the user to run `claude` while the token still has half an hour of
+  // life left. Mirrors the guard the transient/CLI-fallback paths already have.
+  it("keeps serving still-usable credentials while a refresh cooldown is active", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    // A retry-after beyond the fetchWithRetry cap makes the 429 return at once
+    // rather than backing off, keeping the test fast.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+        headers: { "retry-after": "3600" },
+      })) as typeof fetch
+    try {
+      const expiresAt = now + 30 * 60_000
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(expiresAt)
+      const target = makeAccount(expiresAt)
+      credentialsModule.initAccounts([target])
+      // The store agrees with memory, so nothing is ever adopted from it and
+      // the assertions below speak to the deferral, not to source adoption.
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt,
+      })
+
+      // Tick 1: the proactive threshold fires a refresh, the endpoint
+      // rate-limits it, and a cooldown is armed. The transient path's existing
+      // guard already returns the untouched, still-usable credentials.
+      const first = await credentialsModule.refreshIfNeeded(target, 60 * 60_000)
+      assert.equal(first?.accessToken, "existing-token")
+      assert.equal(credentialsModule.getActiveRefreshFailureKind(), "transient")
+
+      // Tick 2, five minutes later: the cooldown is still armed and no sibling
+      // has published anything. The token is untouched and healthy.
+      const second = await credentialsModule.refreshIfNeeded(
+        target,
+        60 * 60_000,
+      )
+      assert.equal(
+        second?.accessToken,
+        "existing-token",
+        "an active cooldown must defer the refresh, not report the token as unusable",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  // The reactive path must keep failing closed: with under a minute of life
+  // left there is nothing usable to hand back, so a cooldown still yields null
+  // and getCredentialsWithBackoff goes on to wait the cooldown out.
+  it("still returns null during a cooldown when credentials are past the reactive window", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+        headers: { "retry-after": "3600" },
+      })) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const target = makeAccount(now - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: now - 1_000,
+      })
+
+      assert.equal(await credentialsModule.refreshIfNeeded(target), null)
+      assert.equal(
+        await credentialsModule.refreshIfNeeded(target),
+        null,
+        "expired credentials must not be handed back as if they were usable",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
 })
 
 describe("cross-process refresh lock (single-flight)", () => {
@@ -3039,6 +3132,199 @@ describe("cross-process refresh lock (single-flight)", () => {
           adopted?.accessToken,
           "holder-token",
           "waits for and adopts the lock holder's freshly stored token",
+        )
+      } finally {
+        held!.release()
+      }
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // Regression: losing the lock race means "someone else is refreshing", not
+  // "this token is dead". With N OpenCode instances sharing one credential,
+  // every rotation makes N-1 of them take this branch — and the proactive sync
+  // timer turned each one into a "Run `claude` to re-authenticate" warning
+  // while the token still had most of its life left.
+  it("keeps serving still-usable credentials when the lock holder publishes nothing", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const start = 1_700_000_000_000
+    let clock = start
+    Date.now = () => clock
+    globalThis.fetch = (async () => {
+      throw new Error("the lock-busy path must never hit the token endpoint")
+    }) as typeof fetch
+    try {
+      const expiresAt = start + 30 * 60_000
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(expiresAt)
+      const target = makeAccount(expiresAt)
+      credentialsModule.initAccounts([target])
+      // The store never diverges from memory, so the holder is one that
+      // crashed or stalled: there is nothing to adopt within the wait budget.
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt,
+      })
+      // waitForAdopt polls against Date.now, which this test freezes. Advance
+      // it on every store read so the wait budget is actually reachable.
+      keychainModule.__setReadHook(() => {
+        clock += 1_000
+      })
+
+      // A sibling process owns the refresh lock for this source.
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held, "test acquires the lock to simulate another process")
+      try {
+        const result = await credentialsModule.refreshIfNeeded(
+          target,
+          60 * 60_000,
+        )
+        assert.equal(
+          result?.accessToken,
+          "existing-token",
+          "a busy lock must defer the refresh, not report the token as unusable",
+        )
+      } finally {
+        held!.release()
+      }
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // At expiry the herd converges: the winner can be inside a CLI fallback for
+  // up to 120s while the losers give up waiting after 5s with under a minute
+  // of life left. They have nothing usable to return, but the caller still has
+  // to be able to tell "a sibling is refreshing" apart from "this token is
+  // dead" — otherwise it tells the user to re-authenticate mid-rotation.
+  it("marks a busy-lock deferral as deferred even when it must return null", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const start = 1_700_000_000_000
+    let clock = start
+    Date.now = () => clock
+    globalThis.fetch = (async () => {
+      throw new Error("the lock-busy path must never hit the token endpoint")
+    }) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(start - 1_000)
+      const target = makeAccount(start - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: start - 1_000,
+      })
+      keychainModule.__setReadHook(() => {
+        clock += 1_000
+      })
+
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held, "test acquires the lock to simulate another process")
+      try {
+        assert.equal(await credentialsModule.refreshIfNeeded(target), null)
+        assert.equal(
+          credentialsModule.wasRefreshDeferred(target.source),
+          true,
+          "a busy lock is a deferral, not a credential failure",
+        )
+      } finally {
+        held!.release()
+      }
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // The marker must describe only the call that just ran. If it leaked across
+  // calls it would suppress the warning for a real, later failure.
+  it("clears the deferral marker once a refresh actually runs and fails", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const start = 1_700_000_000_000
+    let clock = start
+    Date.now = () => clock
+    globalThis.fetch = (async () => {
+      throw new Error("network unreachable")
+    }) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(start - 1_000)
+      const target = makeAccount(start - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: start - 1_000,
+      })
+      const readHook = () => {
+        clock += 1_000
+      }
+      keychainModule.__setReadHook(readHook)
+
+      // First: deferred by a sibling holding the lock.
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held)
+      try {
+        await credentialsModule.refreshIfNeeded(target)
+        assert.equal(credentialsModule.wasRefreshDeferred(target.source), true)
+      } finally {
+        held!.release()
+      }
+
+      // Then: the lock is free, the refresh genuinely runs and is exhausted.
+      keychainModule.__setReadHook(null)
+      assert.equal(await credentialsModule.refreshIfNeeded(target), null)
+      assert.equal(
+        credentialsModule.wasRefreshDeferred(target.source),
+        false,
+        "a real exhausted refresh must not be reported as a deferral",
+      )
+    } finally {
+      Date.now = originalNow
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // The reactive path keeps failing closed here too, so a request holding a
+  // genuinely expired token still falls through to getCredentialsWithBackoff.
+  it("still returns null on a busy lock when credentials are past the reactive window", async () => {
+    const originalNow = Date.now
+    const originalFetch = globalThis.fetch
+    const start = 1_700_000_000_000
+    let clock = start
+    Date.now = () => clock
+    globalThis.fetch = (async () => {
+      throw new Error("the lock-busy path must never hit the token endpoint")
+    }) as typeof fetch
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(start - 1_000)
+      const target = makeAccount(start - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        accessToken: "existing-token",
+        refreshToken: "existing-refresh",
+        expiresAt: start - 1_000,
+      })
+      keychainModule.__setReadHook(() => {
+        clock += 1_000
+      })
+
+      const held = acquireRefreshLock(target.source)
+      assert.ok(held, "test acquires the lock to simulate another process")
+      try {
+        assert.equal(
+          await credentialsModule.refreshIfNeeded(target),
+          null,
+          "expired credentials must not be handed back as if they were usable",
         )
       } finally {
         held!.release()

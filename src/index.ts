@@ -31,6 +31,7 @@ import {
   saveAccountSource,
   refreshAccountsList,
   refreshIfNeeded,
+  wasRefreshDeferred,
   type ClaudeCredentials,
 } from "./credentials.ts"
 
@@ -243,6 +244,13 @@ const plugin: Plugin = async () => {
             log("proactive_refresh_recovered", { source: account?.source })
           }
           proactiveRefreshWarned = false
+        } else if (account && wasRefreshDeferred(account.source)) {
+          // Not a failure: a sibling OpenCode instance or the claude CLI owns
+          // the refresh right now, or a rate-limit cooldown is still running
+          // down. Nothing is known to be wrong with the credentials, so this
+          // must never reach the user as "re-authenticate" — and the warned
+          // latch stays untouched so a genuine failure later still reports.
+          log("proactive_refresh_deferred", { source: account.source })
         } else {
           log("proactive_refresh_failed", { source: account?.source })
           // Only warn once per outage — otherwise this fires every
