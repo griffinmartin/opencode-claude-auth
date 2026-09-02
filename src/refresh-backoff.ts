@@ -21,8 +21,25 @@ export const BASE_COOLDOWN_MS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000
 })()
 
-/** Hard ceiling for a single cooldown, regardless of consecutive failures. */
-export const MAX_COOLDOWN_MS = 60_000
+/**
+ * The proactive refresh timer's period, mirrored from index.ts. A cooldown
+ * shorter than this cannot suppress a single tick, so it is the floor any
+ * useful ceiling has to clear.
+ */
+const PROACTIVE_TICK_MS = 5 * 60 * 1000
+
+/**
+ * Hard ceiling for a single cooldown, regardless of consecutive failures.
+ *
+ * Was 60s, which is below the proactive tick: however many times a refresh
+ * failed, the cooldown always lapsed before the next tick, so every process
+ * kept hitting a rate-limited token endpoint every five minutes indefinitely.
+ * The endpoint's own window is minutes to hours, so the ceiling has to be able
+ * to outlast several ticks — the exponential schedule below still starts at
+ * BASE_COOLDOWN_MS, so a one-off blip is still retried within seconds and only
+ * a sustained limit backs off this far.
+ */
+export const MAX_COOLDOWN_MS = 3 * PROACTIVE_TICK_MS
 
 /**
  * OAuth token-endpoint error codes that mean the refresh token itself is no

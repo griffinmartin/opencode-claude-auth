@@ -133,6 +133,7 @@ const SOURCE_FILES = [
   "credentials.ts",
   "refresh-backoff.ts",
   "refresh-lock.ts",
+  "rotated-tokens.ts",
   "logger.ts",
   "http.ts",
 ] as const
