@@ -46,7 +46,8 @@ type MockedKeychain = {
 }
 
 async function loadKeychainWithMockedSecurity(
-  securityDump: string,
+  /** An Error makes `security dump-keychain` fail, as a locked keychain does. */
+  securityDump: string | Error,
   keychainEntries: Record<string, string>,
 ): Promise<MockedKeychain> {
   const tempDir = await mkdtemp(
@@ -72,11 +73,17 @@ async function loadKeychainWithMockedSecurity(
 
   await writeFile(
     tempChildProcess,
-    `const securityDump = ${JSON.stringify(securityDump)}
+    `const securityDump = ${JSON.stringify(
+      securityDump instanceof Error ? securityDump.message : securityDump,
+    )}
+const dumpThrows = ${securityDump instanceof Error}
 const keychainEntries = ${JSON.stringify(keychainEntries)}
 
 export function execSync(command) {
-  if (command.includes("dump-keychain")) return securityDump
+  if (command.includes("dump-keychain")) {
+    if (dumpThrows) throw new Error(securityDump)
+    return securityDump
+  }
   if (command.includes("find-generic-password")) {
     const match = command.match(/-s "([^"]+)"/)
     const service = match ? match[1] : undefined
@@ -336,6 +343,16 @@ describe("readAllClaudeAccounts", () => {
       }),
     )
     writeFileSync(
+      join(primaryDir, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "duplicate-at",
+          refreshToken: "duplicate-rt",
+          expiresAt: 1_700_000_000_002,
+        },
+      }),
+    )
+    writeFileSync(
       join(workDir, ".claude.json"),
       JSON.stringify({
         oauthAccount: { emailAddress: "work@example.com" },
@@ -453,6 +470,103 @@ describe("readAllClaudeAccounts", () => {
     }
   })
 
+  it("keeps default file credentials beside suffixed keychain accounts", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    const primaryDir = join(tempHome, ".claude")
+    const workDir = join(tempHome, ".work")
+    const workSuffix = keychainSuffixForDir(workDir)
+
+    mkdirSync(primaryDir, { recursive: true })
+    mkdirSync(workDir, { recursive: true })
+    writeFileSync(
+      join(primaryDir, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "primary-at",
+          refreshToken: "primary-rt",
+          expiresAt: 1_700_000_000_000,
+        },
+      }),
+    )
+    writeFileSync(join(primaryDir, ".claude.json"), JSON.stringify({}))
+    writeFileSync(join(workDir, ".claude.json"), JSON.stringify({}))
+
+    process.env.HOME = tempHome
+
+    try {
+      const { readAllClaudeAccounts } = await loadKeychainWithMockedSecurity(
+        `
+        "svce"<blob>="Claude Code-credentials"
+        "svce"<blob>="Claude Code-credentials-${workSuffix}"
+        `,
+        {
+          "Claude Code-credentials": JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "",
+              refreshToken: "",
+              expiresAt: 0,
+            },
+            mcpOAuth: { "server|id": { serverName: "server" } },
+          }),
+          [`Claude Code-credentials-${workSuffix}`]: JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "work-at",
+              refreshToken: "work-rt",
+              expiresAt: 1_700_000_000_001,
+            },
+          }),
+        },
+      )
+
+      const accounts = readAllClaudeAccounts()
+      assert.equal(accounts.length, 2)
+      assert.equal(accounts[0].source, "file")
+      assert.equal(accounts[0].configDir, primaryDir)
+      assert.equal(accounts[1].source, `Claude Code-credentials-${workSuffix}`)
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  // A locked keychain or denied ACL used to look identical to an empty one, and
+  // the file store it fell back to holds a stale copy of the primary account.
+  it("returns no accounts when the keychain could not be listed", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    const primaryDir = join(tempHome, ".claude")
+    mkdirSync(primaryDir, { recursive: true })
+    writeFileSync(
+      join(primaryDir, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "stale-file-at",
+          refreshToken: "stale-file-rt",
+          expiresAt: 1_700_000_000_000,
+        },
+      }),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const { readAllClaudeAccounts } = await loadKeychainWithMockedSecurity(
+        new Error("security: dump-keychain failed"),
+        {},
+      )
+
+      assert.deepEqual(readAllClaudeAccounts(), [])
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("keeps legacy hex suffixes that are not exactly 8 chars discoverable", async () => {
     const originalHome = process.env.HOME
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
@@ -479,11 +593,9 @@ describe("readAllClaudeAccounts", () => {
       const accounts = readAllClaudeAccounts()
       assert.equal(accounts.length, 1)
       assert.equal(accounts[0].source, "Claude Code-credentials-abc")
-      // A non-8-char suffix cannot be mapped back to a config dir hash, so
-      // the entry falls back to the primary config dir — matching the CLI
-      // refresh behaviour these legacy entries had before suffix mapping
-      // existed.
-      assert.equal(accounts[0].configDir, primaryDir)
+      // A non-8-char suffix cannot be mapped safely. Leaving configDir unset
+      // prevents its CLI fallback from rotating the primary account.
+      assert.equal(accounts[0].configDir, undefined)
     } finally {
       if (originalHome === undefined) {
         delete process.env.HOME
