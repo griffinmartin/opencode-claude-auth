@@ -1,20 +1,8 @@
 {
-  "claude-opus-4-6-fast": {
-    "lastTested": "2026-04-16T15:39:56.069Z",
-    "lastPassedAt": null,
-    "error": "model: claude-opus-4-6-fast",
-    "consecutiveFailures": 1
-  },
   "claude-opus-4-8-fast": {
     "lastTested": "2026-07-08T19:57:56.263Z",
     "lastPassedAt": null,
     "error": "model: claude-opus-4-8-fast",
-    "consecutiveFailures": 1
-  },
-  "claude-opus-4-7-fast": {
-    "lastTested": "2026-07-08T19:57:56.263Z",
-    "lastPassedAt": null,
-    "error": "model: claude-opus-4-7-fast",
     "consecutiveFailures": 1
   },
   "claude-opus-5-fast": {
