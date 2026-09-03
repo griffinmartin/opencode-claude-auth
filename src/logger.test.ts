@@ -20,6 +20,31 @@ describe("logger", () => {
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
+  describe("XDG_DATA_HOME support", () => {
+    it("uses $XDG_DATA_HOME for default log path when CLAUDE_AUTH_DEBUG=1", () => {
+      const originalXdg = process.env.XDG_DATA_HOME
+      process.env.XDG_DATA_HOME = tmpDir
+      process.env.CLAUDE_AUTH_DEBUG = "1"
+
+      try {
+        initLogger()
+        log("xdg_test", { key: "value" })
+
+        const expectedPath = join(tmpDir, "opencode", "claude-auth-debug.log")
+        assert.ok(existsSync(expectedPath), "Log file should be at XDG path")
+        const content = readFileSync(expectedPath, "utf-8").trim()
+        const parsed = JSON.parse(content)
+        assert.equal(parsed.event, "xdg_test")
+      } finally {
+        if (typeof originalXdg === "string") {
+          process.env.XDG_DATA_HOME = originalXdg
+        } else {
+          delete process.env.XDG_DATA_HOME
+        }
+      }
+    })
+  })
+
   describe("no-op mode", () => {
     it("log() does nothing when CLAUDE_AUTH_DEBUG is unset", () => {
       initLogger()
@@ -99,12 +124,26 @@ describe("logger", () => {
     })
 
     it("treats CLAUDE_AUTH_DEBUG=1 as default path", () => {
+      const originalXdg = process.env.XDG_DATA_HOME
+      process.env.XDG_DATA_HOME = tmpDir
       process.env.CLAUDE_AUTH_DEBUG = "1"
-      // Just verify initLogger doesn't throw — we can't easily assert
-      // the default path without polluting the real filesystem
-      initLogger()
-      log("test_event", {})
-      closeLogger()
+      try {
+        initLogger()
+        log("test_event", {})
+
+        const expectedPath = join(tmpDir, "opencode", "claude-auth-debug.log")
+        assert.ok(
+          existsSync(expectedPath),
+          "CLAUDE_AUTH_DEBUG=1 should write to $XDG_DATA_HOME/opencode/claude-auth-debug.log",
+        )
+        closeLogger()
+      } finally {
+        if (typeof originalXdg === "string") {
+          process.env.XDG_DATA_HOME = originalXdg
+        } else {
+          delete process.env.XDG_DATA_HOME
+        }
+      }
     })
   })
 

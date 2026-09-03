@@ -28,6 +28,11 @@ process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
   join(tmpdir(), "opencode-claude-auth-locktest-"),
 )
 
+// These tests isolate the data dir via HOME; unset XDG_DATA_HOME so an ambient
+// value (e.g. in CI or a dev shell) doesn't redirect the resolved paths out of
+// the temp home. Tests that exercise XDG_DATA_HOME set it explicitly.
+delete process.env.XDG_DATA_HOME
+
 type Creds = {
   accessToken: string
   refreshToken: string
@@ -123,6 +128,11 @@ async function loadCredentialsWithCountingKeychain(
   await writeFile(
     join(tempDir, "refresh-lock.ts"),
     await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
+    "utf8",
+  )
+  await writeFile(
+    join(tempDir, "paths.ts"),
+    await readFile(new URL("./paths.ts", import.meta.url), "utf8"),
     "utf8",
   )
   const rewritten = sourceCredentials
@@ -1467,6 +1477,11 @@ describe("syncAuthJson file permissions", () => {
         await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "paths.ts"),
+        await readFile(new URL("./paths.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
       const rewritten = sourceCredentials.replace(
         /from\s+["']\.\/(\w+)\.js["']/g,
         'from "./$1.ts"',
@@ -1570,6 +1585,11 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "paths.ts"),
+        await readFile(new URL("./paths.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
       const rewritten = sourceCredentials.replace(
         /from\s+["']\.\/(\w+)\.js["']/g,
         'from "./$1.ts"',
@@ -1615,6 +1635,138 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         process.env.HOME = originalHome
       } else {
         delete process.env.HOME
+      }
+    }
+  })
+})
+
+describe("XDG_DATA_HOME support", () => {
+  it("saveAccountSource writes to $XDG_DATA_HOME/opencode/ when set", async () => {
+    const originalXdg = process.env.XDG_DATA_HOME
+    const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-xdg-"))
+    process.env.XDG_DATA_HOME = tempDir
+
+    try {
+      const mod = await import(
+        pathToFileURL(new URL("./credentials.ts", import.meta.url).pathname)
+          .href + `?xdg-save-${Date.now()}`
+      )
+      mod.saveAccountSource("Claude Code-credentials-abc123")
+
+      const expected = join(tempDir, "opencode", "claude-account-source.txt")
+      const content = readFileSync(expected, "utf-8").trim()
+      assert.equal(content, "Claude Code-credentials-abc123")
+    } finally {
+      if (typeof originalXdg === "string") {
+        process.env.XDG_DATA_HOME = originalXdg
+      } else {
+        delete process.env.XDG_DATA_HOME
+      }
+    }
+  })
+
+  it("loadPersistedAccountSource reads from $XDG_DATA_HOME/opencode/ when set", async () => {
+    const originalXdg = process.env.XDG_DATA_HOME
+    const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-xdg-"))
+    process.env.XDG_DATA_HOME = tempDir
+
+    try {
+      const stateDir = join(tempDir, "opencode")
+      mkdirSync(stateDir, { recursive: true })
+      writeFileSync(
+        join(stateDir, "claude-account-source.txt"),
+        "Claude Code-credentials-def456",
+        "utf-8",
+      )
+
+      const mod = await import(
+        pathToFileURL(new URL("./credentials.ts", import.meta.url).pathname)
+          .href + `?xdg-load-${Date.now()}`
+      )
+      const result = mod.loadPersistedAccountSource()
+      assert.equal(result, "Claude Code-credentials-def456")
+    } finally {
+      if (typeof originalXdg === "string") {
+        process.env.XDG_DATA_HOME = originalXdg
+      } else {
+        delete process.env.XDG_DATA_HOME
+      }
+    }
+  })
+
+  it("syncAuthJson writes to $XDG_DATA_HOME/opencode/auth.json when set", async () => {
+    const originalXdg = process.env.XDG_DATA_HOME
+    const tempDir = await mkdtemp(join(tmpdir(), "opencode-claude-auth-xdg-"))
+    process.env.XDG_DATA_HOME = tempDir
+
+    try {
+      const tempModDir = await mkdtemp(
+        join(tmpdir(), "opencode-claude-auth-sync-xdg-"),
+      )
+      const tempCredentials = join(tempModDir, "credentials.ts")
+      const tempKeychain = join(tempModDir, "keychain.ts")
+      const tempBetas = join(tempModDir, "betas.ts")
+      const tempLogger = join(tempModDir, "logger.ts")
+      const sourceCredentials = await readFile(
+        new URL("./credentials.ts", import.meta.url),
+        "utf8",
+      )
+      // Real modules credentials.ts imports: copied verbatim so the sandboxed
+      // copy resolves them, and so paths.ts does the actual XDG resolution.
+      for (const dep of [
+        "http.ts",
+        "refresh-backoff.ts",
+        "refresh-lock.ts",
+        "paths.ts",
+      ]) {
+        await writeFile(
+          join(tempModDir, dep),
+          await readFile(new URL(`./${dep}`, import.meta.url), "utf8"),
+          "utf8",
+        )
+      }
+      const rewritten = sourceCredentials.replace(
+        /from\s+["']\.\/(\w+)\.js["']/g,
+        'from "./$1.ts"',
+      )
+
+      await writeFile(
+        tempKeychain,
+        `export const PRIMARY_SERVICE = "Claude Code-credentials"
+export function readAllClaudeAccounts() { return [] }
+export function refreshAccount() { return null }
+export function writeBackCredentials() { return true }
+export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account \${i + 1}\`) }`,
+        "utf8",
+      )
+      await writeFile(
+        tempBetas,
+        `export function resetExcludedBetas() {}\n`,
+        "utf8",
+      )
+      await writeFile(
+        tempLogger,
+        `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+        "utf8",
+      )
+      await writeFile(tempCredentials, rewritten, "utf8")
+
+      const mod = await import(pathToFileURL(tempCredentials).href)
+      mod.syncAuthJson({
+        accessToken: "tok",
+        refreshToken: "ref",
+        expiresAt: Date.now() + 600_000,
+      })
+
+      const authPath = join(tempDir, "opencode", "auth.json")
+      const written = JSON.parse(readFileSync(authPath, "utf-8"))
+      assert.equal(written.anthropic.type, "oauth")
+      assert.equal(written.anthropic.access, "tok")
+    } finally {
+      if (typeof originalXdg === "string") {
+        process.env.XDG_DATA_HOME = originalXdg
+      } else {
+        delete process.env.XDG_DATA_HOME
       }
     }
   })
