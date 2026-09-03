@@ -135,6 +135,7 @@ const SOURCE_FILES = [
   "refresh-lock.ts",
   "logger.ts",
   "http.ts",
+  "usage.ts",
 ] as const
 
 async function copySourceFiles(
