@@ -441,7 +441,21 @@ export function transformBody(
         if (typeof firstUser.content === "string") {
           firstUser.content = prefix + "\n\n" + firstUser.content
         } else if (Array.isArray(firstUser.content)) {
-          firstUser.content.unshift({ type: "text", text: prefix })
+          // The relocated text must not be placed before tool_result blocks:
+          // Anthropic requires tool_results to be the leading content of the
+          // message that follows a tool_use, and rejects the request with
+          // "tool_use ids were found without tool_result blocks immediately
+          // after" otherwise. Compaction requests commonly start with an
+          // assistant tool_use turn, making the first user message a
+          // tool_result carrier.
+          let insertAt = 0
+          while (
+            insertAt < firstUser.content.length &&
+            firstUser.content[insertAt].type === "tool_result"
+          ) {
+            insertAt += 1
+          }
+          firstUser.content.splice(insertAt, 0, { type: "text", text: prefix })
         }
       }
     }
