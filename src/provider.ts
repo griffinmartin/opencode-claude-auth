@@ -10,10 +10,13 @@ import {
 } from "./betas.ts"
 import {
   forceRefreshActiveAccount,
+  getAccountBySource,
+  getActiveAccount,
   getActiveRefreshFailureKind,
   getCachedCredentials,
   getCredentialsWithBackoff,
   reloadCredentialsFromSource,
+  type ClaudeAccount,
   type ClaudeCredentials,
 } from "./credentials.ts"
 import { fetchWithRetry } from "./http.ts"
@@ -102,11 +105,21 @@ export function buildRequestHeaders(
   return headers
 }
 
+/**
+ * `source` names the account the credential behind `accessToken` was imported
+ * from, as carried in its metadata. Freshness lookups and 401/429 recovery are
+ * scoped to that account, so a request is never re-signed with the token of
+ * whichever account happens to be process-wide active. Omit it and the active
+ * account is used, which is the single-account case.
+ */
 export function claudeSubscriptionFetch(
   accessToken: string,
   upstream?: Fetch,
+  source?: string,
 ): Fetch {
   const send = upstream ?? fetch
+  const resolveAccount = (): ClaudeAccount | null =>
+    source === undefined ? getActiveAccount() : getAccountBySource(source)
   return async (input, init = {}) => {
     const requestBody =
       input instanceof Request && init.body === undefined
@@ -129,8 +142,11 @@ export function claudeSubscriptionFetch(
     const requestURL = buildRequestURL(input)
     const transformedBody = transformBody(requestBody)
     const excluded = getExcludedBetas(modelID)
-    let credentials = await getCachedCredentials()
-    if (!credentials) credentials = await getCredentialsWithBackoff()
+    // Resolved per request: the account list is rebuilt whenever credentials
+    // are re-read, so the object this account is represented by can change.
+    const account = resolveAccount()
+    let credentials = await getCachedCredentials(account)
+    if (!credentials) credentials = await getCredentialsWithBackoff({}, account)
     let token = credentials?.accessToken ?? accessToken
     if (!token)
       throw new Error(
@@ -158,9 +174,10 @@ export function claudeSubscriptionFetch(
     let response = await sendWithToken(token)
 
     for (let attempt = 0; response.status === 401 && attempt < 2; attempt++) {
-      let candidate: ClaudeCredentials | null = reloadCredentialsFromSource()
+      let candidate: ClaudeCredentials | null =
+        reloadCredentialsFromSource(account)
       if (!candidate || candidate.accessToken === token)
-        candidate = await forceRefreshActiveAccount()
+        candidate = await forceRefreshActiveAccount(undefined, account)
       if (!candidate || candidate.accessToken === token) break
       token = candidate.accessToken
       log("auth_recovery_retry", { modelID, attempt: attempt + 1 })
@@ -168,12 +185,12 @@ export function claudeSubscriptionFetch(
     }
 
     if (response.status === 429) {
-      const rotated = reloadCredentialsFromSource()
+      const rotated = reloadCredentialsFromSource(account)
       if (rotated && rotated.accessToken !== token) {
         token = rotated.accessToken
         log("rate_limit_token_changed", { modelID })
         response = await sendWithToken(token)
-      } else if (getActiveRefreshFailureKind() === "transient") {
+      } else if (getActiveRefreshFailureKind(account) === "transient") {
         log("fetch_credentials_transient_exhausted", { modelID })
       }
     }
@@ -219,9 +236,12 @@ export function createClaudeSubscription(options: Record<string, unknown>) {
   const accessToken = typeof options.apiKey === "string" ? options.apiKey : ""
   const upstream =
     typeof options.fetch === "function" ? (options.fetch as Fetch) : undefined
+  // Written alongside the marker by buildOAuthCredential, so it arrives here
+  // through the same metadata OpenCode spreads into the provider options.
+  const source = typeof options.source === "string" ? options.source : undefined
   return createAnthropic({
     ...options,
     apiKey: accessToken,
-    fetch: claudeSubscriptionFetch(accessToken, upstream),
+    fetch: claudeSubscriptionFetch(accessToken, upstream, source),
   })
 }
