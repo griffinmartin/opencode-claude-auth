@@ -142,7 +142,16 @@ function readKeychainService(serviceName: string): string | null {
   }
 }
 
-function listClaudeKeychainServices(): string[] {
+/**
+ * Keychain services holding Claude credentials, plus whether the listing
+ * itself succeeded. Callers must not treat an unreadable keychain as an empty
+ * one: the credentials file is usually a stale copy of the primary account, so
+ * falling back to it silently swaps the account and the token set.
+ */
+function listClaudeKeychainServices(): {
+  services: string[]
+  listed: boolean
+} {
   try {
     const dump = execSync("security dump-keychain", {
       timeout: 5000,
@@ -173,13 +182,13 @@ function listClaudeKeychainServices(): string[] {
       if (svc !== PRIMARY_SERVICE) ordered.push(svc)
     }
     log("keychain_list", { servicesFound: ordered })
-    return ordered
+    return { services: ordered, listed: true }
   } catch (err) {
     log("keychain_list", {
       error: "Failed to list keychain services",
       message: err instanceof Error ? err.message : String(err),
     })
-    return [PRIMARY_SERVICE]
+    return { services: [PRIMARY_SERVICE], listed: false }
   }
 }
 
@@ -326,7 +335,7 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     return [{ label, source: "file", configDir, credentials: creds }]
   }
 
-  const services = listClaudeKeychainServices()
+  const { services, listed } = listClaudeKeychainServices()
   const keychainAccounts: Array<{
     source: string
     suffix: string | null
@@ -347,6 +356,13 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
   }
 
   if (keychainAccounts.length === 0) {
+    // The listing failed, so we do not know what the keychain holds. The file
+    // store is usually a stale copy of the primary account, and adopting it
+    // here swaps both the account and the token set behind the user's back.
+    if (!listed) {
+      log("keychain_unlisted", { assumed: services })
+      return []
+    }
     const configDir =
       process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
     const creds = readCredentialsFile(configDir)
@@ -364,21 +380,46 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     ),
   )
 
-  const resolved = keychainAccounts.map((a) => {
-    const configDir =
-      a.suffix === null ? join(homedir(), ".claude") : suffixToDir.get(a.suffix)
-    const email = configDir ? readEmailFromConfigDir(configDir) : null
-    log("account_config_dir", {
-      source: a.source,
-      configDir: configDir ?? null,
-    })
-    return {
-      source: a.source,
-      credentials: a.credentials,
-      configDir,
-      email,
-    }
-  })
+  const primaryConfigDir = join(homedir(), ".claude")
+  // Only surface the credentials file when the keychain was enumerated and
+  // holds no usable primary account. Guessing from an unlisted keychain adopts
+  // what is usually a stale copy of that same account.
+  const primaryMissing =
+    listed && !keychainAccounts.some((a) => a.source === PRIMARY_SERVICE)
+  const fileCredentials = primaryMissing
+    ? readCredentialsFile(primaryConfigDir)
+    : null
+  const resolved = [
+    ...(fileCredentials
+      ? [
+          {
+            source: "file",
+            credentials: fileCredentials,
+            configDir: primaryConfigDir,
+            email: readEmailFromConfigDir(primaryConfigDir),
+          },
+        ]
+      : []),
+    ...keychainAccounts.map((a) => {
+      const configDir =
+        a.source === PRIMARY_SERVICE
+          ? primaryConfigDir
+          : a.suffix
+            ? suffixToDir.get(a.suffix)
+            : undefined
+      const email = configDir ? readEmailFromConfigDir(configDir) : null
+      log("account_config_dir", {
+        source: a.source,
+        configDir: configDir ?? null,
+      })
+      return {
+        source: a.source,
+        credentials: a.credentials,
+        configDir,
+        email,
+      }
+    }),
+  ]
 
   const labels = buildAccountLabels(
     resolved.map((a) => a.credentials),
