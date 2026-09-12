@@ -12,6 +12,28 @@ The plugin registers its own auth provider with a custom fetch handler that inte
 
 It also syncs credentials to OpenCode's `auth.json` as a fallback (on Windows, it writes to both `%USERPROFILE%\.local\share\opencode\auth.json` and `%LOCALAPPDATA%\opencode\auth.json` to cover all installation methods). If a token is near expiry, it refreshes directly via Anthropic's OAuth endpoint (zero LLM tokens consumed), falling back to the Claude CLI if the direct refresh fails. Background re-sync runs every 5 minutes.
 
+## Alternative: CLIProxyAPI (plugin not required)
+
+If you run [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), you don't need this plugin. CLIProxyAPI logs in to your Claude Code account with OAuth, handles token refresh, and exposes a Claude-compatible API on `http://localhost:8317` by default. Point OpenCode's built-in Anthropic provider at it:
+
+1. Log in with your Claude Code account (via the proxy's `-claude-login` flag) and set an `api-keys` entry in its `config.yaml`.
+2. Configure the Anthropic provider in `~/.config/opencode/opencode.json`:
+
+   ```json
+   {
+     "provider": {
+       "anthropic": {
+         "options": {
+           "baseURL": "http://localhost:8317",
+           "apiKey": "your-api-key-1"
+         }
+       }
+     }
+   }
+   ```
+
+Remove `opencode-claude-auth` from your `plugin` list when using this setup — the two approaches shouldn't be combined. CLIProxyAPI also supports multi-account load balancing and other providers (Codex, Gemini, Grok). This plugin remains the lighter option if you only need Claude Code credentials in OpenCode with no extra service running.
+
 ## Prerequisites
 
 - Claude Code installed and authenticated (run `claude` at least once)
