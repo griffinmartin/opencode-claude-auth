@@ -1,5 +1,6 @@
 import { Plugin, Provider } from "@opencode/plugin"
 import type { IntegrationOAuthMethodRegistration } from "@opencode/plugin/promise/integration"
+import type { SessionRequest } from "@opencode/plugin/promise/session"
 import {
   initAccounts,
   loadPersistedAccountSource,
@@ -28,6 +29,27 @@ const PROVIDER_ID = Provider.ID.make("anthropic")
 const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
 const PROVIDER_PACKAGE = `aisdk:${new URL("./provider.js", import.meta.url).href}`
+
+/**
+ * Session request kinds that reach the model and are billed to the connected
+ * subscription. OpenCode 2 dispatches one hook per kind - `context` drives the
+ * agent loop, and compaction, generation and title are issued alongside it - so
+ * a hook registered for only one of them leaves the rest without the identity
+ * Claude Code requests are expected to carry.
+ */
+export const IDENTITY_REQUEST_HOOKS = [
+  "context",
+  "compaction",
+  "generate",
+  "title",
+] as const
+
+/** Prepends the Claude Code identity to an Anthropic request, once. */
+export function injectClaudeIdentity(event: SessionRequest): void {
+  if (event.model.providerID !== PROVIDER_ID) return
+  if (event.system.some((part) => part.text.includes(SYSTEM_IDENTITY))) return
+  event.system.unshift({ type: "text", text: SYSTEM_IDENTITY })
+}
 
 function oauth(accounts: ReturnType<typeof readAllClaudeAccounts>) {
   return {
@@ -131,12 +153,8 @@ export const ClaudeAuthPlugin = Plugin.define({
         log("connection_watch_failed", { cause: String(cause) })
     })
 
-    await ctx.session.hook("context", (event) => {
-      if (event.model.providerID !== PROVIDER_ID) return
-      if (event.system.some((part) => part.text.includes(SYSTEM_IDENTITY)))
-        return
-      event.system.unshift({ type: "text", text: SYSTEM_IDENTITY })
-    })
+    for (const kind of IDENTITY_REQUEST_HOOKS)
+      await ctx.session.hook(kind, injectClaudeIdentity)
 
     if (accounts.length === 0) {
       log("plugin_init_no_accounts", { reason: "no credentials found" })
