@@ -1,7 +1,7 @@
 /**
  * Headless end-to-end test for the credential refresh flows.
  *
- * Runs real `opencode2 run` invocations against the locally built plugin with
+ * Runs real `opencode run` invocations against the locally built plugin with
  * a sandboxed fake keychain (PATH shims for `security` and `claude`) and
  * asserts on the structured debug log the plugin writes.
  *
@@ -22,7 +22,7 @@
  *     rotated.
  *   - User state (`claude-account-source.txt`) is backed up and restored.
  *
- * Requires: macOS, `opencode2` on PATH, valid Claude Code credentials.
+ * Requires: macOS, `opencode` V2 on PATH, valid Claude Code credentials.
  * Run with: pnpm test:headless
  */
 import { execFileSync, spawnSync } from "node:child_process"
@@ -79,9 +79,9 @@ function preflight(): { realBlob: string } {
     )
     process.exit(0)
   }
-  const version = spawnSync("opencode2", ["--version"], { encoding: "utf-8" })
+  const version = spawnSync("opencode", ["--version"], { encoding: "utf-8" })
   if (version.status !== 0) {
-    fail("`opencode2` not found on PATH — install it to run this test.")
+    fail("`opencode` not found on PATH — install V2 to run this test.")
   }
   let realBlob: string
   try {
@@ -280,7 +280,7 @@ function runOpencode(sandbox: Sandbox, scenarioName: string): RunResult {
   env.XDG_CONFIG_HOME = sandbox.xdgDir
 
   const result = spawnSync(
-    "opencode2",
+    "opencode",
     ["run", "--standalone", "--model", MODEL, PROMPT],
     {
       cwd: sandbox.workDir,
@@ -504,7 +504,7 @@ function main(): void {
       if (seqError) problems.push(seqError)
       const extraError = scenario.extraChecks?.(sandbox, run, shimLog)
       if (extraError) problems.push(extraError)
-      if (run.status !== 0) problems.push(`opencode2 exited with ${run.status}`)
+      if (run.status !== 0) problems.push(`opencode exited with ${run.status}`)
       if (!run.stdout.includes(SENTINEL)) {
         problems.push(`stdout did not contain ${SENTINEL}`)
       }
