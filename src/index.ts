@@ -15,6 +15,7 @@ import {
   realOAuthDeps,
   refreshOAuthCredential,
 } from "./oauth-method.ts"
+import { setCredentialTypeResolver, type CredentialType } from "./provider.ts"
 
 export * from "./betas.ts"
 export * from "./credentials.ts"
@@ -67,6 +68,31 @@ export const ClaudeAuthPlugin = Plugin.define({
       draft.method.update(oauth(accounts))
     })
 
+    // The Anthropic integration keeps its built-in API-key method alongside
+    // the subscription method registered above. Which one the user picked
+    // decides both the transport (see provider.ts) and whether usage is
+    // billed to the subscription, so cost metadata is only zeroed for OAuth.
+    const activeCredentialType = async (): Promise<
+      CredentialType | undefined
+    > => {
+      const connection = await ctx.integration.connection.active(INTEGRATION_ID)
+      if (!connection) return undefined
+      const credential = await ctx.integration.connection.resolve(connection)
+      return credential?.type
+    }
+    setCredentialTypeResolver(activeCredentialType)
+
+    let subscription: boolean = false
+    const loadConnection = async () => {
+      try {
+        subscription = (await activeCredentialType()) === "oauth"
+      } catch (cause) {
+        subscription = false
+        log("connection_lookup_failed", { cause: String(cause) })
+      }
+    }
+    await loadConnection()
+
     await ctx.catalog.transform((catalog) => {
       const anthropic = catalog.provider.get(PROVIDER_ID)
       if (!anthropic) return
@@ -78,9 +104,31 @@ export const ClaudeAuthPlugin = Plugin.define({
       for (const [modelID] of anthropic.models) {
         catalog.model.update(PROVIDER_ID, modelID, (model) => {
           model.package = PROVIDER_PACKAGE
-          model.cost = []
+          if (subscription) model.cost = []
         })
       }
+    })
+
+    // Re-evaluate when the user switches credentials so the catalog follows
+    // the active connection instead of whatever was selected at startup.
+    const watcher = new AbortController()
+    void (async () => {
+      for await (const event of ctx.event.subscribe({
+        signal: watcher.signal,
+      })) {
+        if (
+          event.type === "credential.updated" ||
+          (event.type === "credential.switched" &&
+            event.data.integrationID === INTEGRATION_ID)
+        ) {
+          const before: boolean = subscription
+          await loadConnection()
+          if (subscription !== before) await ctx.catalog.reload()
+        }
+      }
+    })().catch((cause) => {
+      if (!watcher.signal.aborted)
+        log("connection_watch_failed", { cause: String(cause) })
     })
 
     await ctx.session.hook("context", (event) => {
@@ -92,12 +140,17 @@ export const ClaudeAuthPlugin = Plugin.define({
 
     if (accounts.length === 0) {
       log("plugin_init_no_accounts", { reason: "no credentials found" })
-      return
+    } else {
+      log("plugin_init", {
+        accountCount: accounts.length,
+        sources: accounts.map((account) => account.source),
+      })
     }
-    log("plugin_init", {
-      accountCount: accounts.length,
-      sources: accounts.map((account) => account.source),
-    })
+
+    return () => {
+      watcher.abort()
+      setCredentialTypeResolver(undefined)
+    }
   },
 })
 

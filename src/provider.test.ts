@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { buildRequestHeaders, claudeSubscriptionFetch } from "./index.ts"
+import {
+  buildRequestHeaders,
+  claudeSubscriptionFetch,
+  setCredentialTypeResolver,
+} from "./index.ts"
 
 describe("Claude subscription transport", () => {
   it("uses bearer auth and removes x-api-key", () => {
@@ -85,6 +89,33 @@ describe("Claude subscription transport", () => {
     assert.equal(body.messages[0].content[1].cache_control, undefined)
     assert.deepEqual(body.cache_control, { type: "ephemeral" })
     assert.match(await response.text(), /"name": "read"/)
+  })
+
+  it("forwards standard API-key connections untouched", async () => {
+    setCredentialTypeResolver(async () => "key")
+    try {
+      let captured: { input: RequestInfo | URL; init?: RequestInit } | undefined
+      const transport = claudeSubscriptionFetch(
+        "sk-ant-api03-key",
+        async (input, init) => {
+          captured = { input, init }
+          return new Response("{}")
+        },
+      )
+      const init: RequestInit = {
+        method: "POST",
+        headers: { "x-api-key": "sk-ant-api03-key" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+      }
+      await transport("https://api.anthropic.com/v1/messages", init)
+      assert.equal(captured?.input, "https://api.anthropic.com/v1/messages")
+      assert.equal(captured?.init, init)
+      const headers = new Headers(captured?.init?.headers)
+      assert.equal(headers.get("x-api-key"), "sk-ant-api03-key")
+      assert.equal(headers.has("authorization"), false)
+    } finally {
+      setCredentialTypeResolver(undefined)
+    }
   })
 
   it("fails clearly without a subscription token", async () => {
