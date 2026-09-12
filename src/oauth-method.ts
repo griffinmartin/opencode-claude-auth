@@ -20,6 +20,11 @@ export const INTEGRATION_ID: Integration.ID = Integration.ID.make("anthropic")
 export const METHOD_ID: Integration.MethodID =
   Integration.MethodID.make("claude-code")
 
+/** Identifies credentials created by this plugin when OpenCode builds provider options. */
+export const CLAUDE_CODE_OAUTH_METADATA_KEY =
+  "opencode-claude-auth/claude-code-oauth"
+export const CLAUDE_CODE_OAUTH_METADATA_VALUE = "v1"
+
 /** Form field key the account chooser collects its answer under. */
 const ACCOUNT_FIELD_KEY = "account"
 
@@ -122,6 +127,7 @@ export async function buildOAuthCredential(
     refresh: value.refreshToken,
     expires: value.expiresAt,
     metadata: {
+      [CLAUDE_CODE_OAUTH_METADATA_KEY]: CLAUDE_CODE_OAUTH_METADATA_VALUE,
       source: account.source,
       label: account.label,
       ...(account.configDir ? { configDir: account.configDir } : {}),

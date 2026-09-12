@@ -4,6 +4,8 @@ import type { ClaudeAccount } from "./keychain.ts"
 import {
   authorizeOAuth,
   buildOAuthCredential,
+  CLAUDE_CODE_OAUTH_METADATA_KEY,
+  CLAUDE_CODE_OAUTH_METADATA_VALUE,
   labelOAuthCredential,
   oauthMethodDescriptor,
   refreshOAuthCredential,
@@ -194,6 +196,10 @@ describe("buildOAuthCredential", () => {
     assert.equal(value.methodID, "claude-code")
     assert.equal(value.metadata?.source, "b")
     assert.equal(value.metadata?.label, "B")
+    assert.equal(
+      value.metadata?.[CLAUDE_CODE_OAUTH_METADATA_KEY],
+      CLAUDE_CODE_OAUTH_METADATA_VALUE,
+    )
   })
 
   it("falls back to the first account when the source doesn't match any", async () => {
@@ -356,6 +362,31 @@ describe("refreshOAuthCredential", () => {
       "refresh_resynced_from_keychain",
       { source: "acct" },
     ])
+  })
+
+  it("preserves the Claude Code OAuth marker across refresh", async () => {
+    const deps = makeDeps({
+      reloadCredentialsFromSource: () => null,
+      refreshViaOAuth: async () => ({
+        accessToken: "refreshed-access",
+        refreshToken: "refreshed-refresh",
+        expiresAt: 111,
+      }),
+    })
+    const result = await refreshOAuthCredential(
+      {
+        ...value,
+        metadata: {
+          ...value.metadata,
+          [CLAUDE_CODE_OAUTH_METADATA_KEY]: CLAUDE_CODE_OAUTH_METADATA_VALUE,
+        },
+      },
+      deps,
+    )
+    assert.equal(
+      result.metadata?.[CLAUDE_CODE_OAUTH_METADATA_KEY],
+      CLAUDE_CODE_OAUTH_METADATA_VALUE,
+    )
   })
 
   it("falls through to a network refresh when the keychain is unavailable", async () => {

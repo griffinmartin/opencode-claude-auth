@@ -16,7 +16,6 @@ import {
   realOAuthDeps,
   refreshOAuthCredential,
 } from "./oauth-method.ts"
-import { setCredentialTypeResolver, type CredentialType } from "./provider.ts"
 
 export * from "./betas.ts"
 export * from "./credentials.ts"
@@ -91,23 +90,18 @@ export const ClaudeAuthPlugin = Plugin.define({
     })
 
     // The Anthropic integration keeps its built-in API-key method alongside
-    // the subscription method registered above. Which one the user picked
-    // decides both the transport (see provider.ts) and whether usage is
-    // billed to the subscription, so cost metadata is only zeroed for OAuth.
-    const activeCredentialType = async (): Promise<
-      CredentialType | undefined
-    > => {
+    // the subscription method registered above, so only OAuth usage is free.
+    const hasSubscriptionConnection = async (): Promise<boolean> => {
       const connection = await ctx.integration.connection.active(INTEGRATION_ID)
-      if (!connection) return undefined
+      if (!connection) return false
       const credential = await ctx.integration.connection.resolve(connection)
-      return credential?.type
+      return credential?.type === "oauth"
     }
-    setCredentialTypeResolver(activeCredentialType)
 
     let subscription: boolean = false
     const loadConnection = async () => {
       try {
-        subscription = (await activeCredentialType()) === "oauth"
+        subscription = await hasSubscriptionConnection()
       } catch (cause) {
         subscription = false
         log("connection_lookup_failed", { cause: String(cause) })
@@ -167,7 +161,6 @@ export const ClaudeAuthPlugin = Plugin.define({
 
     return () => {
       watcher.abort()
-      setCredentialTypeResolver(undefined)
     }
   },
 })

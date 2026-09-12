@@ -19,41 +19,15 @@ import {
 import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
 import { config } from "./model-config.ts"
+import {
+  CLAUDE_CODE_OAUTH_METADATA_KEY,
+  CLAUDE_CODE_OAUTH_METADATA_VALUE,
+} from "./oauth-method.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
 
 const sessionID = crypto.randomUUID()
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-
-/**
- * OpenCode hands every Anthropic credential to this provider as `apiKey`,
- * whether the user connected a Claude Code subscription (OAuth access token)
- * or a plain Anthropic API key. Only the former belongs on the subscription
- * transport; a key credential must reach Anthropic exactly as the stock
- * provider would send it. The plugin entrypoint installs a resolver that
- * reports the active connection's credential type so the transport can tell
- * the two apart per request. Without a resolver the transport assumes OAuth,
- * which matches how it behaved before the resolver existed.
- */
-export type CredentialType = "oauth" | "key"
-type CredentialTypeResolver = () => Promise<CredentialType | undefined>
-let resolveCredentialType: CredentialTypeResolver | undefined
-
-export function setCredentialTypeResolver(
-  resolver: CredentialTypeResolver | undefined,
-): void {
-  resolveCredentialType = resolver
-}
-
-async function activeCredentialType(): Promise<CredentialType | undefined> {
-  if (!resolveCredentialType) return undefined
-  try {
-    return await resolveCredentialType()
-  } catch (cause) {
-    log("credential_type_lookup_failed", { cause: String(cause) })
-    return undefined
-  }
-}
 
 function getCliVersion() {
   return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
@@ -134,10 +108,6 @@ export function claudeSubscriptionFetch(
 ): Fetch {
   const send = upstream ?? fetch
   return async (input, init = {}) => {
-    // Standard API-key connection: the Anthropic SDK has already put
-    // `x-api-key` on the request. Forward it untouched.
-    if ((await activeCredentialType()) === "key") return send(input, init)
-
     const requestBody =
       input instanceof Request && init.body === undefined
         ? await input.clone().text()
@@ -241,13 +211,16 @@ export function claudeSubscriptionFetch(
 }
 
 export function createClaudeSubscription(options: Record<string, unknown>) {
+  if (
+    options[CLAUDE_CODE_OAUTH_METADATA_KEY] !== CLAUDE_CODE_OAUTH_METADATA_VALUE
+  )
+    return createAnthropic(options)
+
   const accessToken = typeof options.apiKey === "string" ? options.apiKey : ""
   const upstream =
     typeof options.fetch === "function" ? (options.fetch as Fetch) : undefined
   return createAnthropic({
     ...options,
-    // Keep the SDK's `x-api-key` header so a key credential goes out as-is.
-    // The subscription transport strips it again for OAuth requests.
     apiKey: accessToken,
     fetch: claudeSubscriptionFetch(accessToken, upstream),
   })

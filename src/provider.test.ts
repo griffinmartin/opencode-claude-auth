@@ -2,9 +2,41 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
   buildRequestHeaders,
+  CLAUDE_CODE_OAUTH_METADATA_KEY,
+  CLAUDE_CODE_OAUTH_METADATA_VALUE,
   claudeSubscriptionFetch,
-  setCredentialTypeResolver,
+  createClaudeSubscription,
 } from "./index.ts"
+
+const anthropicResponse = () =>
+  new Response(
+    JSON.stringify({
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }),
+    { headers: { "content-type": "application/json" } },
+  )
+
+async function generateWith(
+  provider: ReturnType<typeof createClaudeSubscription>,
+) {
+  await provider("claude-sonnet-4-6").doGenerate({
+    prompt: [
+      {
+        role: "system",
+        content:
+          "You are Claude Code, Anthropic's official CLI for Claude.\nStable OpenCode prompt",
+      },
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+    ],
+  })
+}
 
 describe("Claude subscription transport", () => {
   it("uses bearer auth and removes x-api-key", () => {
@@ -91,31 +123,52 @@ describe("Claude subscription transport", () => {
     assert.match(await response.text(), /"name": "read"/)
   })
 
-  it("forwards standard API-key connections untouched", async () => {
-    setCredentialTypeResolver(async () => "key")
-    try {
-      let captured: { input: RequestInfo | URL; init?: RequestInit } | undefined
-      const transport = claudeSubscriptionFetch(
-        "sk-ant-api03-key",
-        async (input, init) => {
-          captured = { input, init }
-          return new Response("{}")
-        },
-      )
-      const init: RequestInit = {
-        method: "POST",
-        headers: { "x-api-key": "sk-ant-api03-key" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
-      }
-      await transport("https://api.anthropic.com/v1/messages", init)
-      assert.equal(captured?.input, "https://api.anthropic.com/v1/messages")
-      assert.equal(captured?.init, init)
-      const headers = new Headers(captured?.init?.headers)
-      assert.equal(headers.get("x-api-key"), "sk-ant-api03-key")
-      assert.equal(headers.has("authorization"), false)
-    } finally {
-      setCredentialTypeResolver(undefined)
-    }
+  it("constructs the OAuth transport for explicitly marked credentials", async () => {
+    let captured: { input: RequestInfo | URL; init?: RequestInit } | undefined
+    const provider = createClaudeSubscription({
+      apiKey: "oauth-token",
+      [CLAUDE_CODE_OAUTH_METADATA_KEY]: CLAUDE_CODE_OAUTH_METADATA_VALUE,
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        captured = { input, init }
+        return anthropicResponse()
+      },
+    })
+
+    await generateWith(provider)
+
+    const headers = new Headers(captured?.init?.headers)
+    assert.equal(headers.get("authorization"), "Bearer oauth-token")
+    assert.equal(headers.has("x-api-key"), false)
+    assert.equal(
+      new URL(String(captured?.input)).searchParams.get("beta"),
+      "true",
+    )
+    assert.match(String(captured?.init?.body), /x-anthropic-billing-header/)
+  })
+
+  it("constructs the stock API-key provider for unmarked credentials", async () => {
+    let captured: { input: RequestInfo | URL; init?: RequestInit } | undefined
+    const provider = createClaudeSubscription({
+      apiKey: "sk-ant-api03-key",
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        captured = { input, init }
+        return anthropicResponse()
+      },
+    })
+
+    await generateWith(provider)
+
+    const headers = new Headers(captured?.init?.headers)
+    assert.equal(headers.get("x-api-key"), "sk-ant-api03-key")
+    assert.equal(headers.has("authorization"), false)
+    assert.equal(
+      new URL(String(captured?.input)).searchParams.has("beta"),
+      false,
+    )
+    assert.doesNotMatch(
+      String(captured?.init?.body),
+      /x-anthropic-billing-header/,
+    )
   })
 
   it("fails clearly without a subscription token", async () => {
