@@ -1,4 +1,4 @@
-import { Credential, Integration } from "@opencode-ai/plugin"
+import { Credential, Integration } from "@opencode/plugin"
 import {
   getCachedCredentials,
   loadPersistedAccountSource,

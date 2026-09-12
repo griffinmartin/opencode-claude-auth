@@ -1,5 +1,5 @@
-import { Plugin, Provider } from "@opencode-ai/plugin"
-import type { IntegrationOAuthMethodRegistration } from "@opencode-ai/plugin/promise/integration"
+import { Plugin, Provider } from "@opencode/plugin"
+import type { IntegrationOAuthMethodRegistration } from "@opencode/plugin/promise/integration"
 import {
   initAccounts,
   loadPersistedAccountSource,
