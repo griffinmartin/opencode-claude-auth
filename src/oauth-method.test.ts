@@ -58,32 +58,54 @@ function makeDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps & {
 }
 
 describe("oauthMethodDescriptor", () => {
-  it("omits prompts for a single account", () => {
+  it("omits the chooser for a single account", () => {
     const descriptor = oauthMethodDescriptor([account()])
     assert.equal(descriptor.id, "claude-code")
     assert.equal(descriptor.type, "oauth")
     assert.equal(descriptor.label, "Import Claude Code subscription")
-    assert.equal("prompts" in descriptor, false)
+    assert.equal(descriptor.form, undefined)
   })
 
-  it("omits prompts for zero accounts", () => {
-    const descriptor = oauthMethodDescriptor([])
-    assert.equal("prompts" in descriptor, false)
+  it("omits the chooser for zero accounts", () => {
+    assert.equal(oauthMethodDescriptor([]).form, undefined)
   })
 
-  it("includes a select prompt for multiple accounts", () => {
+  it("offers every account through a pick-list form field", () => {
     const descriptor = oauthMethodDescriptor([
       account({ label: "Claude Pro", source: "a" }),
       account({ label: "Claude Max", source: "b" }),
     ])
-    assert.ok("prompts" in descriptor)
-    const prompt = descriptor.prompts?.[0]
-    assert.equal(prompt?.type, "select")
-    assert.equal(prompt?.key, "account")
-    assert.deepEqual(prompt?.options, [
-      { label: "Claude Pro", value: "a", hint: "a" },
-      { label: "Claude Max", value: "b", hint: "b" },
+    // A chooser is a `string` field carrying `options`; OpenCode has no
+    // `select` field type, and a field without `options` renders as free text.
+    assert.equal(descriptor.form?.length, 1)
+    const field = descriptor.form?.[0]
+    assert.equal(field?.type, "string")
+    assert.equal(field?.key, "account")
+    assert.equal(field?.title, "Select a Claude Code account")
+    assert.equal(field?.required, true)
+    assert.deepEqual(field?.type === "string" ? field.options : undefined, [
+      { value: "a", label: "Claude Pro", description: "a" },
+      { value: "b", label: "Claude Max", description: "b" },
     ])
+    // Without `custom` the host only accepts one of the listed accounts.
+    assert.equal(field?.type === "string" ? field.custom : undefined, undefined)
+  })
+
+  it("collects the answer under the key resolveAuthorizeSource reads", () => {
+    const accounts = [
+      account({ label: "Claude Pro", source: "a" }),
+      account({ label: "Claude Max", source: "b" }),
+    ]
+    const field = oauthMethodDescriptor(accounts).form?.[0]
+    assert.ok(field)
+    const answer = { [field.key]: "b" }
+    assert.equal(
+      resolveAuthorizeSource(answer, accounts, {
+        refreshAccountsList: () => accounts,
+        loadPersistedAccountSource: () => "a",
+      }),
+      "b",
+    )
   })
 })
 

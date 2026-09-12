@@ -1,4 +1,5 @@
 import { Credential, Integration } from "@opencode/plugin"
+import type { IntegrationOAuthMethod } from "@opencode/plugin/promise/integration"
 import {
   getCachedCredentials,
   loadPersistedAccountSource,
@@ -18,6 +19,9 @@ import { log } from "./logger.ts"
 export const INTEGRATION_ID: Integration.ID = Integration.ID.make("anthropic")
 export const METHOD_ID: Integration.MethodID =
   Integration.MethodID.make("claude-code")
+
+/** Form field key the account chooser collects its answer under. */
+const ACCOUNT_FIELD_KEY = "account"
 
 /**
  * Everything this module needs from credentials.ts/keychain.ts/logger.ts,
@@ -43,57 +47,43 @@ export interface OAuthDeps {
   log: (event: string, data?: Record<string, unknown>) => void
 }
 
+/** A `Form.Answer` as the host collected it from {@link oauthMethodDescriptor}. */
 export interface AuthorizeInputs {
   readonly account?: unknown
 }
 
-export interface OAuthMethodDescriptor {
-  readonly id: Integration.MethodID
-  readonly type: "oauth"
-  readonly label: string
-  // NOTE: `prompts`/`type: "select"` predates the current Form.Fields schema
-  // (form?: Form.Fields, whose field union has no "select" variant). This
-  // has been silently non-functional against recent OpenCode builds - it
-  // only ever "type-checked" because TS skips excess-property checks on
-  // indirectly-constructed values. Preserved as-is here (pre-existing,
-  // unrelated to the effect/Promise migration) rather than silently
-  // redesigned; needs a real fix using Form.Fields before multi-account
-  // selection actually works again.
-  readonly prompts?: ReadonlyArray<{
-    readonly type: "select"
-    readonly key: string
-    readonly message: string
-    readonly options: ReadonlyArray<{
-      readonly label: string
-      readonly value: string
-      readonly hint: string
-    }>
-  }>
-}
-
+/**
+ * `/connect` shows this when the user picks the Claude Code method. With more
+ * than one account on the machine it carries a chooser: OpenCode renders a
+ * `string` field that has `options` as a pick list (no `custom`, so only a
+ * listed account can be chosen) and hands the selection back to `authorize`
+ * under the field's key. Each option is described by its credential source,
+ * which is what tells two accounts on the same subscription tier apart.
+ */
 export function oauthMethodDescriptor(
   accounts: readonly ClaudeAccount[],
-): OAuthMethodDescriptor {
-  return {
+): IntegrationOAuthMethod {
+  const method = {
     id: METHOD_ID,
-    type: "oauth" as const,
+    type: "oauth",
     label: "Import Claude Code subscription",
-    ...(accounts.length <= 1
-      ? {}
-      : {
-          prompts: [
-            {
-              type: "select" as const,
-              key: "account",
-              message: "Select a Claude Code account",
-              options: accounts.map((account) => ({
-                label: account.label,
-                value: account.source,
-                hint: account.source,
-              })),
-            },
-          ],
-        }),
+  } as const
+  if (accounts.length <= 1) return method
+  return {
+    ...method,
+    form: [
+      {
+        type: "string",
+        key: ACCOUNT_FIELD_KEY,
+        title: "Select a Claude Code account",
+        required: true,
+        options: accounts.map((account) => ({
+          value: account.source,
+          label: account.label,
+          description: account.source,
+        })),
+      },
+    ],
   }
 }
 
@@ -103,8 +93,9 @@ export function resolveAuthorizeSource(
   deps: Pick<OAuthDeps, "refreshAccountsList" | "loadPersistedAccountSource">,
 ): string | undefined {
   const latest = deps.refreshAccountsList()
+  const chosen = inputs[ACCOUNT_FIELD_KEY]
   return (
-    (typeof inputs.account === "string" ? inputs.account : undefined) ??
+    (typeof chosen === "string" ? chosen : undefined) ??
     deps.loadPersistedAccountSource() ??
     latest[0]?.source ??
     fallbackAccounts[0]?.source
