@@ -380,6 +380,21 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     }
   })
 
+  const fileConfigDir =
+    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+  const fileCreds = readCredentialsFile(fileConfigDir)
+  if (
+    fileCreds &&
+    !resolved.some((a) => a.credentials.accessToken === fileCreds.accessToken)
+  ) {
+    resolved.push({
+      source: "file",
+      credentials: fileCreds,
+      configDir: fileConfigDir,
+      email: readEmailFromConfigDir(fileConfigDir),
+    })
+  }
+
   const labels = buildAccountLabels(
     resolved.map((a) => a.credentials),
     resolved.map((a) => a.email),
