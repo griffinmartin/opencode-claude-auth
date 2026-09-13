@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { OpenCode } from "@opencode/client"
+import { Service } from "@opencode/client/service"
 import {
   getModelBetas,
   isLongContextError,
@@ -55,31 +57,20 @@ interface SkippedModel {
 }
 
 async function discoverModels(): Promise<string[]> {
-  const { createOpencode } = await import("@opencode-ai/sdk")
+  console.log(c.dim("Connecting to OpenCode to discover models..."))
 
-  console.log(c.dim("Starting OpenCode server to discover models..."))
+  const endpoint = await Service.ensure()
+  const client = OpenCode.make({
+    baseUrl: endpoint.url,
+    headers: Service.headers(endpoint),
+  })
+  const res = await client.model.list()
+  const models = res.data
+    .filter((model) => model.providerID === "anthropic")
+    .map((model) => model.id)
 
-  const { client, server } = await createOpencode({ port: 0, timeout: 15000 })
-
-  try {
-    const res = await client.provider.list()
-    if (!res.data) {
-      throw new Error("No data returned from provider.list()")
-    }
-
-    const anthropic = res.data.all.find(
-      (p: { id: string }) => p.id === "anthropic",
-    )
-    if (!anthropic) {
-      throw new Error("Anthropic provider not found")
-    }
-
-    const models = Object.keys(anthropic.models)
-    console.log(c.dim(`Found ${models.length} Anthropic models\n`))
-    return models
-  } finally {
-    server.close()
-  }
+  console.log(c.dim(`Found ${models.length} Anthropic models\n`))
+  return models
 }
 
 function getFailedModelsCachePath(): string {

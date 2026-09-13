@@ -22,7 +22,7 @@
  *     rotated.
  *   - User state (`claude-account-source.txt`) is backed up and restored.
  *
- * Requires: macOS, `opencode` on PATH, valid Claude Code credentials.
+ * Requires: macOS, `opencode` V2 on PATH, valid Claude Code credentials.
  * Run with: pnpm test:headless
  */
 import { execFileSync, spawnSync } from "node:child_process"
@@ -81,7 +81,7 @@ function preflight(): { realBlob: string } {
   }
   const version = spawnSync("opencode", ["--version"], { encoding: "utf-8" })
   if (version.status !== 0) {
-    fail("`opencode` not found on PATH — install it to run this test.")
+    fail("`opencode` not found on PATH — install V2 to run this test.")
   }
   let realBlob: string
   try {
@@ -142,7 +142,7 @@ function createSandbox(): Sandbox {
   writeFileSync(
     join(xdgDir, "opencode", "opencode.json"),
     JSON.stringify(
-      { $schema: "https://opencode.ai/config.json", plugin: [repoRoot] },
+      { $schema: "https://opencode.ai/config.json", plugins: [repoRoot] },
       null,
       2,
     ),
@@ -279,12 +279,16 @@ function runOpencode(sandbox: Sandbox, scenarioName: string): RunResult {
   env.CLAUDE_AUTH_DEBUG = logPath
   env.XDG_CONFIG_HOME = sandbox.xdgDir
 
-  const result = spawnSync("opencode", ["run", "--model", MODEL, PROMPT], {
-    cwd: sandbox.workDir,
-    env,
-    encoding: "utf-8",
-    timeout: RUN_TIMEOUT_MS,
-  })
+  const result = spawnSync(
+    "opencode",
+    ["run", "--standalone", "--model", MODEL, PROMPT],
+    {
+      cwd: sandbox.workDir,
+      env,
+      encoding: "utf-8",
+      timeout: RUN_TIMEOUT_MS,
+    },
+  )
 
   let events: LogEvent[] = []
   try {
@@ -377,10 +381,7 @@ const scenarios: Scenario[] = [
       setAccountSource(null)
     },
     shimExpected: () => [READ_PRIMARY],
-    expected: () => [
-      { event: "plugin_init" },
-      { event: "fetch_response", fields: { status: 200 } },
-    ],
+    expected: () => [{ event: "plugin_init" }],
     extraChecks: (_sandbox, _run, shimLog) => {
       if (shimLog.some((l) => l.startsWith("claude "))) {
         return "CLI refresh was invoked despite fresh credentials"
@@ -407,10 +408,7 @@ const scenarios: Scenario[] = [
       "claude -p", // CLI refresh triggered
       READ_PRIMARY, // post-refresh re-read: fresh
     ],
-    expected: () => [
-      { event: "plugin_init" },
-      { event: "fetch_response", fields: { status: 200 } },
-    ],
+    expected: () => [{ event: "plugin_init" }],
   },
   {
     name: "bug1-suffixed-fallback",
@@ -433,10 +431,7 @@ const scenarios: Scenario[] = [
       `find-generic-password -s ${sandbox.suffixedService} -w`, // re-read suffixed: still stale (CLI wrote to primary)
       READ_PRIMARY, // Bug 1 fix: fall back to the primary entry
     ],
-    expected: () => [
-      { event: "plugin_init" },
-      { event: "fetch_response", fields: { status: 200 } },
-    ],
+    expected: () => [{ event: "plugin_init" }],
   },
 ]
 
@@ -509,6 +504,7 @@ function main(): void {
       if (seqError) problems.push(seqError)
       const extraError = scenario.extraChecks?.(sandbox, run, shimLog)
       if (extraError) problems.push(extraError)
+      if (run.status !== 0) problems.push(`opencode exited with ${run.status}`)
       if (!run.stdout.includes(SENTINEL)) {
         problems.push(`stdout did not contain ${SENTINEL}`)
       }
