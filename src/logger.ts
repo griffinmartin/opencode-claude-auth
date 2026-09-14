@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { homedir } from "node:os"
 import type { Writable } from "node:stream"
+import { getOpencodeDataDir } from "./paths.ts"
 
 const JWT_PATTERN = /^eyJ[A-Za-z0-9_-]{10,}/
 
@@ -12,7 +12,7 @@ let logFilePath: string | null = null
 let logStream: Writable | null = null
 
 function getDefaultLogPath(): string {
-  return join(homedir(), ".local", "share", "opencode", "claude-auth-debug.log")
+  return join(getOpencodeDataDir(), "claude-auth-debug.log")
 }
 
 export function initLogger(options?: { stream?: Writable }): void {

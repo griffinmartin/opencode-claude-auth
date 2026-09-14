@@ -1,8 +1,16 @@
 node_modules/
 .pnpm-store/
 dist/
+
+# This project uses pnpm (see packageManager in package.json). Lockfiles from
+# other package managers must not be committed.
+package-lock.json
+yarn.lock
 .env
 *.env.local
 .sisyphus/
 .opencode/
 docs/
+
+# Local Claude Code config/state (may hold credentials); never commit.
+.claude/
