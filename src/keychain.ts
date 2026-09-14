@@ -5,11 +5,13 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
+import { isRotatedAway } from "./rotated-tokens.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -502,19 +504,39 @@ export function writeBackCredentials(
         const stored = parseCredentials(raw)
         if (stored === null) {
           log("writeback_skipped_unparseable", { source, configDir: dir })
-        } else {
+          return false
+        }
+        // Refusing here is right when the store holds someone else's live
+        // credentials. It is exactly wrong when it holds a pair we rotated
+        // away ourselves: that refresh token is dead, no writer will ever
+        // present it as their expected prior, and the compare-and-swap would
+        // protect a blob nobody can use. Repair it instead.
+        if (!isRotatedAway(source, stored.accessToken)) {
           log("writeback_skipped_stale", {
             source,
             configDir: dir,
             expected: tokenFingerprint(expectedPriorAccessToken),
             stored: tokenFingerprint(stored.accessToken),
           })
+          return false
         }
-        return false
+        log("writeback_repairing_dead_store", {
+          source,
+          configDir: dir,
+          stored: tokenFingerprint(stored.accessToken),
+        })
       }
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
-      writeFileSync(credPath, updated, { encoding: "utf-8", mode: 0o600 })
+      // Written aside then renamed. A plain write truncates first, so with
+      // several instances reading this file a few times a minute, a reader can
+      // observe an empty or half-written blob — which parses to null and looks
+      // exactly like "no credentials", and on the write path fails the
+      // compare-and-swap and orphans a rotation. rename is atomic on both
+      // POSIX and Windows.
+      const tmpPath = `${credPath}.${process.pid}.tmp`
+      writeFileSync(tmpPath, updated, { encoding: "utf-8", mode: 0o600 })
+      renameSync(tmpPath, credPath)
       if (process.platform !== "win32") {
         chmodSync(credPath, 0o600)
       }

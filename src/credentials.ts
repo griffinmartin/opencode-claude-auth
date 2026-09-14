@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve as resolvePath } from "node:path"
 import {
   PRIMARY_SERVICE,
   readAllClaudeAccounts,
@@ -19,6 +19,7 @@ import {
 import { resetExcludedBetas } from "./betas.ts"
 import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
+import { getUserAgent } from "./model-config.ts"
 import {
   classifyRefreshFailure,
   clearRefreshOutcome,
@@ -30,6 +31,7 @@ import {
   type RefreshFailureKind,
 } from "./refresh-backoff.ts"
 import { acquireRefreshLock } from "./refresh-lock.ts"
+import { isRotatedAway, noteRotatedAway } from "./rotated-tokens.ts"
 
 export type { ClaudeAccount } from "./keychain.ts"
 export type { ClaudeCredentials } from "./keychain.ts"
@@ -40,11 +42,29 @@ const CREDENTIAL_CACHE_TTL_MS = 30_000
 // it is also the only window where spawning it is worth a real API request.
 const CLI_FALLBACK_THRESHOLD_MS = 60_000
 
+/** Per-attempt timeout for the `claude` CLI fallback. */
+const CLI_ATTEMPT_TIMEOUT_MS = 60_000
+const CLI_MAX_ATTEMPTS = 2
+
+/**
+ * Worst-case wall time the CLI fallback can occupy. The refresh lock's lease
+ * must cover this, or siblings treat the holder as crashed mid-refresh — these
+ * two numbers drifting apart is what turns one slow refresh into a rotation
+ * storm, so the budget is derived rather than restated.
+ */
+export const CLI_REFRESH_BUDGET_MS = CLI_ATTEMPT_TIMEOUT_MS * CLI_MAX_ATTEMPTS
+
+/** Slack added to a lease so it outlives the work it covers. */
+const LEASE_MARGIN_MS = 15_000
+
 const accountCacheMap = new Map<
   string,
   { creds: ClaudeCredentials; cachedAt: number }
 >()
 const inFlightRefreshes = new Map<string, Promise<ClaudeCredentials | null>>()
+
+/** Cooldown deadline most recently logged per source, to log one line per window. */
+const lastLoggedCooldownUntil = new Map<string, number>()
 
 // Accounts currently running on credentials borrowed from another account.
 // Those tokens belong to the lender: they must never be used as this
@@ -308,6 +328,30 @@ function parseRetryAfterMs(headerValue: string | null): number | undefined {
  * Exchange a refresh token for fresh credentials and classify the result.
  * See {@link RefreshOutcome}. Uses the runtime's own fetch (no subprocess).
  */
+/**
+ * Response headers worth recording when a refresh is refused. Allow-listed
+ * rather than filtered, so nothing sensitive can be logged by accident.
+ */
+function diagnosticHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    const k = key.toLowerCase()
+    if (
+      k === "server" ||
+      k === "cf-ray" ||
+      k === "retry-after" ||
+      k === "x-should-retry" ||
+      k === "request-id" ||
+      k === "x-request-id" ||
+      k.startsWith("anthropic-ratelimit") ||
+      k.startsWith("x-ratelimit")
+    ) {
+      out[k] = value
+    }
+  })
+  return out
+}
+
 export async function refreshViaOAuthDetailed(
   refreshToken: string,
   timeoutMs = OAUTH_TIMEOUT_MS,
@@ -323,12 +367,30 @@ export async function refreshViaOAuthDetailed(
 
   try {
     log("refresh_started", { source: "oauth" })
-    const response = await fetchWithRetry(OAUTH_TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      signal: controller.signal,
-    })
+    const response = await fetchWithRetry(
+      OAUTH_TOKEN_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          // Without this, claude.ai's bot protection refuses the request with
+          // 429 rate_limit_error before it ever reaches the token handler.
+          // It reads as a rate limit, which is why it was mistaken for one.
+          "User-Agent": getUserAgent(),
+          Accept: "application/json",
+        },
+        body: body.toString(),
+        signal: controller.signal,
+      },
+      3,
+      fetch,
+      // Retry only when the endpoint says how long to wait. It answers
+      // rate_limit_error with no `retry-after` and a window of minutes, so the
+      // blind two-second retry could not succeed and turned every logical
+      // refresh into three POSTs against a limit it was helping to sustain.
+      // A hinted retry is still honoured, since that one the server asked for.
+      { onlyRetryWithHint: true },
+    )
 
     if (!response.ok) {
       // Capture the token endpoint's own failure reason (invalid_grant,
@@ -344,6 +406,13 @@ export async function refreshViaOAuthDetailed(
         error: `HTTP ${response.status}`,
         kind,
         ...detail,
+        // Which layer refused, and on what grounds. A 429 here has been seen
+        // carrying Anthropic's API error shape rather than OAuth's, so it is
+        // not necessarily the token handler answering: these headers say
+        // whether it came from the edge (server/cf-ray), and whether it is the
+        // account's own usage quota (anthropic-ratelimit-*) rather than a
+        // limit on refreshing. Only diagnostic headers, never credentials.
+        responseHeaders: diagnosticHeaders(response.headers),
       })
       return kind === "terminal"
         ? { kind, status: response.status, oauthError: detail.oauthError }
@@ -395,6 +464,22 @@ export async function refreshViaOAuth(
   return outcome.kind === "ok" ? outcome.creds : null
 }
 
+/**
+ * Whether the `claude` CLI would authenticate from the very store this account
+ * reads. Deliberately compares the resolved path rather than testing
+ * `source === "file"`, so a macOS multi-account setup whose configDir genuinely
+ * differs still gets the fallback.
+ */
+function cliSharesStoreWith(target: ClaudeAccount): boolean {
+  if (target.source !== "file") return false
+  const ours =
+    target.configDir ??
+    process.env.CLAUDE_CONFIG_DIR ??
+    join(homedir(), ".claude")
+  const cli = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+  return resolvePath(ours) === resolvePath(cli)
+}
+
 function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
   if (requireConfigDir && !configDir) {
     log("refresh_cli_skipped", {
@@ -410,12 +495,11 @@ function refreshViaCli(configDir?: string, requireConfigDir = false): boolean {
     ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
   }
 
-  const maxAttempts = 2
-  for (let i = 0; i < maxAttempts; i++) {
+  for (let i = 0; i < CLI_MAX_ATTEMPTS; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1, configDir })
     try {
       execSync("claude -p . --model haiku", {
-        timeout: 60_000,
+        timeout: CLI_ATTEMPT_TIMEOUT_MS,
         encoding: "utf-8",
         env,
         stdio: "ignore",
@@ -487,6 +571,12 @@ export async function refreshIfNeeded(
     const now = Date.now()
     if (
       stored &&
+      // A blob we rotated away is not "credentials replaced externally", it is
+      // our own failed write-back looking back at us. Its access token can
+      // still be an hour from expiry and its refresh token has been dead since
+      // the rotation, so adopting it silently trades the live pair for one
+      // that can never be refreshed again.
+      !isRotatedAway(target.source, stored.accessToken) &&
       (stored.expiresAt > now + 60_000 ||
         target.credentials.expiresAt <= now + 60_000)
     ) {
@@ -516,10 +606,18 @@ export async function refreshIfNeeded(
   ) {
     const adopted = adoptFreshFromSource(target, creds.accessToken)
     if (adopted) return adopted
-    log("refresh_cooldown_skip", {
-      source: target.source,
-      until: getRefreshCooldownUntil(target.source),
-    })
+    // Once per cooldown window, not once per caller. The request path polls
+    // every ~2.5s while it waits, so an unthrottled line here produced a few
+    // hundred identical entries per outage — burying, in the very log added to
+    // diagnose these, the handful of events that explain one.
+    const until = getRefreshCooldownUntil(target.source)
+    if (
+      until !== null &&
+      lastLoggedCooldownUntil.get(target.source) !== until
+    ) {
+      lastLoggedCooldownUntil.set(target.source, until)
+      log("refresh_cooldown_skip", { source: target.source, until })
+    }
     return null
   }
 
@@ -541,16 +639,26 @@ export async function refreshIfNeeded(
     log("refresh_lock_busy", { source: target.source })
     const adopted = await waitForAdopt(target, creds.accessToken)
     if (adopted) return adopted
-    // The holder produced nothing within the window (likely crashed; its lock
-    // ages out by TTL). Defer rather than refresh lock-free, so we don't
-    // recreate the burst the lock exists to prevent — the request-level wait
-    // loop and the lock TTL drive eventual progress.
+    // The holder produced nothing within the window. Defer rather than refresh
+    // lock-free, so we don't recreate the burst the lock exists to prevent.
+    //
+    // Recorded as transient because that is what it is: someone else is
+    // working and a token is expected shortly. Without this the caller cannot
+    // tell "deferred" from "dead refresh token" — both are a bare null — and
+    // reports a hard "credentials unavailable" error. It also decouples the
+    // holder's lease from the waiter's budget: the lease may exceed
+    // REFRESH_WAIT_MS as long as exhausting that budget yields a retryable
+    // response rather than a failure.
+    // Pinned to the adopt window rather than the escalating schedule: this
+    // process never touched the endpoint, so it has earned no backoff — the
+    // marker is the point, not the penalty.
+    noteRefreshTransient(target.source, { retryAfterMs: LOCK_ADOPT_WAIT_MS })
     return null
   }
 
   const pending = (async () => {
     try {
-      return await performRefresh(target, creds)
+      return await performRefresh(target, creds, (ms) => lock.extend(ms))
     } finally {
       lock.release()
     }
@@ -581,6 +689,9 @@ function adoptFreshFromSource(
   if (
     stored &&
     stored.accessToken !== rejectedAccessToken &&
+    // Same reason as the re-read in refreshIfNeeded: an unexpired access token
+    // says nothing about whether its refresh token survived our own rotation.
+    !isRotatedAway(target.source, stored.accessToken) &&
     stored.expiresAt > Date.now() + 60_000
   ) {
     target.credentials = stored
@@ -632,6 +743,11 @@ async function waitForAdopt(
 async function performRefresh(
   target: ClaudeAccount,
   creds: ClaudeCredentials,
+  /**
+   * Extends the caller's cross-process lease before an operation that runs
+   * longer than the base lock TTL. Absent on paths that hold no lock.
+   */
+  extendLease?: (ms: number) => void,
 ): Promise<ClaudeCredentials | null> {
   if (borrowedCredentialAccounts.has(target)) {
     return refreshBorrowedAccount(target)
@@ -643,6 +759,9 @@ async function performRefresh(
     expiresIn: creds.expiresAt - Date.now(),
   })
 
+  /** Set when the OAuth endpoint said the refresh token itself is dead. */
+  let sawTerminalOutcome = false
+
   if (creds.refreshToken) {
     const outcome = await refreshViaOAuthDetailed(creds.refreshToken)
 
@@ -651,6 +770,11 @@ async function performRefresh(
       outcome.creds.expiresAt > Date.now() + 60_000
     ) {
       clearRefreshOutcome(target.source)
+      // Before anything can fail: the pair we just refreshed from is dead as
+      // of this moment, whatever happens to the write-back below. Recording it
+      // is what stops the re-read at the top of refreshIfNeeded from adopting
+      // it back and throwing away the only live refresh token.
+      noteRotatedAway(target.source, creds.accessToken)
       target.credentials = outcome.creds
       if (
         !writeBackCredentials(
@@ -660,12 +784,10 @@ async function performRefresh(
           creds.accessToken,
         )
       ) {
-        // Mirrors force_refresh_writeback_failed on the forced path. The
-        // session continues from memory either way, so this stays a log
-        // rather than a control-flow change: acting on the two causes
-        // (I/O failure vs. CAS mismatch) differs, and the proactive-path
-        // consequence — a still-usable orphaned blob being re-adopted by
-        // the validated re-read — is tracked as a follow-up.
+        // Not fatal: memory holds the live pair and the store now holds a
+        // provably dead one, which noteRotatedAway lets both the reader and
+        // the next write-back recognise. Left as a log so the next tick
+        // repairs the store rather than this path having to.
         log("refresh_writeback_failed", { source: target.source })
       }
       return outcome.creds
@@ -704,6 +826,7 @@ async function performRefresh(
     if (outcome.kind === "terminal") {
       // The refresh token itself is dead (invalid_grant, ...). Fall through to
       // the CLI fallback / borrowed-account recovery below.
+      sawTerminalOutcome = true
       noteRefreshTerminal(target.source)
       log("refresh_terminal", {
         source: target.source,
@@ -739,7 +862,11 @@ async function performRefresh(
   // has none: a sibling process can write a file source mid-round-trip
   // exactly as it can a keychain entry. Left in place only to keep this
   // change off the file path; removing it is tracked as a follow-up.
-  if (target.source !== "file") {
+  // Runs for file sources too. The exclusion had no rationale by its own
+  // admission, and it removed the last recovery step before the CLI on exactly
+  // the platform with the fewest: Windows resolves to a single "file" account,
+  // so tryFallbackAccount below has nothing to offer either.
+  {
     let stored: ClaudeCredentials | null = null
     try {
       stored = refreshAccount(target.source, target.configDir)
@@ -749,6 +876,7 @@ async function performRefresh(
     if (
       stored &&
       stored.accessToken !== creds.accessToken &&
+      !isRotatedAway(target.source, stored.accessToken) &&
       stored.expiresAt > Date.now() + 60_000
     ) {
       target.credentials = stored
@@ -757,10 +885,41 @@ async function performRefresh(
     }
   }
 
+  // A dead refresh token cannot be revived by `claude -p`: it authenticates
+  // from the same credentials file we just failed against, so it fails the
+  // same way. Spawning it costs up to CLI_REFRESH_BUDGET_MS of blocked event
+  // loop — the whole instance, not just this refresh — for a guaranteed
+  // failure. Only an interactive login recovers this, which the caller
+  // surfaces.
+  if (sawTerminalOutcome && cliSharesStoreWith(target)) {
+    log("refresh_cli_skipped", {
+      source: target.source,
+      reason: "cli_reads_the_same_dead_store",
+    })
+    const fallback = tryFallbackAccount(target.source)
+    if (fallback) {
+      target.credentials = fallback
+      borrowedCredentialAccounts.add(target)
+      return fallback
+    }
+    log("refresh_exhausted", {
+      source: target.source,
+      hadCredentials: false,
+      expiresAt: undefined,
+    })
+    return null
+  }
+
   log("refresh_fallback_cli", { source: target.source })
   const isSuffixedAccount =
     target.source !== PRIMARY_SERVICE &&
     target.source.startsWith(PRIMARY_SERVICE + "-")
+  // The CLI can run for CLI_REFRESH_BUDGET_MS, several times the lock's base
+  // TTL. Without extending the lease first, every sibling instance declares
+  // this holder crashed and refreshes concurrently — and each rotation kills
+  // the refresh token the others are holding, so they fall through to their
+  // own CLI spawns against an endpoint that is already rate-limiting.
+  extendLease?.(CLI_REFRESH_BUDGET_MS + LEASE_MARGIN_MS)
   const cliSucceeded = refreshViaCli(target.configDir, isSuffixedAccount)
   if (!cliSucceeded) {
     const fallback = tryFallbackAccount(target.source)
@@ -974,6 +1133,9 @@ export async function forceRefreshActiveAccount(
   const priorAccessToken = account.credentials.accessToken
   const oauthCreds = await refresh(account.credentials.refreshToken)
   if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
+    // Same reasoning as the proactive path: this rotation killed the pair we
+    // refreshed from, and that is true whether or not the write-back lands.
+    noteRotatedAway(account.source, priorAccessToken)
     account.credentials = oauthCreds
     if (
       !writeBackCredentials(

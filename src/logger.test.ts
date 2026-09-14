@@ -1,6 +1,12 @@
 import assert from "node:assert/strict"
 import { describe, it, beforeEach, afterEach } from "node:test"
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs"
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  rmSync,
+} from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { PassThrough } from "node:stream"
@@ -67,22 +73,63 @@ describe("logger", () => {
       assert.equal(JSON.parse(lines[1]).event, "event_two")
     })
 
-    it("truncates the file on initLogger()", () => {
+    it("keeps earlier sessions on initLogger()", () => {
+      // Deliberately the inverse of the previous behaviour. Truncating on init
+      // is safe for one process and destructive for several: every instance
+      // runs this plugin, so one starting up erased the log of an incident the
+      // others were still living through — which is exactly when the log is
+      // wanted.
       const logPath = join(tmpDir, "test.log")
       process.env.CLAUDE_AUTH_DEBUG = logPath
 
-      // First session
       initLogger()
       log("old_event", {})
       closeLogger()
 
-      // Second session — should truncate
       initLogger()
       log("new_event", {})
 
       const lines = readFileSync(logPath, "utf-8").trim().split("\n")
-      assert.equal(lines.length, 1)
-      assert.equal(JSON.parse(lines[0]).event, "new_event")
+      assert.equal(lines.length, 2)
+      assert.equal(JSON.parse(lines[0]).event, "old_event")
+      assert.equal(JSON.parse(lines[1]).event, "new_event")
+    })
+
+    it("tags every entry with the pid that wrote it", () => {
+      // Several instances write concurrently; without this the interleaved
+      // lines cannot be attributed to a process and a rotation chain cannot be
+      // reconstructed.
+      const logPath = join(tmpDir, "pid.log")
+      process.env.CLAUDE_AUTH_DEBUG = logPath
+      initLogger()
+      log("some_event", {})
+
+      const entry = JSON.parse(readFileSync(logPath, "utf-8").trim())
+      assert.equal(entry.pid, process.pid)
+    })
+
+    it("gives each process its own file when enabled with 1", () => {
+      // homedir() reads USERPROFILE on Windows and HOME elsewhere. Both must
+      // move or this test writes into the developer's real home directory.
+      const realUserProfile = process.env.USERPROFILE
+      const realHome = process.env.HOME
+      process.env.USERPROFILE = tmpDir
+      process.env.HOME = tmpDir
+      try {
+        process.env.CLAUDE_AUTH_DEBUG = "1"
+        initLogger()
+        log("some_event", {})
+
+        const written = readdirSync(
+          join(tmpDir, ".local", "share", "opencode"),
+        ).filter((f) => f.endsWith(".log"))
+        assert.deepEqual(written, [`claude-auth-debug-${process.pid}.log`])
+      } finally {
+        if (realUserProfile === undefined) delete process.env.USERPROFILE
+        else process.env.USERPROFILE = realUserProfile
+        if (realHome === undefined) delete process.env.HOME
+        else process.env.HOME = realHome
+      }
     })
 
     it("creates parent directories if they don't exist", () => {

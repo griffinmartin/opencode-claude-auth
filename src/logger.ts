@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import type { Writable } from "node:stream"
@@ -11,8 +11,20 @@ let mode: LogMode = "disabled"
 let logFilePath: string | null = null
 let logStream: Writable | null = null
 
+/**
+ * Per-process by default. Every OpenCode instance loads this plugin, and the
+ * user may be running several, so a single shared path interleaves their lines
+ * with no way to tell which process wrote what — precisely when a
+ * multi-instance problem is what is being diagnosed.
+ */
 function getDefaultLogPath(): string {
-  return join(homedir(), ".local", "share", "opencode", "claude-auth-debug.log")
+  return join(
+    homedir(),
+    ".local",
+    "share",
+    "opencode",
+    `claude-auth-debug-${process.pid}.log`,
+  )
 }
 
 export function initLogger(options?: { stream?: Writable }): void {
@@ -37,7 +49,10 @@ export function initLogger(options?: { stream?: Writable }): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
   }
-  writeFileSync(logFilePath, "", "utf-8")
+  // Deliberately not truncated. One instance starting up would otherwise erase
+  // the log of an incident its siblings are still in the middle of, which is
+  // the only time the log is worth having. Growth is bounded in practice by
+  // the fact that this is off unless CLAUDE_AUTH_DEBUG is set.
 }
 
 export function log(event: string, data?: Record<string, unknown>): void {
@@ -45,6 +60,8 @@ export function log(event: string, data?: Record<string, unknown>): void {
 
   const entry = {
     ts: new Date().toISOString(),
+    // Attributes a line to a process even when several share an explicit path.
+    pid: process.pid,
     event,
     ...redact(data ?? {}),
   }

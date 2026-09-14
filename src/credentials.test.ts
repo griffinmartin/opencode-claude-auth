@@ -125,6 +125,16 @@ async function loadCredentialsWithCountingKeychain(
     await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
     "utf8",
   )
+  await writeFile(
+    join(tempDir, "rotated-tokens.ts"),
+    await readFile(new URL("./rotated-tokens.ts", import.meta.url), "utf8"),
+    "utf8",
+  )
+  await writeFile(
+    join(tempDir, "model-config.ts"),
+    await readFile(new URL("./model-config.ts", import.meta.url), "utf8"),
+    "utf8",
+  )
   const rewritten = sourceCredentials
     .replace(/from\s+["']\.\/(\w+)\.js["']/g, 'from "./$1.ts"')
     .replace(
@@ -1467,6 +1477,16 @@ describe("syncAuthJson file permissions", () => {
         await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "rotated-tokens.ts"),
+        await readFile(new URL("./rotated-tokens.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "model-config.ts"),
+        await readFile(new URL("./model-config.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
       const rewritten = sourceCredentials.replace(
         /from\s+["']\.\/(\w+)\.js["']/g,
         'from "./$1.ts"',
@@ -1568,6 +1588,16 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       await writeFile(
         join(tempDir, "refresh-lock.ts"),
         await readFile(new URL("./refresh-lock.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "rotated-tokens.ts"),
+        await readFile(new URL("./rotated-tokens.ts", import.meta.url), "utf8"),
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "model-config.ts"),
+        await readFile(new URL("./model-config.ts", import.meta.url), "utf8"),
         "utf8",
       )
       const rewritten = sourceCredentials.replace(
