@@ -12,6 +12,7 @@ import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { before, describe, it } from "node:test"
 import { pathToFileURL } from "node:url"
+import { acquireRefreshLock } from "./refresh-lock.ts"
 
 // Keep the cross-process refresh lock off the real OpenCode data dir in tests.
 process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
@@ -1061,6 +1062,144 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     } finally {
       globalThis.setInterval = originalSetInterval
       console.warn = originalWarn
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  // End-to-end regression for the false "Run `claude` to re-authenticate"
+  // toast. The timer asks for a refresh an hour before expiry, so a deferral —
+  // an armed rate-limit cooldown here, or a sibling process holding the
+  // cross-process lock (same deferral helper, covered in credentials.test.ts)
+  // — used to surface as null and be reported to the user as a dead token,
+  // while the credential still had half an hour of life left.
+  it("proactive refresh timer stays quiet when a refresh is merely deferred", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalWarn = console.warn
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+
+    let tickCallback: (() => void | Promise<void>) | undefined
+    globalThis.setInterval = ((cb: () => void | Promise<void>) => {
+      tickCallback = cb
+      return { unref() {} }
+    }) as unknown as typeof setInterval
+
+    const warnMessages: string[] = []
+    console.warn = ((...args: unknown[]) => {
+      warnMessages.push(String(args[0]))
+    }) as typeof console.warn
+
+    try {
+      // Inside the 1h proactive window but well outside the 60s reactive one:
+      // the timer will try to refresh, and the token stays usable when it can't.
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() + 30 * 60_000,
+      )
+      // The token endpoint is rate-limiting every instance that shares this
+      // credential. A retry-after past the fetchWithRetry cap makes the 429
+      // return at once rather than backing off, keeping the test fast.
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ error: "rate_limit_error" }), {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })) as typeof fetch
+
+      await helpersModule.default({} as never)
+      assert.ok(tickCallback)
+      warnMessages.length = 0 // ignore anything emitted during init
+
+      // Tick 1 arms the cooldown; tick 2 (five minutes later) is turned away
+      // by it. Neither is a credential failure.
+      await tickCallback!()
+      await tickCallback!()
+
+      const proactiveWarnings = warnMessages.filter((m) =>
+        m.includes("Proactive token refresh failed"),
+      )
+      assert.deepEqual(
+        proactiveWarnings,
+        [],
+        "a deferred refresh must not tell the user to re-authenticate",
+      )
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      console.warn = originalWarn
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  // The case the TTL guard alone cannot cover, and the one users actually hit:
+  // macOS coalesces timers on a locked machine, so the proactive window passes
+  // without firing and the whole herd converges at expiry. The winner may be
+  // inside a 120s CLI fallback while the losers give up waiting after 5s with
+  // an already-expired token. They have nothing usable to return — but a
+  // sibling holding the lock is still not a reason to tell the user to
+  // re-authenticate, so the toast must stay suppressed.
+  it("proactive refresh timer stays quiet on a deferral even when credentials are expired", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalWarn = console.warn
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+
+    let tickCallback: (() => void | Promise<void>) | undefined
+    globalThis.setInterval = ((cb: () => void | Promise<void>) => {
+      tickCallback = cb
+      return { unref() {} }
+    }) as unknown as typeof setInterval
+
+    const warnMessages: string[] = []
+    console.warn = ((...args: unknown[]) => {
+      warnMessages.push(String(args[0]))
+    }) as typeof console.warn
+
+    try {
+      // Already expired: past the reactive window, so the deferral has nothing
+      // usable to hand back and refreshIfNeeded necessarily returns null.
+      const { helpersModule } = await loadHelpersWithCountingKeychain(
+        Date.now() - 60_000,
+      )
+      globalThis.fetch = (async () => {
+        throw new Error("the lock-busy path must never hit the token endpoint")
+      }) as typeof fetch
+
+      await helpersModule.default({} as never)
+      assert.ok(tickCallback)
+
+      // A sibling process owns the refresh lock for this source.
+      const held = acquireRefreshLock("Claude Code-credentials")
+      assert.ok(held, "test acquires the lock to simulate another process")
+      try {
+        warnMessages.length = 0 // ignore anything emitted during init
+        await tickCallback!()
+
+        const proactiveWarnings = warnMessages.filter((m) =>
+          m.includes("Proactive token refresh failed"),
+        )
+        assert.deepEqual(
+          proactiveWarnings,
+          [],
+          "a deferral must not tell the user to re-authenticate, even at expiry",
+        )
+      } finally {
+        held!.release()
+      }
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      console.warn = originalWarn
+      globalThis.fetch = originalFetch
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {
