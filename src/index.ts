@@ -109,23 +109,23 @@ export const ClaudeAuthPlugin = Plugin.define({
     }
     await loadConnection()
 
-    await ctx.catalog.transform((catalog) => {
-      const anthropic = catalog.provider.get(PROVIDER_ID)
+    await ctx.provider.transform((provider) => {
+      const anthropic = provider.get(PROVIDER_ID)
       if (!anthropic) return
-      catalog.provider.update(PROVIDER_ID, (provider) => {
-        provider.name = "Anthropic"
-        provider.integrationID = INTEGRATION_ID
-        provider.package = PROVIDER_PACKAGE
+      provider.update(PROVIDER_ID, (info) => {
+        info.name = "Anthropic"
+        info.integrationID = INTEGRATION_ID
+        info.package = PROVIDER_PACKAGE
       })
       for (const [modelID] of anthropic.models) {
-        catalog.model.update(PROVIDER_ID, modelID, (model) => {
+        provider.models.update(PROVIDER_ID, modelID, (model) => {
           model.package = PROVIDER_PACKAGE
           if (subscription) model.cost = []
         })
       }
     })
 
-    // Re-evaluate when the user switches credentials so the catalog follows
+    // Re-evaluate when the user switches credentials so the provider follows
     // the active connection instead of whatever was selected at startup.
     const watcher = new AbortController()
     void (async () => {
@@ -139,7 +139,7 @@ export const ClaudeAuthPlugin = Plugin.define({
         ) {
           const before: boolean = subscription
           await loadConnection()
-          if (subscription !== before) await ctx.catalog.reload()
+          if (subscription !== before) await ctx.provider.reload()
         }
       }
     })().catch((cause) => {

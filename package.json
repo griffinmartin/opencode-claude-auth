@@ -69,7 +69,7 @@
     "@opencode/plugin": "latest"
   },
   "devDependencies": {
-    "@opencode/client": "^2.0.2",
+    "@opencode/client": "latest",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
