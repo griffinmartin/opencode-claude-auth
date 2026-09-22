@@ -3,7 +3,7 @@ import crypto from "node:crypto"
 import { config } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
-import { fetchWithRetry } from "./http.ts"
+import { fetchWithRetry, sleepUnlessAborted } from "./http.ts"
 import {
   addExcludedBeta,
   getExcludedBetas,
@@ -32,15 +32,18 @@ import {
   refreshAccountsList,
   refreshIfNeeded,
   rotateAfterRateLimit,
+  retryAfterCooldownWait,
   noteAccountSucceeded,
   chooseInitialAccount,
   type ClaudeCredentials,
 } from "./credentials.ts"
 import {
   activeCooldowns,
+  earliestCooldown,
   formatRemaining,
   getCooldownUntil,
   getRotationConfig,
+  getRotationWaitConfig,
 } from "./rotation.ts"
 import {
   addTokens,
@@ -232,6 +235,34 @@ function describeCooldowns(now = Date.now()): string {
   return cooling
     .map((c) => `${c.source} for ${formatRemaining(c.remainingMs)}`)
     .join(", ")
+}
+
+/**
+ * Clock, sleeper, and entropy source for the quota-wait loop, behind a seam
+ * so tests can travel time instead of napping. Production always runs on the
+ * wall clock and the abort-aware sleep from http.ts.
+ */
+type RotationWaitDeps = {
+  now: () => number
+  sleep: (ms: number, signal?: AbortSignal | null) => Promise<void>
+  rng: () => number
+}
+
+let rotationWaitDeps: RotationWaitDeps = {
+  now: () => Date.now(),
+  sleep: sleepUnlessAborted,
+  rng: () => Math.random(),
+}
+
+/** Test seam: replace the wait loop's relationship with time. Pass null to reset. */
+export function __setRotationWaitDepsForTests(
+  deps: Partial<RotationWaitDeps> | null,
+): void {
+  rotationWaitDeps = {
+    now: deps?.now ?? (() => Date.now()),
+    sleep: deps?.sleep ?? sleepUnlessAborted,
+    rng: deps?.rng ?? (() => Math.random()),
+  }
 }
 
 /** Picker hint combining the active marker with any rate-limit cooldown. */
@@ -670,65 +701,234 @@ const plugin: Plugin = async (pluginInput) => {
             // account can avoid. That case is excluded explicitly below rather
             // than by ordering alone, because reaching the beta loop first
             // would mean the account was already benched by then.
+            //
+            // When every account is benched, tried, or broken, the loop does
+            // NOT fail: it sleeps until the soonest recorded bench expires
+            // (a real sleep — no polling, no probe requests), re-evaluates the
+            // pool, and resends this identical request. A long-running task
+            // survives a quota window however long it is; the abort signal is
+            // the escape hatch, and OPENCODE_CLAUDE_AUTH_ROTATE_WAIT* can
+            // bound or disable the waiting for callers that prefer to fail.
             if (response.status === 429 && getRotationConfig().enabled) {
               const rotationConfig = getRotationConfig()
+              const waitConfig = getRotationWaitConfig()
               const triedSources = new Set<string>()
               const startingAccount = getActiveAccount()
               if (startingAccount) triedSources.add(startingAccount.source)
 
-              for (
-                let switchCount = 0;
-                switchCount < rotationConfig.maxSwitchesPerRequest;
-                switchCount++
-              ) {
-                if (response.status !== 429) break
+              // Human labels for toasts, seeded from the startup roster and
+              // extended whenever rotation picks an account — the wait
+              // messages can then name accounts without a credential rescan.
+              const labels = new Map(accounts.map((a) => [a.source, a.label]))
 
-                // Body is needed both to exclude long-context errors and to
-                // tell an explained usage limit from a bare 429. Cloned so the
-                // response stays readable if we end up returning it.
-                let limitBody = ""
-                try {
-                  limitBody = await response.clone().text()
-                } catch {
-                  // An unreadable body is not a reason to skip rotation; it
-                  // only costs the body-derived reason label.
-                }
+              let waitCycles = 0
+              let waitedMs = 0
+              let waitToastShown = false
 
-                if (isLongContextError(limitBody)) {
-                  log("rotation_skipped_long_context", { modelId })
-                  break
-                }
-
-                const limitedSource =
-                  getActiveAccount()?.source ?? startingAccount?.source
-                if (!limitedSource) break
-
-                const rotated = await rotateAfterRateLimit({
-                  limitedSource,
-                  headers: response.headers,
-                  body: limitBody,
-                  triedSources,
-                })
-                if (!rotated) {
-                  // Nothing healthy left. Return the 429 so the user sees the
-                  // real limit rather than a silent stall, and say which
-                  // accounts are benched and for how long — that is the one
-                  // piece of information the raw API error cannot carry.
-                  notify(
-                    toastClient,
-                    `All Claude accounts are rate-limited. ${describeCooldowns()}`,
-                    "error",
-                  )
-                  break
-                }
-
-                triedSources.add(rotated.account.source)
-                tokenInUse = rotated.credentials.accessToken
-                syncAuthJson(rotated.credentials)
+              const giveUp = (): void => {
+                // Return the 429 so the user sees the real limit rather than
+                // a silent stall, and say which accounts are benched and for
+                // how long — that is the one piece of information the raw API
+                // error cannot carry.
                 notify(
                   toastClient,
-                  `Rate limit reached — switched to ${rotated.account.label}.`,
-                  "warning",
+                  `All Claude accounts are rate-limited. ${describeCooldowns(rotationWaitDeps.now())}`,
+                  "error",
+                )
+              }
+
+              rotation: for (;;) {
+                let outOfCandidates = false
+
+                for (
+                  let switchCount = 0;
+                  switchCount < rotationConfig.maxSwitchesPerRequest;
+                  switchCount++
+                ) {
+                  if (response.status !== 429) break
+
+                  // Body is needed both to exclude long-context errors and to
+                  // tell an explained usage limit from a bare 429. Cloned so
+                  // the response stays readable if we end up returning it.
+                  let limitBody = ""
+                  try {
+                    limitBody = await response.clone().text()
+                  } catch {
+                    // An unreadable body is not a reason to skip rotation; it
+                    // only costs the body-derived reason label.
+                  }
+
+                  if (isLongContextError(limitBody)) {
+                    log("rotation_skipped_long_context", { modelId })
+                    break rotation
+                  }
+
+                  const limitedSource =
+                    getActiveAccount()?.source ?? startingAccount?.source
+                  if (!limitedSource) break rotation
+
+                  const rotated = await rotateAfterRateLimit({
+                    limitedSource,
+                    headers: response.headers,
+                    body: limitBody,
+                    triedSources,
+                    now: rotationWaitDeps.now(),
+                  })
+                  if (!rotated) {
+                    outOfCandidates = true
+                    break
+                  }
+
+                  triedSources.add(rotated.account.source)
+                  labels.set(rotated.account.source, rotated.account.label)
+                  tokenInUse = rotated.credentials.accessToken
+                  syncAuthJson(rotated.credentials)
+                  notify(
+                    toastClient,
+                    `Rate limit reached — switched to ${rotated.account.label}.`,
+                    "warning",
+                  )
+
+                  response = await fetchWithRetry(requestUrl, {
+                    ...requestInit,
+                    body,
+                    headers: buildRequestHeaders(
+                      input,
+                      requestInit,
+                      tokenInUse,
+                      modelId,
+                      getExcludedBetas(modelId),
+                    ),
+                  })
+                  log("rotation_retry_response", {
+                    modelId,
+                    source: rotated.account.source,
+                    status: response.status,
+                    switchCount: switchCount + 1,
+                  })
+                }
+
+                if (response.status !== 429) break
+                if (!outOfCandidates) {
+                  // The switch budget ran out while a later account could
+                  // still serve the request — that is a call-count bound, not
+                  // a depleted pool, so sleeping here would be self-imposed.
+                  giveUp()
+                  break
+                }
+
+                // ----- all accounts benched, tried, or broken: the wait -----
+                if (!waitConfig.enabled) {
+                  giveUp()
+                  break
+                }
+
+                const earliest = earliestCooldown(rotationWaitDeps.now())
+                if (!earliest) {
+                  // No live bench means every candidate failed credential
+                  // validation rather than a quota check — a broken account
+                  // must not manufacture a quota wait out of nothing.
+                  giveUp()
+                  break
+                }
+                if (
+                  waitConfig.maxCycles > 0 &&
+                  waitCycles >= waitConfig.maxCycles
+                ) {
+                  log("rotation_wait_budget_exceeded", {
+                    modelId,
+                    budget: "cycles",
+                    maxCycles: waitConfig.maxCycles,
+                    waitedMs,
+                  })
+                  giveUp()
+                  break
+                }
+
+                const wakeTarget =
+                  earliest.until - rotationWaitDeps.now() + waitConfig.marginMs
+                let waitMs = Math.max(0, wakeTarget)
+                waitMs += Math.floor(
+                  rotationWaitDeps.rng() * waitConfig.jitterMs,
+                )
+
+                if (
+                  waitConfig.maxWaitTotalMs > 0 &&
+                  waitedMs + waitMs > waitConfig.maxWaitTotalMs
+                ) {
+                  log("rotation_wait_budget_exceeded", {
+                    modelId,
+                    budget: "total_ms",
+                    maxWaitTotalMs: waitConfig.maxWaitTotalMs,
+                    waitedMs,
+                  })
+                  giveUp()
+                  break
+                }
+
+                waitCycles += 1
+                waitedMs += waitMs
+                const earliestLabel =
+                  labels.get(earliest.source) ?? earliest.source
+                if (!waitToastShown) {
+                  waitToastShown = true
+                  notify(
+                    toastClient,
+                    `All ${refreshAccountsList().length} Claude accounts are rate-limited. Next availability: ${earliestLabel} in ${formatRemaining(waitMs)} — the request resumes automatically.`,
+                    "error",
+                  )
+                }
+                log("rotation_wait_start", {
+                  modelId,
+                  cycle: waitCycles,
+                  earliestSource: earliest.source,
+                  earliestAt: earliest.until,
+                  earliestReason: earliest.reason,
+                  waitMs,
+                  remaining: describeCooldowns(rotationWaitDeps.now()),
+                })
+
+                const waitSignal = requestInit.signal ?? undefined
+                await rotationWaitDeps.sleep(waitMs, waitSignal)
+                if (waitSignal?.aborted) {
+                  // The turn was cancelled mid-wait: surface the limit we were
+                  // holding rather than firing one more request nobody reads.
+                  log("rotation_wait_aborted", {
+                    modelId,
+                    cycle: waitCycles,
+                    waitedMs,
+                  })
+                  break
+                }
+                log("rotation_wait_wake", {
+                  modelId,
+                  cycle: waitCycles,
+                  plannedSource: earliest.source,
+                })
+
+                // Never assume the planned account is healthy: benches may
+                // have been extended or cleared by sibling instances while we
+                // slept, so selection starts from fresh persisted state.
+                const woke = await retryAfterCooldownWait({
+                  triedSources,
+                  now: rotationWaitDeps.now(),
+                })
+                if (!woke) {
+                  // State did not open up (a sibling extended the benches, or
+                  // the candidates all failed validation). Recompute the
+                  // earliest bench and sleep again — every pass through here
+                  // sleeps, so this loop can never spin.
+                  continue
+                }
+
+                triedSources.add(woke.account.source)
+                labels.set(woke.account.source, woke.account.label)
+                tokenInUse = woke.credentials.accessToken
+                syncAuthJson(woke.credentials)
+                notify(
+                  toastClient,
+                  `Limits reset — continuing on ${woke.account.label}.`,
+                  "info",
                 )
 
                 response = await fetchWithRetry(requestUrl, {
@@ -742,12 +942,12 @@ const plugin: Plugin = async (pluginInput) => {
                     getExcludedBetas(modelId),
                   ),
                 })
-                log("rotation_retry_response", {
+                log("rotation_wake_retry_response", {
                   modelId,
-                  source: rotated.account.source,
+                  source: woke.account.source,
                   status: response.status,
-                  switchCount: switchCount + 1,
                 })
+                // Loop: re-evaluate the fresh response from the top.
               }
             }
 

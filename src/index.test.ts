@@ -1569,6 +1569,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     let fetchCount = 0
     const warnings: unknown[][] = []
 
+    // This test pins the surface-the-limit behaviour; the quota wait would
+    // otherwise hold the request until the (frozen) reset time.
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT = "0"
+
     try {
       const { helpersModule } = await loadHelpersWithCountingKeychain(
         Date.now() + 10 * 60_000,
@@ -1622,6 +1626,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
       console.warn = originalWarn
+      delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {
@@ -1721,6 +1726,9 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     // the original `latest` instead still compiles and passes every other
     // test, while retrying a quota error on a token the source already agrees
     // is current — the exact hazard the block's own comment predicts.
+    // The quota wait is disabled: this ends on a 429 whose surfacing is the
+    // point of the test.
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT = "0"
     const authorizationHeaders: string[] = []
 
     try {
@@ -1778,6 +1786,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
+      delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {
@@ -1882,6 +1891,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
     let apiCalls = 0
 
+    // Ends on a persistent 429; the quota wait would hold the request instead
+    // of letting the error surface, which is what this test asserts.
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT = "0"
+
     try {
       const { helpersModule } = await loadHelpersWithCountingKeychain(
         Date.now() + 10 * 60_000,
@@ -1921,6 +1934,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
+      delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {
@@ -1942,6 +1956,10 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     })) as unknown as typeof setInterval
 
     let apiCalls = 0
+
+    // Ends on a persistent 429; the quota wait would hold the request instead
+    // of letting the error surface, which is what this test asserts.
+    process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT = "0"
 
     try {
       const { helpersModule, keychainModule } =
@@ -1991,6 +2009,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       Date.now = originalNow
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
+      delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {
@@ -2493,6 +2512,11 @@ describe("auth fetch — automatic account rotation on rate limits", () => {
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN
     delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE
     delete process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MAX_CYCLES
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MAX_MS
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MARGIN_MS
+    delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_JITTER_MS
   }
 
   async function withRotationEnv<T>(
@@ -2602,24 +2626,35 @@ describe("auth fetch — automatic account rotation on rate limits", () => {
     )
   })
 
-  it("surfaces the rate limit once every account is exhausted", async () => {
-    await withRotationEnv(async () => {
-      let calls = 0
-      globalThis.fetch = (async () => {
-        calls += 1
-        return new Response('{"error":{"type":"rate_limit_error"}}', {
-          status: 429,
-          headers: { "retry-after": "3600" },
-        })
-      }) as typeof fetch
+  it("surfaces the rate limit once every account is exhausted (quota wait disabled)", async () => {
+    await withRotationEnv(
+      async () => {
+        let calls = 0
+        globalThis.fetch = (async () => {
+          calls += 1
+          return new Response('{"error":{"type":"rate_limit_error"}}', {
+            status: 429,
+            headers: { "retry-after": "3600" },
+          })
+        }) as typeof fetch
 
-      const { helpersModule } = await loadHelpersForRotation({})
-      const response = await callFetch(helpersModule)
+        const { helpersModule } = await loadHelpersForRotation({})
+        const response = await callFetch(helpersModule)
 
-      assert.equal(response.status, 429, "the real limit must reach the caller")
-      // Bounded: the two accounts are each tried once, not retried forever.
-      assert.ok(calls <= 4, `rotation must be bounded, saw ${calls} requests`)
-    })
+        assert.equal(
+          response.status,
+          429,
+          "the real limit must reach the caller",
+        )
+        // Bounded: the two accounts are each tried once, not retried forever.
+        assert.ok(calls <= 4, `rotation must be bounded, saw ${calls} requests`)
+      },
+      () => {
+        // The quota-wait feature would otherwise sleep an hour before
+        // surfacing; this test pins the legacy surface-the-limit behaviour.
+        process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT = "0"
+      },
+    )
   })
 
   it("does not rotate when rotation is disabled", async () => {
@@ -2963,6 +2998,8 @@ describe("auth fetch — rotation target validation", () => {
     try {
       const tempHome = await setup()
       // Only the phantom is available to rotate onto, and it cannot serve.
+      // The quota wait is disabled: surfacing the 429 is the point of the test.
+      process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT = "0"
       process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER = "acct-a,token:deadbeef"
       mkdirSync(stateDirFor(tempHome), { recursive: true })
       writeFileSync(
@@ -3009,6 +3046,7 @@ describe("auth fetch — rotation target validation", () => {
       globalThis.setInterval = originalSetInterval
       globalThis.fetch = originalFetch
       delete process.env.OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER
+      delete process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
       } else {

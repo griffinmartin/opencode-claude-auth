@@ -1335,6 +1335,72 @@ export async function rotateAfterRateLimit(options: {
 }
 
 /**
+ * Re-select an account after a quota wait, when at least one bench should
+ * have expired.
+ *
+ * Mirrors {@link rotateAfterRateLimit} minus the benching: nothing has 429'd
+ * since we woke, so writing a cooldown here would be fiction. It re-reads the
+ * persisted bench state (a sibling OpenCode instance may have used and
+ * cleared a bench while we slept), re-validates the candidate through the
+ * normal credential path, and only persists the switch once credentials
+ * actually materialise — an account that still can't serve a request must
+ * not become the recorded active one.
+ *
+ * `triedSources` is pruned in place: sources whose bench expired during the
+ * wait are eligible again, which is the whole point of having waited.
+ */
+export async function retryAfterCooldownWait(options: {
+  triedSources: Set<string>
+  now?: number
+}): Promise<{ account: ClaudeAccount; credentials: ClaudeCredentials } | null> {
+  const config = getRotationConfig()
+  if (!config.enabled) return null
+
+  const now = options.now ?? Date.now()
+  for (const source of options.triedSources) {
+    // Deleting while iterating a Set is well-defined: skipped sources are
+    // the ones we just removed, which is exactly the intent.
+    if (!isRotationCooldownActive(source, now)) {
+      options.triedSources.delete(source)
+    }
+  }
+
+  // Re-read the roster first, same as rotateAfterRateLimit: accounts added
+  // in another window while we slept are legitimate wake targets.
+  const roster = refreshAccountsList()
+  const previousSource = activeAccountSource
+
+  let next: ClaudeAccount | null
+  let credentials: ClaudeCredentials | null = null
+  while ((next = pickNextAccount(roster, options.triedSources, now, config))) {
+    options.triedSources.add(next.source)
+
+    // Must be active before asking: getCachedCredentials resolves the active
+    // account. Restored below if this candidate turns out to be unusable.
+    setActiveAccountSource(next.source)
+    credentials = await getCachedCredentials()
+    if (credentials) break
+
+    log("rotation_wake_target_unusable", { target: next.source })
+  }
+
+  if (!next || !credentials) {
+    if (previousSource) setActiveAccountSource(previousSource)
+    log("rotation_wake_no_candidate", {
+      poolSize: roster.length,
+      tried: options.triedSources.size,
+    })
+    return null
+  }
+
+  // Persisted only now that the target is known to work.
+  saveAccountSource(next.source)
+
+  log("rotation_wake_switched", { to: next.source })
+  return { account: next, credentials }
+}
+
+/**
  * Clear a bench once an account is observed working again.
  *
  * Called on any successful response, so an account whose limit reset earlier

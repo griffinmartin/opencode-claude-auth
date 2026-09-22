@@ -40,6 +40,12 @@ export interface CooldownEntry {
   reason: string
   /** When the bench was applied. */
   at: number
+  /**
+   * Consecutive benches that carried no reset information. Drives the
+   * escalating backoff for unexplained 429s; absent on benches with an
+   * authoritative reset and on state written before escalation existed.
+   */
+  unspecifiedCount?: number
 }
 
 export interface RotationStateFile {
@@ -57,6 +63,19 @@ export interface RotationConfig {
   maxSwitchesPerRequest: number
   /** Explicit source order; unlisted sources follow, in discovery order. */
   order: string[]
+}
+
+export interface RotationWaitConfig {
+  /** Master switch: wait out an all-accounts-benched window instead of failing. */
+  enabled: boolean
+  /** Max sleeps per request; 0 = unlimited. */
+  maxCycles: number
+  /** Max total sleep per request in ms; 0 = unlimited. */
+  maxWaitTotalMs: number
+  /** Small safety margin added after a reset, so we never fire milliseconds early. */
+  marginMs: number
+  /** Upper bound of the random extra delay, desynchronising sibling instances. */
+  jitterMs: number
 }
 
 function envInt(name: string, fallback: number): number {
@@ -95,6 +114,26 @@ export function getRotationConfig(): RotationConfig {
       3,
     ),
     order,
+  }
+}
+
+export function getRotationWaitConfig(): RotationWaitConfig {
+  return {
+    enabled: process.env.OPENCODE_CLAUDE_AUTH_ROTATE_WAIT !== "0",
+    // Both budgets default to 0 = unlimited: the feature exists so a
+    // long-running task survives a quota window however long it is, and the
+    // abort signal is the real escape hatch. The caps exist for operators
+    // (and tests) that would rather fail after a bound.
+    maxCycles: Math.max(
+      0,
+      envInt("OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MAX_CYCLES", 0),
+    ),
+    maxWaitTotalMs: Math.max(
+      0,
+      envInt("OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MAX_MS", 0),
+    ),
+    marginMs: envInt("OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MARGIN_MS", 1_000),
+    jitterMs: envInt("OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_JITTER_MS", 2_000),
   }
 }
 
@@ -210,26 +249,92 @@ export function cooldownFromResponse(
   return { ms: cap(config.defaultCooldownMs), reason: "unspecified-429" }
 }
 
+/** Reasons that carry a provider-stated reset; everything else is our estimate. */
+export function isAuthoritativeCooldownReason(reason: string): boolean {
+  return (
+    reason === "retry-after" ||
+    reason === "retry-after-date" ||
+    reason.startsWith("anthropic-ratelimit-")
+  )
+}
+
+/**
+ * Bench length for a 429 that said nothing about when to come back
+ * ({@link cooldownFromResponse} reasons `unspecified-429` and
+ * `usage-limit-body`).
+ *
+ * The first unexplained bench stays the short default: it is far more likely
+ * a burst limit than an empty subscription. A source that *keeps* returning
+ * unexplained 429s through later wakes is a different story — its bench
+ * doubles each time (jittered, capped at `maxCooldownMs`), so waiting out an
+ * all-unknown-reset window is a conservative backoff instead of a metronome.
+ * An authoritative reset or a success (`clearCooldown) resets the streak.
+ */
+function escalatingDefaultCooldown(
+  source: string,
+  existing: CooldownEntry | undefined,
+  baseMs: number,
+  reason: string,
+  rng: () => number,
+): { ms: number; unspecifiedCount?: number } {
+  if (reason !== "unspecified-429" && reason !== "usage-limit-body") {
+    return { ms: baseMs }
+  }
+  const previous =
+    existing?.unspecifiedCount !== undefined ? existing.unspecifiedCount : 0
+  const count = previous + 1
+  if (count === 1) return { ms: baseMs, unspecifiedCount: count }
+
+  const config = getRotationConfig()
+  const escalated = Math.min(config.maxCooldownMs, baseMs * 2 ** (count - 1))
+  const jittered = Math.round(escalated * (0.5 + rng() * 0.5))
+  // Never dip below the plain default: the point of escalation is a longer
+  // retreat, and a low jitter roll must not cancel it.
+  return {
+    ms: Math.min(config.maxCooldownMs, Math.max(baseMs, jittered)),
+    unspecifiedCount: count,
+  }
+}
+
 export function markRateLimited(
   source: string,
   cooldownMs: number,
   reason: string,
   now = Date.now(),
+  rng: () => number = Math.random,
 ): number {
   const state = readRotationState()
-  const until = now + cooldownMs
+  const existing = state.cooldowns[source]
+
+  const effective = escalatingDefaultCooldown(
+    source,
+    existing,
+    cooldownMs,
+    reason,
+    rng,
+  )
+  const until = now + effective.ms
   // Never shorten a bench that is already longer: a 429 arriving from an
   // in-flight request started before the bench must not undo it.
-  const existing = state.cooldowns[source]
   if (existing && existing.until > until) return existing.until
 
-  state.cooldowns[source] = { until, reason, at: now }
+  state.cooldowns[source] = {
+    until,
+    reason,
+    at: now,
+    ...(effective.unspecifiedCount !== undefined
+      ? { unspecifiedCount: effective.unspecifiedCount }
+      : {}),
+  }
   writeRotationState(state)
   log("rotation_marked_limited", {
     source,
     until,
-    cooldownMs,
+    cooldownMs: effective.ms,
     reason,
+    ...(effective.unspecifiedCount !== undefined
+      ? { unspecifiedCount: effective.unspecifiedCount }
+      : {}),
   })
   return until
 }
@@ -362,6 +467,15 @@ export function activeCooldowns(now = Date.now()): CooldownStatus[] {
       reason: entry.reason,
     }))
     .sort((a, b) => a.remainingMs - b.remainingMs)
+}
+
+/**
+ * The soonest live bench across all accounts — the moment the pool can first
+ * serve a request again. Drives the quota wait: sleep until here, re-evaluate
+ * (never assume that exact account is healthy), and retry.
+ */
+export function earliestCooldown(now = Date.now()): CooldownStatus | null {
+  return activeCooldowns(now)[0] ?? null
 }
 
 export function formatRemaining(ms: number): string {

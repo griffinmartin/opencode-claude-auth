@@ -21,8 +21,11 @@ function getMaxRetryDelayMs(): number {
  * Waits `ms`, or resolves early if the caller's signal aborts. A plain
  * setTimeout would let a capped backoff outlast the timeout the caller
  * bounded the whole request with.
+ *
+ * Exported for the quota-wait loop in index.ts, which sleeps until a benched
+ * account's reset under the same abort rule.
  */
-function sleepUnlessAborted(
+export function sleepUnlessAborted(
   ms: number,
   signal?: AbortSignal | null,
 ): Promise<void> {
