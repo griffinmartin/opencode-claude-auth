@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased (fork)
+
+### Features
+
+* accept long-lived tokens pasted from `claude setup-token`, as an additional credential source alongside the Keychain and credentials file. Multiple tokens can be pasted at once via `opencode auth login`, or supplied through `OPENCODE_CLAUDE_AUTH_TOKENS` / `CLAUDE_CODE_OAUTH_TOKEN` for headless use. Such tokens are modelled as static credentials: never refreshed, never written back.
+* rotate accounts automatically on rate limits. The limited account is benched for a cooldown derived from `retry-after` / `anthropic-ratelimit-unified-*-reset` (short default for an unexplained 429, capped at 6h), the request retries on the next healthy account in priority order, and benches persist across restarts. Configurable via `OPENCODE_CLAUDE_AUTH_ROTATE*` and `OPENCODE_CLAUDE_AUTH_ACCOUNT_ORDER`; long-context 429s are excluded, since they affect every account equally.
+* wait out all-accounts-exhausted windows instead of failing. When every account is benched, tried, or broken, the request sleeps until the soonest bench expires (plus a 1s margin and small jitter — real sleeping, no probing), re-evaluates the pool, and resends the identical request. Unexplained 429s bench with escalating backoff (60s, 120s, 240s…, jittered, capped); cancellation via the request's abort signal stops the wait promptly. `OPENCODE_CLAUDE_AUTH_ROTATE_WAIT=0` restores the old fail-fast behaviour; `OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MAX_CYCLES` / `OPENCODE_CLAUDE_AUTH_ROTATE_WAIT_MAX_MS` bound it.
+
+### Bug Fixes
+
+* redact `sk-ant-*` values in the debug log. Only JWT-shaped values and three specific keys were redacted before, so a `sk-ant-oat…` or `sk-ant-api…` value logged under another key could reach a file the README describes as safe to attach to an issue.
+
 ## [2.2.0](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.6...v2.2.0) (2026-09-01)
 
 
