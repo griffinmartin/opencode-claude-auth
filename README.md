@@ -14,6 +14,28 @@ The plugin registers a Claude Code subscription auth method on OpenCode's built-
 
 A custom `fetch` wraps every Anthropic API request to set `Authorization: Bearer` with the current access token (and strip `x-api-key`), translate tool names, and inject the Claude Code identity into the system prompt. OpenCode owns the credential's lifecycle from there and calls back into the plugin to refresh it as needed. Refreshes go directly to Anthropic's OAuth endpoint (zero LLM tokens consumed); the plugin always checks the keychain first and adopts whatever is there if it differs from what OpenCode handed back, so an independent `claude` re-login or refresh doesn't leave OpenCode stuck retrying a dead token. It falls back to the `claude` CLI only in the narrow window where Claude Code will actually rotate the token.
 
+## Alternative: CLIProxyAPI (plugin not required)
+
+If you run [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), you don't need this plugin. CLIProxyAPI logs in to your Claude Code account with OAuth, handles token refresh, and exposes a Claude-compatible API on `http://localhost:8317` by default. Point OpenCode's built-in Anthropic provider at it:
+
+1. Log in with your Claude Code account (via the proxy's `-claude-login` flag) and set an `api-keys` entry in its `config.yaml`.
+2. Configure the Anthropic provider in `~/.config/opencode/opencode.json`:
+
+   ```json
+   {
+     "provider": {
+       "anthropic": {
+         "options": {
+           "baseURL": "http://localhost:8317",
+           "apiKey": "your-api-key-1"
+         }
+       }
+     }
+   }
+   ```
+
+Remove `opencode-claude-auth` from your `plugin` list when using this setup — the two approaches shouldn't be combined. CLIProxyAPI also supports multi-account load balancing and other providers (Codex, Gemini, Grok). This plugin remains the lighter option if you only need Claude Code credentials in OpenCode with no extra service running.
+
 ## Prerequisites
 
 - OpenCode 2 installed — see the [OpenCode 2 migration guide](https://opencode.ai/v2/docs/migrate-v1) for installation instructions
