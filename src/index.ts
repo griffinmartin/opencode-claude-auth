@@ -10,12 +10,16 @@ import { readAllClaudeAccounts } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
 import {
   authorizeOAuth,
+  CLAUDE_CODE_OAUTH_METADATA_KEY,
+  CLAUDE_CODE_OAUTH_METADATA_VALUE,
   INTEGRATION_ID,
   labelOAuthCredential,
+  METHOD_ID,
   oauthMethodDescriptor,
   realOAuthDeps,
   refreshOAuthCredential,
 } from "./oauth-method.ts"
+import { finishClaudeResponse, prepareClaudeRequest } from "./provider.ts"
 
 export * from "./betas.ts"
 export * from "./credentials.ts"
@@ -27,7 +31,6 @@ export * from "./transforms.ts"
 const PROVIDER_ID = Provider.ID.make("anthropic")
 const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
-const PROVIDER_PACKAGE = `aisdk:${new URL("./provider.js", import.meta.url).href}`
 
 /**
  * Session request kinds that reach the model and are billed to the connected
@@ -95,7 +98,7 @@ export const ClaudeAuthPlugin = Plugin.define({
       const connection = await ctx.integration.connection.active(INTEGRATION_ID)
       if (!connection) return false
       const credential = await ctx.integration.connection.resolve(connection)
-      return credential?.type === "oauth"
+      return credential?.type === "oauth" && credential.methodID === METHOD_ID
     }
 
     let subscription: boolean = false
@@ -115,11 +118,9 @@ export const ClaudeAuthPlugin = Plugin.define({
       provider.update(PROVIDER_ID, (info) => {
         info.name = "Anthropic"
         info.integrationID = INTEGRATION_ID
-        info.package = PROVIDER_PACKAGE
       })
       for (const [modelID] of anthropic.models) {
         provider.models.update(PROVIDER_ID, modelID, (model) => {
-          model.package = PROVIDER_PACKAGE
           if (subscription) model.cost = []
         })
       }
@@ -148,7 +149,46 @@ export const ClaudeAuthPlugin = Plugin.define({
     })
 
     for (const kind of IDENTITY_REQUEST_HOOKS)
-      await ctx.session.hook(kind, injectClaudeIdentity)
+      await ctx.session.hook(kind, (event) => {
+        if (subscription) injectClaudeIdentity(event)
+      })
+
+    // OpenCode's native Anthropic provider owns prompt conversion and streaming.
+    // These HTTP hooks apply only the Claude Code subscription wire contract.
+    const requests = new WeakMap<Request, { source?: string }>()
+    await ctx.session.hook("http.request", async (event) => {
+      if (event.model.providerID !== PROVIDER_ID) return
+      const connection = await ctx.integration.connection.active(INTEGRATION_ID)
+      if (!connection) return
+      const credential = await ctx.integration.connection.resolve(connection)
+      if (
+        credential?.type !== "oauth" ||
+        credential.methodID !== METHOD_ID ||
+        credential.metadata?.[CLAUDE_CODE_OAUTH_METADATA_KEY] !==
+          CLAUDE_CODE_OAUTH_METADATA_VALUE
+      )
+        return
+      const source =
+        typeof credential.metadata.source === "string"
+          ? credential.metadata.source
+          : undefined
+      event.request = await prepareClaudeRequest(
+        event.request,
+        credential.access,
+        source,
+      )
+      requests.set(event.request, { source })
+    })
+    await ctx.session.hook("http.response", async (event) => {
+      const context = requests.get(event.request)
+      if (!context) return
+      requests.delete(event.request)
+      event.response = await finishClaudeResponse(
+        event.request,
+        event.response,
+        context.source,
+      )
+    })
 
     if (accounts.length === 0) {
       log("plugin_init_no_accounts", { reason: "no credentials found" })

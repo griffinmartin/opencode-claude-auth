@@ -4,6 +4,7 @@ import plugin, {
   IDENTITY_REQUEST_HOOKS,
   injectClaudeIdentity,
 } from "./index.ts"
+import { CLAUDE_CODE_OAUTH_METADATA_KEY, METHOD_ID } from "./oauth-method.ts"
 import { SYSTEM_IDENTITY } from "./transforms.ts"
 
 type Request = Parameters<typeof injectClaudeIdentity>[0]
@@ -19,6 +20,14 @@ function request(providerID: string, system: string[]): Request {
 }
 
 const texts = (event: Request) => event.system.map((part) => part.text)
+
+function nativeRequest() {
+  return new globalThis.Request("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": "sk-test" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+  })
+}
 
 describe("OpenCode 2 plugin", () => {
   it("exports the V2 plugin module shape", () => {
@@ -67,5 +76,79 @@ describe("IDENTITY_REQUEST_HOOKS", () => {
       [...IDENTITY_REQUEST_HOOKS],
       ["context", "compaction", "generate", "title"],
     )
+  })
+})
+
+describe("native provider HTTP hooks", () => {
+  it("keeps native model packages and only adjusts subscription requests", async () => {
+    const hooks = new Map<string, (event: any) => Promise<void>>()
+    let credential: any = { type: "key", key: "sk-test" }
+    const provider = {
+      package: "@opencode/ai/providers/anthropic",
+      name: "Anthropic",
+    }
+    const model = { package: "@opencode/ai/providers/anthropic", cost: [1] }
+    const ctx = {
+      integration: {
+        transform: async () => {},
+        connection: {
+          active: async () => ({ type: "credential", id: "test" }),
+          resolve: async () => credential,
+        },
+      },
+      provider: {
+        transform: async (edit: any) =>
+          edit({
+            get: () => ({ models: new Map([["claude-sonnet-4-6", model]]) }),
+            update: (_id: string, change: (value: typeof provider) => void) =>
+              change(provider),
+            models: {
+              update: (
+                _id: string,
+                _model: string,
+                change: (value: typeof model) => void,
+              ) => change(model),
+            },
+          }),
+        reload: async () => {},
+      },
+      event: { subscribe: async function* () {} },
+      session: {
+        hook: async (kind: string, hook: (event: any) => Promise<void>) => {
+          hooks.set(kind, hook)
+        },
+      },
+    }
+    const dispose = await plugin.setup(ctx as never)
+    try {
+      assert.equal(provider.package, "@opencode/ai/providers/anthropic")
+      assert.equal(model.package, "@opencode/ai/providers/anthropic")
+      const event = {
+        model: { providerID: "anthropic" },
+        request: nativeRequest(),
+      }
+      await hooks.get("http.request")!(event)
+      assert.equal(event.request.headers.get("x-api-key"), "sk-test")
+      assert.equal(event.request.headers.has("authorization"), false)
+
+      credential = {
+        type: "oauth",
+        methodID: METHOD_ID,
+        access: "subscription-token",
+        metadata: { [CLAUDE_CODE_OAUTH_METADATA_KEY]: "v1" },
+      }
+      event.request = nativeRequest()
+      await hooks.get("http.request")!(event)
+      assert.equal(
+        event.request.headers.get("authorization"),
+        "Bearer subscription-token",
+      )
+      assert.equal(event.request.headers.has("x-api-key"), false)
+      const response = { ...event, response: new Response("ok") }
+      await hooks.get("http.response")!(response)
+      assert.equal(await response.response.text(), "ok")
+    } finally {
+      await dispose?.()
+    }
   })
 })

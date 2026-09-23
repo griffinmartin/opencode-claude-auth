@@ -1,5 +1,4 @@
 import crypto from "node:crypto"
-import { createAnthropic } from "@ai-sdk/anthropic"
 import {
   addExcludedBeta,
   getExcludedBetas,
@@ -22,10 +21,6 @@ import {
 import { fetchWithRetry } from "./http.ts"
 import { log } from "./logger.ts"
 import { config } from "./model-config.ts"
-import {
-  CLAUDE_CODE_OAUTH_METADATA_KEY,
-  CLAUDE_CODE_OAUTH_METADATA_VALUE,
-} from "./oauth-method.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
 
 const sessionID = crypto.randomUUID()
@@ -112,136 +107,146 @@ export function buildRequestHeaders(
  * whichever account happens to be process-wide active. Omit it and the active
  * account is used, which is the single-account case.
  */
+const resolveAccount = (source?: string): ClaudeAccount | null =>
+  source === undefined ? getActiveAccount() : getAccountBySource(source)
+
+function modelFromBody(body: string): string {
+  try {
+    return (JSON.parse(body) as { model?: string }).model ?? "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+/** Prepare the native Anthropic request for Claude Code subscription billing. */
+export async function prepareClaudeRequest(
+  request: Request,
+  accessToken: string,
+  source?: string,
+): Promise<Request> {
+  const body = await request.clone().text()
+  const modelID = modelFromBody(body)
+  const account = resolveAccount(source)
+  const credentials =
+    (await getCachedCredentials(account)) ??
+    (await getCredentialsWithBackoff({}, account))
+  const token = credentials?.accessToken ?? accessToken
+  if (!token)
+    throw new Error(
+      "Claude subscription credentials are unavailable. Run /connect in OpenCode 2.",
+    )
+  return new Request(buildRequestURL(request), {
+    method: request.method,
+    headers: buildRequestHeaders(
+      request,
+      {},
+      token,
+      modelID,
+      getExcludedBetas(modelID),
+    ),
+    body: transformBody(body),
+    signal: request.signal,
+  })
+}
+
+async function sendRequest(request: Request, send: Fetch): Promise<Response> {
+  return fetchWithRetry(
+    request.url,
+    {
+      method: request.method,
+      headers: request.headers,
+      body: await request.clone().text(),
+      signal: request.signal,
+    },
+    3,
+    send,
+  )
+}
+
+/** Handle subscription recovery after OpenCode sends the first HTTP request. */
+export async function finishClaudeResponse(
+  request: Request,
+  initial: Response,
+  source?: string,
+  send: Fetch = fetch,
+): Promise<Response> {
+  const modelID = modelFromBody(await request.clone().text())
+  const account = resolveAccount(source)
+  let token =
+    request.headers.get("authorization")?.replace(/^Bearer /i, "") ?? ""
+  const sendWithToken = (
+    currentToken: string,
+    excludedBetas = getExcludedBetas(modelID),
+  ) => {
+    const incoming = new Headers(request.headers)
+    incoming.set(
+      "anthropic-beta",
+      (incoming.get("anthropic-beta") ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value && !excludedBetas.has(value))
+        .join(","),
+    )
+    const clean = new Request(request.clone(), { headers: incoming })
+    const headers = buildRequestHeaders(
+      clean,
+      {},
+      currentToken,
+      modelID,
+      excludedBetas,
+    )
+    return sendRequest(new Request(clean, { headers }), send)
+  }
+
+  let response = initial
+
+  for (let attempt = 0; response.status === 401 && attempt < 2; attempt++) {
+    let candidate: ClaudeCredentials | null =
+      reloadCredentialsFromSource(account)
+    if (!candidate || candidate.accessToken === token)
+      candidate = await forceRefreshActiveAccount(undefined, account)
+    if (!candidate || candidate.accessToken === token) break
+    token = candidate.accessToken
+    log("auth_recovery_retry", { modelID, attempt: attempt + 1 })
+    response = await sendWithToken(token)
+  }
+
+  if (response.status === 429) {
+    const rotated = reloadCredentialsFromSource(account)
+    if (rotated && rotated.accessToken !== token) {
+      token = rotated.accessToken
+      log("rate_limit_token_changed", { modelID })
+      response = await sendWithToken(token)
+    } else if (getActiveRefreshFailureKind(account) === "transient") {
+      log("fetch_credentials_transient_exhausted", { modelID })
+    }
+  }
+
+  for (let attempt = 0; attempt < LONG_CONTEXT_BETAS.length; attempt++) {
+    if (response.status !== 400 && response.status !== 429) break
+    if (!isLongContextError(await response.clone().text())) break
+    const beta = getNextBetaToExclude(modelID)
+    if (!beta) break
+    addExcludedBeta(modelID, beta)
+    response = await sendWithToken(token, getExcludedBetas(modelID))
+  }
+
+  if (!response.ok)
+    log("fetch_error_response", { status: response.status, modelID })
+  return response.status === 401 ? response : transformResponseStream(response)
+}
+
+/** Standalone transport used by existing integration checks. */
 export function claudeSubscriptionFetch(
   accessToken: string,
   upstream?: Fetch,
   source?: string,
 ): Fetch {
   const send = upstream ?? fetch
-  const resolveAccount = (): ClaudeAccount | null =>
-    source === undefined ? getActiveAccount() : getAccountBySource(source)
   return async (input, init = {}) => {
-    const requestBody =
-      input instanceof Request && init.body === undefined
-        ? await input.clone().text()
-        : init.body
-    const requestInit = {
-      ...(input instanceof Request
-        ? { method: input.method, headers: input.headers, signal: input.signal }
-        : {}),
-      ...init,
-      body: requestBody,
-    }
-    let modelID = "unknown"
-    if (typeof requestBody === "string") {
-      try {
-        modelID =
-          (JSON.parse(requestBody) as { model?: string }).model ?? "unknown"
-      } catch {}
-    }
-    const requestURL = buildRequestURL(input)
-    const transformedBody = transformBody(requestBody)
-    const excluded = getExcludedBetas(modelID)
-    // Resolved per request: the account list is rebuilt whenever credentials
-    // are re-read, so the object this account is represented by can change.
-    const account = resolveAccount()
-    let credentials = await getCachedCredentials(account)
-    if (!credentials) credentials = await getCredentialsWithBackoff({}, account)
-    let token = credentials?.accessToken ?? accessToken
-    if (!token)
-      throw new Error(
-        "Claude subscription credentials are unavailable. Run /connect in OpenCode 2.",
-      )
-
-    const sendWithToken = (currentToken: string, excludedBetas = excluded) =>
-      fetchWithRetry(
-        requestURL,
-        {
-          ...requestInit,
-          body: transformedBody,
-          headers: buildRequestHeaders(
-            input,
-            requestInit,
-            currentToken,
-            modelID,
-            excludedBetas,
-          ),
-        },
-        3,
-        send,
-      )
-
-    let response = await sendWithToken(token)
-
-    for (let attempt = 0; response.status === 401 && attempt < 2; attempt++) {
-      let candidate: ClaudeCredentials | null =
-        reloadCredentialsFromSource(account)
-      if (!candidate || candidate.accessToken === token)
-        candidate = await forceRefreshActiveAccount(undefined, account)
-      if (!candidate || candidate.accessToken === token) break
-      token = candidate.accessToken
-      log("auth_recovery_retry", { modelID, attempt: attempt + 1 })
-      response = await sendWithToken(token)
-    }
-
-    if (response.status === 429) {
-      const rotated = reloadCredentialsFromSource(account)
-      if (rotated && rotated.accessToken !== token) {
-        token = rotated.accessToken
-        log("rate_limit_token_changed", { modelID })
-        response = await sendWithToken(token)
-      } else if (getActiveRefreshFailureKind(account) === "transient") {
-        log("fetch_credentials_transient_exhausted", { modelID })
-      }
-    }
-
-    for (let attempt = 0; attempt < LONG_CONTEXT_BETAS.length; attempt++) {
-      if (response.status !== 400 && response.status !== 429) break
-      if (!isLongContextError(await response.clone().text())) break
-      const beta = getNextBetaToExclude(modelID)
-      if (!beta) break
-      addExcludedBeta(modelID, beta)
-      response = await fetchWithRetry(
-        requestURL,
-        {
-          ...requestInit,
-          body: transformedBody,
-          headers: buildRequestHeaders(
-            input,
-            requestInit,
-            token,
-            modelID,
-            getExcludedBetas(modelID),
-          ),
-        },
-        3,
-        send,
-      )
-    }
-
-    if (!response.ok)
-      log("fetch_error_response", { status: response.status, modelID })
-    return response.status === 401
-      ? response
-      : transformResponseStream(response)
+    const request = new Request(input, init)
+    const prepared = await prepareClaudeRequest(request, accessToken, source)
+    const response = await sendRequest(prepared, send)
+    return finishClaudeResponse(prepared, response, source, send)
   }
-}
-
-export function createClaudeSubscription(options: Record<string, unknown>) {
-  if (
-    options[CLAUDE_CODE_OAUTH_METADATA_KEY] !== CLAUDE_CODE_OAUTH_METADATA_VALUE
-  )
-    return createAnthropic(options)
-
-  const accessToken = typeof options.apiKey === "string" ? options.apiKey : ""
-  const upstream =
-    typeof options.fetch === "function" ? (options.fetch as Fetch) : undefined
-  // Written alongside the marker by buildOAuthCredential, so it arrives here
-  // through the same metadata OpenCode spreads into the provider options.
-  const source = typeof options.source === "string" ? options.source : undefined
-  return createAnthropic({
-    ...options,
-    apiKey: accessToken,
-    fetch: claudeSubscriptionFetch(accessToken, upstream, source),
-  })
 }

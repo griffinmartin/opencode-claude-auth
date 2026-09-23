@@ -2,43 +2,24 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
   buildRequestHeaders,
-  CLAUDE_CODE_OAUTH_METADATA_KEY,
-  CLAUDE_CODE_OAUTH_METADATA_VALUE,
   claudeSubscriptionFetch,
-  createClaudeSubscription,
+  finishClaudeResponse,
   initAccounts,
+  prepareClaudeRequest,
+  resetExcludedBetas,
   setActiveAccountSource,
 } from "./index.ts"
 
-const anthropicResponse = () =>
-  new Response(
-    JSON.stringify({
-      id: "msg_test",
-      type: "message",
-      role: "assistant",
-      content: [{ type: "text", text: "ok" }],
+const messageRequest = () =>
+  new Request("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      stop_reason: "end_turn",
-      stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 1 },
+      system: "You are Claude Code, Anthropic's official CLI for Claude.",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
     }),
-    { headers: { "content-type": "application/json" } },
-  )
-
-async function generateWith(
-  provider: ReturnType<typeof createClaudeSubscription>,
-) {
-  await provider("claude-sonnet-4-6").doGenerate({
-    prompt: [
-      {
-        role: "system",
-        content:
-          "You are Claude Code, Anthropic's official CLI for Claude.\nStable OpenCode prompt",
-      },
-      { role: "user", content: [{ type: "text", text: "hello" }] },
-    ],
   })
-}
 
 describe("Claude subscription transport", () => {
   it("uses bearer auth and removes x-api-key", () => {
@@ -125,52 +106,51 @@ describe("Claude subscription transport", () => {
     assert.match(await response.text(), /"name": "read"/)
   })
 
-  it("constructs the OAuth transport for explicitly marked credentials", async () => {
-    let captured: { input: RequestInfo | URL; init?: RequestInit } | undefined
-    const provider = createClaudeSubscription({
-      apiKey: "oauth-token",
-      [CLAUDE_CODE_OAUTH_METADATA_KEY]: CLAUDE_CODE_OAUTH_METADATA_VALUE,
-      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        captured = { input, init }
-        return anthropicResponse()
-      },
-    })
-
-    await generateWith(provider)
-
-    const headers = new Headers(captured?.init?.headers)
+  it("prepares native Anthropic HTTP requests for subscription billing", async () => {
+    const request = await prepareClaudeRequest(messageRequest(), "oauth-token")
+    const headers = request.headers
     assert.equal(headers.get("authorization"), "Bearer oauth-token")
     assert.equal(headers.has("x-api-key"), false)
-    assert.equal(
-      new URL(String(captured?.input)).searchParams.get("beta"),
-      "true",
-    )
-    assert.match(String(captured?.init?.body), /x-anthropic-billing-header/)
+    assert.equal(new URL(request.url).searchParams.get("beta"), "true")
+    assert.match(await request.text(), /x-anthropic-billing-header/)
   })
 
-  it("constructs the stock API-key provider for unmarked credentials", async () => {
-    let captured: { input: RequestInfo | URL; init?: RequestInit } | undefined
-    const provider = createClaudeSubscription({
-      apiKey: "sk-ant-api03-key",
-      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        captured = { input, init }
-        return anthropicResponse()
+  it("transforms the native response without sending another request", async () => {
+    const request = await prepareClaudeRequest(messageRequest(), "oauth-token")
+    let calls = 0
+    const response = await finishClaudeResponse(
+      request,
+      new Response('{"name":"mcp_Read"}'),
+      undefined,
+      async () => {
+        calls++
+        return new Response()
       },
-    })
-
-    await generateWith(provider)
-
-    const headers = new Headers(captured?.init?.headers)
-    assert.equal(headers.get("x-api-key"), "sk-ant-api03-key")
-    assert.equal(headers.has("authorization"), false)
-    assert.equal(
-      new URL(String(captured?.input)).searchParams.has("beta"),
-      false,
     )
-    assert.doesNotMatch(
-      String(captured?.init?.body),
-      /x-anthropic-billing-header/,
+    assert.equal(calls, 0)
+    assert.match(await response.text(), /"name": "read"/)
+  })
+
+  it("removes a rejected beta from native request retries", async () => {
+    resetExcludedBetas()
+    const request = await prepareClaudeRequest(messageRequest(), "oauth-token")
+    const betas: string[] = []
+    await finishClaudeResponse(
+      request,
+      new Response("long context beta is not yet available", { status: 400 }),
+      undefined,
+      async (_input, init) => {
+        betas.push(new Headers(init?.headers).get("anthropic-beta") ?? "")
+        return betas.length === 1
+          ? new Response("long context beta is not yet available", {
+              status: 400,
+            })
+          : new Response("ok")
+      },
     )
+    assert.match(betas[0], /interleaved-thinking-2025-05-14/)
+    assert.doesNotMatch(betas[1], /interleaved-thinking-2025-05-14/)
+    resetExcludedBetas()
   })
 
   it("fails clearly without a subscription token", async () => {
@@ -219,17 +199,13 @@ describe("multi-account token scoping", () => {
     account: typeof ACCOUNT_A,
   ): Promise<string | null> {
     let captured: RequestInit | undefined
-    const provider = createClaudeSubscription({
-      apiKey: account.credentials.accessToken,
-      [CLAUDE_CODE_OAUTH_METADATA_KEY]: CLAUDE_CODE_OAUTH_METADATA_VALUE,
-      source: account.source,
-      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
-        captured = init
-        return anthropicResponse()
-      },
-    })
-    await generateWith(provider)
-    return new Headers(captured?.headers).get("authorization")
+    const request = await prepareClaudeRequest(
+      messageRequest(),
+      account.credentials.accessToken,
+      account.source,
+    )
+    captured = { headers: request.headers }
+    return new Headers(captured.headers).get("authorization")
   }
 
   it("bills the credential's own account, not the globally active one", async () => {
@@ -275,19 +251,29 @@ describe("multi-account token scoping", () => {
 
     try {
       let calls = 0
-      const provider = createClaudeSubscription({
-        apiKey: ACCOUNT_B.credentials.accessToken,
-        [CLAUDE_CODE_OAUTH_METADATA_KEY]: CLAUDE_CODE_OAUTH_METADATA_VALUE,
-        source: ACCOUNT_B.source,
-        fetch: async () => {
+      const request = await prepareClaudeRequest(
+        messageRequest(),
+        ACCOUNT_B.credentials.accessToken,
+        ACCOUNT_B.source,
+      )
+      await finishClaudeResponse(
+        request,
+        new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+        }),
+        ACCOUNT_B.source,
+        async () => {
           calls++
           return new Response(JSON.stringify({ error: "unauthorized" }), {
             status: 401,
           })
         },
-      })
-      await generateWith(provider).catch(() => {})
-      assert.ok(calls > 0, "the request never reached Anthropic")
+      ).catch(() => {})
+      assert.equal(
+        calls,
+        0,
+        "a failed refresh must not resend with another account",
+      )
       assert.equal(refreshedWith, "refresh-b")
     } finally {
       globalThis.fetch = realFetch

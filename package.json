@@ -65,7 +65,6 @@
     "prepublishOnly": "pnpm run build && pnpm test"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.39",
     "@opencode/plugin": "latest"
   },
   "devDependencies": {
