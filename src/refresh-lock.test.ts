@@ -100,3 +100,61 @@ describe("refresh-lock", () => {
     assert.ok(!existsSync(join(filePath, "sub")))
   })
 })
+
+describe("refresh-lock default dir", () => {
+  // Every test above passes an explicit `dir`, so defaultLockDir() itself is
+  // otherwise unexercised. Parallel instances rely on it splitting by XDG.
+  const savedXdg = process.env.XDG_DATA_HOME
+  const savedLockDir = process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR
+  let xdgDir: string
+
+  beforeEach(() => {
+    xdgDir = mkdtempSync(join(tmpdir(), "opencode-claude-auth-xdg-lock-"))
+    process.env.XDG_DATA_HOME = xdgDir
+    delete process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR
+  })
+
+  afterEach(() => {
+    if (typeof savedXdg === "string") process.env.XDG_DATA_HOME = savedXdg
+    else delete process.env.XDG_DATA_HOME
+    if (typeof savedLockDir === "string")
+      process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = savedLockDir
+    else delete process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR
+    rmSync(xdgDir, { recursive: true, force: true })
+  })
+
+  it("defaults the lock dir to $XDG_DATA_HOME/opencode", () => {
+    const lock = acquireRefreshLock(SRC)
+    assert.ok(lock, "the lock is granted with no explicit dir")
+    assert.equal(
+      readdirSync(join(xdgDir, "opencode")).filter((f) => f.endsWith(".lock"))
+        .length,
+      1,
+      "the lock file lands under $XDG_DATA_HOME/opencode",
+    )
+    lock!.release()
+  })
+
+  it("keeps OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR winning over XDG_DATA_HOME", () => {
+    const explicit = mkdtempSync(
+      join(tmpdir(), "opencode-claude-auth-lockdir-"),
+    )
+    process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = explicit
+    try {
+      const lock = acquireRefreshLock(SRC)
+      assert.ok(lock)
+      assert.equal(
+        readdirSync(explicit).filter((f) => f.endsWith(".lock")).length,
+        1,
+        "the explicit override still takes precedence",
+      )
+      assert.ok(
+        !existsSync(join(xdgDir, "opencode")),
+        "the XDG data dir is left untouched",
+      )
+      lock!.release()
+    } finally {
+      rmSync(explicit, { recursive: true, force: true })
+    }
+  })
+})

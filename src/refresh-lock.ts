@@ -21,10 +21,10 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { log } from "./logger.ts"
+import { getOpencodeDataDir } from "./paths.ts"
 
 /** How long before a held lock is considered stale (env-overridable). */
 export const DEFAULT_LOCK_TTL_MS = (() => {
@@ -47,10 +47,11 @@ export interface AcquireOptions {
 
 function defaultLockDir(): string {
   // Read at call time so tests (and unusual deployments) can redirect the lock
-  // directory without reloading the module.
+  // directory without reloading the module. getOpencodeDataDir() honours
+  // XDG_DATA_HOME, so parallel instances get separate lock dirs rather than
+  // contending over one.
   return (
-    process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR ??
-    join(homedir(), ".local", "share", "opencode")
+    process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR ?? getOpencodeDataDir()
   )
 }
 

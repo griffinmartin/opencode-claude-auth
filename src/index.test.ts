@@ -18,6 +18,11 @@ process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
   join(tmpdir(), "opencode-claude-auth-locktest-"),
 )
 
+// These tests isolate the data dir via HOME; unset XDG_DATA_HOME so an ambient
+// value (e.g. in CI or a dev shell) doesn't redirect the resolved paths out of
+// the temp home.
+delete process.env.XDG_DATA_HOME
+
 interface ClaudeCredentials {
   accessToken: string
   refreshToken: string
@@ -135,6 +140,7 @@ const SOURCE_FILES = [
   "refresh-lock.ts",
   "logger.ts",
   "http.ts",
+  "paths.ts",
 ] as const
 
 async function copySourceFiles(
