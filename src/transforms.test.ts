@@ -309,6 +309,55 @@ describe("transforms", () => {
     assert.equal(parsed.messages[0].content[1].text, "hello")
   })
 
+  it("transformBody inserts relocated system text after leading tool_result blocks", () => {
+    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const input = JSON.stringify({
+      system: [
+        { type: "text", text: identity },
+        { type: "text", text: "OpenCode system prompt" },
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "bash", input: {} },
+            { type: "tool_use", id: "toolu_2", name: "read", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [{ type: "text", text: "ok" }],
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_2",
+              content: [{ type: "text", text: "ok" }],
+            },
+          ],
+        },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      messages: Array<{
+        content: Array<{ type: string; text?: string }>
+      }>
+    }
+
+    // tool_result blocks must stay first; Anthropic rejects the request
+    // when text precedes them in the message following a tool_use
+    const blocks = parsed.messages[1].content.map((b) => b.type)
+    assert.deepEqual(blocks, ["tool_result", "tool_result", "text"])
+    assert.ok(
+      parsed.messages[1].content[2].text?.includes("OpenCode system prompt"),
+    )
+  })
+
   it("transformBody keeps system intact when no messages exist", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "Some instructions" }],
