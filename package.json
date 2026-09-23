@@ -64,10 +64,14 @@
     "prepublishOnly": "pnpm run build && pnpm test"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "latest",
+    "@opencode-ai/plugin": "1.15.13",
+    "@opentui/core": "^0.4.5",
+    "@opentui/keymap": "^0.4.5",
+    "@opentui/solid": "^0.4.5",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
+    "solid-js": "^1.9.14",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
