@@ -1,8 +1,19 @@
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
+import { createHash, randomUUID } from "node:crypto"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
+
 /**
  * Transient-vs-terminal classification and per-account backoff for OAuth token
  * refreshes.
  *
- * The token endpoint (`claude.ai/v1/oauth/token`) rate-limits refresh requests
+ * The token endpoint (`platform.claude.com/v1/oauth/token`) rate-limits refresh requests
  * with HTTP 429 `rate_limit_error`. That is transient — the refresh token is
  * still valid — but the plugin previously treated every non-OK refresh as a
  * hard failure, surfacing "credentials unavailable. Run `claude`" and then
@@ -23,6 +34,7 @@ export const BASE_COOLDOWN_MS = (() => {
 
 /** Hard ceiling for a single cooldown, regardless of consecutive failures. */
 export const MAX_COOLDOWN_MS = 60_000
+export const CLI_FALLBACK_COOLDOWN_MS = 60_000
 
 /**
  * OAuth token-endpoint error codes that mean the refresh token itself is no
@@ -35,6 +47,9 @@ const TERMINAL_OAUTH_ERRORS = new Set([
   "invalid_client",
   "unauthorized_client",
   "unsupported_grant_type",
+  // Sending a scope wider than the original grant fails identically on every
+  // retry, so treating it as transient would loop the cooldown forever.
+  "invalid_scope",
 ])
 
 export function classifyRefreshFailure(
@@ -76,13 +91,106 @@ export function computeBackoffMs(
   return Math.min(MAX_COOLDOWN_MS, Math.round(scheduled * jitterFactor))
 }
 
-interface CooldownState {
-  until: number
+interface RefreshState {
+  kind: RefreshFailureKind
   consecutive: number
+  until?: number
+  cliAttemptedAt?: number
 }
 
-const cooldowns = new Map<string, CooldownState>()
-const lastFailureKind = new Map<string, RefreshFailureKind>()
+const touchedPaths = new Set<string>()
+const volatileStates = new Map<string, RefreshState>()
+
+function statePath(source: string): string {
+  const dir =
+    process.env.OPENCODE_CLAUDE_AUTH_REFRESH_STATE_DIR ??
+    process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR ??
+    join(homedir(), ".local", "share", "opencode")
+  const digest = createHash("sha256").update(source).digest("hex").slice(0, 16)
+  return join(dir, `claude-auth-refresh-${digest}.json`)
+}
+
+function parseState(path: string): RefreshState | null {
+  let value: unknown
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"))
+  } catch {
+    return null
+  }
+  if (!value || typeof value !== "object") return null
+  const { kind, consecutive, until, cliAttemptedAt } =
+    value as Partial<RefreshState>
+  if (kind !== "transient" && kind !== "terminal") return null
+  if (
+    typeof consecutive !== "number" ||
+    !Number.isInteger(consecutive) ||
+    consecutive < 0
+  ) {
+    return null
+  }
+  if (
+    until !== undefined &&
+    (typeof until !== "number" || !Number.isFinite(until))
+  ) {
+    return null
+  }
+  if (
+    cliAttemptedAt !== undefined &&
+    (typeof cliAttemptedAt !== "number" || !Number.isFinite(cliAttemptedAt))
+  ) {
+    return null
+  }
+  return { kind, consecutive, until, cliAttemptedAt }
+}
+
+/**
+ * Prefer the shared file, so a cooldown one process recorded is visible to the
+ * others. An unreadable or malformed file falls back to what this process last
+ * wrote, rather than dropping a cooldown it knows about.
+ */
+function readState(source: string): RefreshState | null {
+  const path = statePath(source)
+  touchedPaths.add(path)
+  const persisted = parseState(path)
+  if (persisted) {
+    volatileStates.delete(source)
+    return persisted
+  }
+  return volatileStates.get(source) ?? null
+}
+
+function writeState(source: string, state: RefreshState): void {
+  const path = statePath(source)
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
+  touchedPaths.add(path)
+  volatileStates.set(source, state)
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(temp, JSON.stringify(state), {
+      encoding: "utf8",
+      mode: 0o600,
+    })
+    renameSync(temp, path)
+    volatileStates.delete(source)
+  } catch {
+    try {
+      unlinkSync(temp)
+    } catch {
+      // best effort
+    }
+  }
+}
+
+function deleteState(source: string): void {
+  const path = statePath(source)
+  touchedPaths.add(path)
+  volatileStates.delete(source)
+  try {
+    unlinkSync(path)
+  } catch {
+    // already absent
+  }
+}
 
 /**
  * Record a transient refresh failure for `source` and return the cooldown
@@ -94,45 +202,84 @@ export function noteRefreshTransient(
   opts: BackoffOptions = {},
 ): number {
   const now = opts.now ?? Date.now()
-  const consecutive = (cooldowns.get(source)?.consecutive ?? 0) + 1
+  const previous = readState(source)
+  const consecutive =
+    (previous?.kind === "transient" ? previous.consecutive : 0) + 1
   const ms = computeBackoffMs(consecutive, opts)
-  cooldowns.set(source, { until: now + ms, consecutive })
-  lastFailureKind.set(source, "transient")
+  writeState(source, {
+    kind: "transient",
+    until: now + ms,
+    consecutive,
+    cliAttemptedAt: previous?.cliAttemptedAt,
+  })
   return ms
 }
 
 /** Record a terminal refresh failure (dead refresh token). No cooldown. */
 export function noteRefreshTerminal(source: string): void {
-  cooldowns.delete(source)
-  lastFailureKind.set(source, "terminal")
+  writeState(source, {
+    kind: "terminal",
+    consecutive: 0,
+    cliAttemptedAt: readState(source)?.cliAttemptedAt,
+  })
+}
+
+export function noteCliFallbackAttempt(
+  source: string,
+  now: number = Date.now(),
+): void {
+  const previous = readState(source)
+  writeState(source, {
+    kind: previous?.kind ?? "transient",
+    consecutive: previous?.consecutive ?? 0,
+    until: previous?.until,
+    cliAttemptedAt: now,
+  })
+}
+
+export function isCliFallbackCooldownActive(
+  source: string,
+  now: number = Date.now(),
+): boolean {
+  const attemptedAt = readState(source)?.cliAttemptedAt
+  return (
+    attemptedAt !== undefined && attemptedAt + CLI_FALLBACK_COOLDOWN_MS > now
+  )
 }
 
 /** Clear all backoff state for `source` after a successful refresh/adopt. */
 export function clearRefreshOutcome(source: string): void {
-  cooldowns.delete(source)
-  lastFailureKind.delete(source)
+  deleteState(source)
 }
 
 export function isRefreshCooldownActive(
   source: string,
   now: number = Date.now(),
 ): boolean {
-  const state = cooldowns.get(source)
-  return state !== undefined && state.until > now
+  const state = readState(source)
+  return state?.kind === "transient" && (state.until ?? 0) > now
 }
 
 export function getRefreshCooldownUntil(source: string): number | null {
-  return cooldowns.get(source)?.until ?? null
+  const state = readState(source)
+  return state?.kind === "transient" ? (state.until ?? null) : null
 }
 
 export function getRefreshFailureKind(
   source: string,
 ): RefreshFailureKind | null {
-  return lastFailureKind.get(source) ?? null
+  return readState(source)?.kind ?? null
 }
 
-/** Test seam: drop all in-memory backoff state. */
+/** Test seam: remove refresh state touched by this module instance. */
 export function resetRefreshBackoffState(): void {
-  cooldowns.clear()
-  lastFailureKind.clear()
+  for (const path of touchedPaths) {
+    try {
+      unlinkSync(path)
+    } catch {
+      // already absent
+    }
+  }
+  touchedPaths.clear()
+  volatileStates.clear()
 }
