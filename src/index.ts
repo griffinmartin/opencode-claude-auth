@@ -171,12 +171,53 @@ export function buildRequestHeaders(
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const PROACTIVE_REFRESH_THRESHOLD_MS = 60 * 60 * 1000 // 1 hour before expiry
 
+// Long-lived token minted by `claude setup-token` (the same variable Claude
+// Code itself honours). It carries no refresh token, so when it is set the
+// plugin uses it verbatim and bypasses the Keychain / credentials-file store
+// and all OAuth refresh, recovery, and rotation machinery.
+export const ENV_OAUTH_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+
+// The real expiry is not knowable from the token itself. setup-token tokens
+// are issued for roughly a year; this nominal value only exists so auth.json
+// holds an entry OpenCode treats as live.
+const ENV_TOKEN_NOMINAL_TTL_MS = 365 * 24 * 60 * 60 * 1000
+
+export function getEnvTokenCredentials(
+  env: Record<string, string | undefined> = process.env,
+): ClaudeCredentials | null {
+  const token = env[ENV_OAUTH_TOKEN_VAR]?.trim()
+  if (!token) return null
+  return {
+    accessToken: token,
+    refreshToken: "",
+    expiresAt: Date.now() + ENV_TOKEN_NOMINAL_TTL_MS,
+  }
+}
+
 const plugin: Plugin = async () => {
   initLogger()
 
+  // Read once at init: switching modes mid-process would mix a static token
+  // with refresh state from the store, which is exactly what this avoids.
+  const envCreds = getEnvTokenCredentials()
+  if (envCreds) {
+    log("env_token_mode_enabled", { source: ENV_OAUTH_TOKEN_VAR })
+    try {
+      // Headless hosts (CI, containers) have no Claude Code store at all, so
+      // without this auth.json never gains the oauth entry that makes
+      // OpenCode call our loader.
+      syncAuthJson(envCreds)
+    } catch {
+      // Logged by syncAuthJson; a read-only auth.json must not disable the
+      // plugin when OpenCode may already hold a usable entry.
+    }
+  }
+
   let accounts: ClaudeAccount[] = []
   try {
-    accounts = readAllClaudeAccounts()
+    // In env-token mode the store is irrelevant; reading it would only risk
+    // a Keychain prompt or a spurious failure on a headless host.
+    accounts = envCreds ? [] : readAllClaudeAccounts()
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     log("plugin_init_error", { error })
@@ -259,7 +300,7 @@ const plugin: Plugin = async () => {
       }
     }, SYNC_INTERVAL)
     syncTimer.unref()
-  } else {
+  } else if (!envCreds) {
     log("plugin_init_no_accounts", { reason: "no credentials found" })
     console.warn(
       "opencode-claude-auth: No Claude Code credentials found. Running in API key mode with transform hook enabled.",
@@ -309,7 +350,7 @@ const plugin: Plugin = async () => {
           baseURL: "https://api.anthropic.com/v1",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             const requestInit = init ?? {}
-            let latest = await getCachedCredentials()
+            let latest = envCreds ?? (await getCachedCredentials())
             if (!latest) {
               // A transient refresh rate-limit must not surface as a hard error.
               // Wait (bounded, abort-aware) for our cooldown to clear or for a
@@ -425,7 +466,11 @@ const plugin: Plugin = async () => {
             // request on the second attempt, which is a better trade than
             // threading extra state through a loop whose whole virtue is a
             // hard ceiling of three API calls.
-            const MAX_AUTH_RECOVERY_ATTEMPTS = 2
+            //
+            // A static env token has nothing to reload or refresh: a 401 means
+            // the token itself is bad, so surface it rather than consult (and
+            // possibly swap in) an unrelated account from the store.
+            const MAX_AUTH_RECOVERY_ATTEMPTS = envCreds ? 0 : 2
             let tokenInUse = latest.accessToken
 
             for (
@@ -516,7 +561,10 @@ const plugin: Plugin = async () => {
             // comes back with the same long-context error and the beta loop
             // then handles it off the fresh response — one wasted request,
             // same outcome.
-            if (response.status === 429) {
+            //
+            // Skipped in env-token mode: nothing external can rotate a token
+            // supplied through the environment.
+            if (!envCreds && response.status === 429) {
               let rotated: ClaudeCredentials | null = null
               // Unreachable today for the same reason as the 401 loop's
               // reload catch: reloadCredentialsFromSource swallows its own
@@ -598,7 +646,7 @@ const plugin: Plugin = async () => {
               // Rebuild headers without the excluded beta and retry
               // Falls back to tokenInUse, not latest: after a 401 recovery the
               // latter is the token the API already rejected.
-              const currentCreds = await getCachedCredentials()
+              const currentCreds = envCreds ?? (await getCachedCredentials())
               const retryToken = currentCreds?.accessToken ?? tokenInUse
               const newExcluded = getExcludedBetas(modelId)
               const newHeaders = buildRequestHeaders(
@@ -651,6 +699,7 @@ const plugin: Plugin = async () => {
           label: "Switch Claude Code account",
 
           get prompts() {
+            if (envCreds) return []
             const currentAccounts = refreshAccountsList()
             const currentSource =
               loadPersistedAccountSource() ?? defaultAccountSource
@@ -670,6 +719,24 @@ const plugin: Plugin = async () => {
           },
 
           async authorize(inputs) {
+            if (envCreds) {
+              syncAuthJson(envCreds)
+              return {
+                url: "",
+                instructions: `Using the token from ${ENV_OAUTH_TOKEN_VAR}. Unset it to switch Claude Code accounts.`,
+                method: "auto",
+                async callback() {
+                  return {
+                    type: "success",
+                    provider: "anthropic",
+                    access: envCreds.accessToken,
+                    refresh: envCreds.refreshToken,
+                    expires: envCreds.expiresAt,
+                  }
+                },
+              }
+            }
+
             const latestAccounts = refreshAccountsList()
 
             const source =

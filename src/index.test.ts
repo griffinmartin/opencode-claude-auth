@@ -17,6 +17,9 @@ import { pathToFileURL } from "node:url"
 process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
   join(tmpdir(), "opencode-claude-auth-locktest-"),
 )
+// A developer's own token would silently switch every plugin test into
+// env-token mode; the env-token tests set it explicitly.
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN
 
 interface ClaudeCredentials {
   accessToken: string
@@ -2349,5 +2352,99 @@ describe("refreshIfNeeded — token expiry", () => {
       refreshIfNeeded(makeCreds({ expiresAt: now + 60_001 }), now),
       "fresh",
     )
+  })
+})
+
+describe("CLAUDE_CODE_OAUTH_TOKEN env-token mode", () => {
+  it("getEnvTokenCredentials returns null when unset or blank", async () => {
+    const { helpersModule } = await loadHelpersWithCountingKeychain(
+      Date.now() + 10 * 60_000,
+    )
+    assert.equal(helpersModule.getEnvTokenCredentials({}), null)
+    assert.equal(
+      helpersModule.getEnvTokenCredentials({ CLAUDE_CODE_OAUTH_TOKEN: "  " }),
+      null,
+    )
+  })
+
+  it("getEnvTokenCredentials trims and carries no refresh token", async () => {
+    const { helpersModule } = await loadHelpersWithCountingKeychain(
+      Date.now() + 10 * 60_000,
+    )
+    const creds = helpersModule.getEnvTokenCredentials({
+      CLAUDE_CODE_OAUTH_TOKEN: "  sk-ant-oat01-env  ",
+    })
+    assert.equal(creds?.accessToken, "sk-ant-oat01-env")
+    assert.equal(creds?.refreshToken, "")
+    assert.ok((creds?.expiresAt ?? 0) > Date.now())
+  })
+
+  it("uses the env token, skips the store, the timer, and 401 recovery", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalHome = process.env.HOME
+    const originalFetch = globalThis.fetch
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-home-"))
+    process.env.HOME = tempHome
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-token"
+
+    let timerStarted = false
+    globalThis.setInterval = (() => {
+      timerStarted = true
+      return { unref() {} }
+    }) as unknown as typeof setInterval
+
+    const seenAuth: string[] = []
+
+    try {
+      const { helpersModule, keychainModule } =
+        await loadHelpersWithCountingKeychain(Date.now() + 10 * 60_000)
+      globalThis.fetch = (async (_input: RequestInfo | URL, init) => {
+        seenAuth.push(new Headers(init?.headers).get("authorization") ?? "")
+        return new Response('{"type":"error"}', { status: 401 })
+      }) as typeof fetch
+
+      const plugin = await helpersModule.default({} as never)
+      const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
+      const authConfig = await typedPlugin.auth!.loader!(
+        async () => ({
+          type: "oauth",
+          refresh: "",
+          access: "env-token",
+          expires: Date.now() + 60_000,
+        }),
+        { models: {} },
+      )
+
+      const response = await authConfig.fetch(
+        "https://api.anthropic.com/v1/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-haiku-4-5", messages: [] }),
+        },
+      )
+
+      assert.equal(response.status, 401)
+      assert.deepEqual(seenAuth, ["Bearer env-token"])
+      assert.equal(keychainModule.__getReadCount(), 0)
+      assert.equal(timerStarted, false)
+
+      const authJson = JSON.parse(
+        readFileSync(
+          join(tempHome, ".local", "share", "opencode", "auth.json"),
+          "utf8",
+        ),
+      ) as { anthropic?: { type?: string; access?: string } }
+      assert.equal(authJson.anthropic?.type, "oauth")
+      assert.equal(authJson.anthropic?.access, "env-token")
+    } finally {
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      globalThis.setInterval = originalSetInterval
+      globalThis.fetch = originalFetch
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
   })
 })
