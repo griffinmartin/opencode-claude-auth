@@ -75,6 +75,38 @@ describe("refresh-backoff", () => {
       assert.ok(a >= BASE_COOLDOWN_MS / 2, "first backoff near the base floor")
     })
 
+    it("can outlast the proactive refresh tick under a sustained limit", () => {
+      // The defect this locks out: a ceiling below the 5-minute proactive tick
+      // means the cooldown always lapses before the next one, so a rate-limited
+      // token endpoint gets hit every five minutes by every process for as long
+      // as the limit lasts — and the backoff, however many times it escalates,
+      // never actually suppresses a single attempt.
+      const PROACTIVE_TICK_MS = 5 * 60 * 1000
+      assert.ok(
+        MAX_COOLDOWN_MS > PROACTIVE_TICK_MS,
+        `cooldown ceiling ${MAX_COOLDOWN_MS}ms must exceed the ${PROACTIVE_TICK_MS}ms tick`,
+      )
+
+      // And the schedule must actually reach past it, not merely be allowed to:
+      // worst-case jitter is 50%, so the unjittered value has to clear it twice
+      // over for a sustained failure to reliably skip a tick.
+      const sustained = computeBackoffMs(99, { rng: () => 0 })
+      assert.ok(
+        sustained > PROACTIVE_TICK_MS,
+        `sustained backoff ${sustained}ms should outlast a tick even at minimum jitter`,
+      )
+    })
+
+    it("still retries a one-off blip within seconds", () => {
+      // The counterweight to the raised ceiling: a single transient failure
+      // must not inherit the long backoff meant for a sustained limit.
+      const first = computeBackoffMs(1, { rng: () => 1 })
+      assert.ok(
+        first <= BASE_COOLDOWN_MS,
+        `first backoff ${first}ms should stay near the base, not the ceiling`,
+      )
+    })
+
     it("applies jitter within the [50%, 100%] band of the scheduled delay", () => {
       const low = computeBackoffMs(1, { rng: () => 0 })
       const high = computeBackoffMs(1, { rng: () => 1 })

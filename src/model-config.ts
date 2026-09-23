@@ -1,3 +1,22 @@
+export function getCliVersion(): string {
+  return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
+}
+
+/**
+ * Identifies us to Anthropic. Required on every request, including the OAuth
+ * token endpoint: claude.ai sits behind bot protection that answers a request
+ * with no User-Agent with 429 `rate_limit_error` — a rejection that reads as a
+ * rate limit but is really "unidentified client". Node and Bun both supply a
+ * default when run directly, so this only bites inside a compiled host that
+ * sends none, which is precisely where this plugin runs.
+ */
+export function getUserAgent(): string {
+  return (
+    process.env.ANTHROPIC_USER_AGENT ??
+    `claude-cli/${getCliVersion()} (external, sdk-cli)`
+  )
+}
+
 export interface ModelOverride {
   exclude?: string[]
   add?: string[]

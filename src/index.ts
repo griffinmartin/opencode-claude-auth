@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import crypto from "node:crypto"
-import { config } from "./model-config.ts"
+import { getUserAgent } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
 import { fetchWithRetry } from "./http.ts"
@@ -62,17 +62,6 @@ export {
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from "./signing.ts"
-
-function getCliVersion(): string {
-  return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
-}
-
-function getUserAgent(): string {
-  return (
-    process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, sdk-cli)`
-  )
-}
 
 function getStainlessHeaders(): Record<string, string> {
   return {
@@ -244,13 +233,34 @@ const plugin: Plugin = async () => {
           }
           proactiveRefreshWarned = false
         } else {
-          log("proactive_refresh_failed", { source: account?.source })
+          // A null here is not necessarily a failure. refreshIfNeeded also
+          // returns null when it deliberately steps aside — another instance
+          // holds the cross-process refresh lock, or a recent 429 put the
+          // account in cooldown. Both are routine when several OpenCode
+          // instances run at once, and both leave a perfectly usable token in
+          // hand. Telling the user to re-authenticate then is noise that
+          // trains them to ignore the message that matters.
+          const expiresAt = getActiveAccount()?.credentials?.expiresAt ?? 0
+          const stillUsable = expiresAt > Date.now() + 60_000
+          const failureKind = getActiveRefreshFailureKind()
+          log("proactive_refresh_failed", {
+            source: account?.source,
+            stillUsable,
+            expiresAt,
+            failureKind,
+          })
           // Only warn once per outage — otherwise this fires every
           // SYNC_INTERVAL (5 min) for as long as refresh keeps failing.
-          if (!proactiveRefreshWarned) {
+          if (!stillUsable && !proactiveRefreshWarned) {
             proactiveRefreshWarned = true
+            // Re-authenticating is the fix for a dead refresh token and a
+            // waste of the user's time for a rate limit, where the credentials
+            // are intact and waiting is the whole remedy. Saying the wrong one
+            // sends them to a login prompt they did not need.
             console.warn(
-              "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
+              failureKind === "transient"
+                ? "opencode-claude-auth: Claude's token endpoint is rate-limiting refreshes. Your credentials are still valid; OpenCode will keep retrying with a longer backoff."
+                : "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
             )
           }
         }

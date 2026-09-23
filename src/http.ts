@@ -41,17 +41,39 @@ function sleepUnlessAborted(
   })
 }
 
+export interface RetryOptions {
+  /**
+   * Retry a 429/529 only when the response says how long to wait.
+   *
+   * For the API this is off: a rate limit there clears in seconds and guessing
+   * a backoff is reasonable. For the OAuth token endpoint it must be on. That
+   * endpoint answers rate_limit_error with no `retry-after`, over a window of
+   * minutes, so a guessed two-second retry cannot succeed and only adds to the
+   * pressure holding the limit open — turning one logical refresh into three
+   * POSTs. Backing off on that timescale belongs to the caller's cooldown.
+   */
+  onlyRetryWithHint?: boolean
+}
+
 export async function fetchWithRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
   retries = 3,
   fetchImpl: FetchFn = fetch,
+  opts: RetryOptions = {},
 ): Promise<Response> {
   for (let i = 0; i < retries; i++) {
     const res = await fetchImpl(input, init)
     if ((res.status === 429 || res.status === 529) && i < retries - 1) {
       const retryAfter = res.headers.get("retry-after")
       const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN
+      if (Number.isNaN(parsed) && opts.onlyRetryWithHint) {
+        log("fetch_rate_limited_no_hint", {
+          status: res.status,
+          attempt: i + 1,
+        })
+        return res
+      }
       const delay = Number.isNaN(parsed) ? (i + 1) * 2000 : parsed * 1000
       // If delay exceeds the cap, the server is signalling a quota/usage-limit
       // reset far in the future. Return immediately so the error surfaces to
