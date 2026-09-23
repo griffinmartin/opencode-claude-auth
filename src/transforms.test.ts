@@ -184,7 +184,7 @@ describe("transforms", () => {
     )
   })
 
-  it("transformBody preserves identity without cache_control and relocates remainder", () => {
+  it("transformBody preserves cache_control on identity block and relocates remainder", () => {
     const identity = "You are Claude Code, Anthropic's official CLI for Claude."
     const input = JSON.stringify({
       system: [
@@ -199,19 +199,33 @@ describe("transforms", () => {
 
     const output = transformBody(input)
     const parsed = JSON.parse(output as string) as {
-      system: Array<{ text: string; cache_control?: unknown }>
-      messages: Array<{ content: string }>
+      system: Array<{
+        text: string
+        cache_control?: { type: string; ttl?: string }
+      }>
+      messages: Array<{
+        content:
+          | string
+          | Array<{
+              type: string
+              text: string
+              cache_control?: { type: string; ttl?: string }
+            }>
+      }>
     }
 
-    // Identity block should NOT have cache_control
-    assert.equal(
+    // Identity block should preserve cache_control (#268)
+    assert.deepEqual(
       parsed.system[1].cache_control,
-      undefined,
-      "Identity block must not have cache_control",
+      { type: "ephemeral", ttl: "1h" },
+      "Identity block must preserve cache_control",
     )
-    // Remainder is relocated to user message, not kept in system
+    // Remainder is relocated to user message
     assert.equal(parsed.system.length, 2)
-    assert.ok(parsed.messages[0].content.includes("More content here"))
+    assert.ok(
+      typeof parsed.messages[0].content === "string" &&
+        parsed.messages[0].content.includes("More content here"),
+    )
   })
 
   it("transformBody does not split identity-only system entry", () => {

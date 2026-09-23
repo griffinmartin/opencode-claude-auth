@@ -400,10 +400,7 @@ export function transformBody(
           .replace(/^\n+/, "")
         // Preserve all properties except text (e.g. cache_control)
         const { text: _text, ...entryProps } = entry
-        // Only keep cache_control on the remainder block to avoid exceeding
-        // the API limit of 4 cache_control blocks per request.
-        const { cache_control: _cc, ...identityProps } = entryProps
-        splitSystem.push({ ...identityProps, text: SYSTEM_IDENTITY })
+        splitSystem.push({ ...entryProps, text: SYSTEM_IDENTITY })
         if (rest.length > 0) {
           splitSystem.push({ ...entryProps, text: rest })
         }
