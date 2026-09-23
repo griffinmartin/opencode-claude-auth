@@ -53,6 +53,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc && cp src/anthropic-prompt.txt dist/",
     "test": "node --test --experimental-strip-types src/**/*.test.ts scripts/**/*.test.ts",
+    "test:isolated": "sh scripts/test-isolated.sh",
     "test:models": "pnpm run build && node scripts/test-models.ts",
     "test:headless": "pnpm run build && node --experimental-strip-types scripts/test-headless.ts",
     "intercept": "pnpm run build && node --experimental-strip-types scripts/intercept-claude.ts",
@@ -62,7 +63,7 @@
     "lint": "oxlint && oxfmt --check .",
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
-    "prepublishOnly": "pnpm run build && pnpm test"
+    "prepublishOnly": "pnpm run build && pnpm run test:isolated"
   },
   "dependencies": {
     "@opencode/plugin": "latest"
