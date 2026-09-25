@@ -2946,6 +2946,67 @@ describe("getCredentialsWithBackoff (transient rate-limit resilience)", () => {
     }
   })
 
+  it("still recovers after the cooldown has escalated past the request wait budget", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+
+    // The endpoint rate-limits us, sending a long retry-after that the plugin
+    // clamps to its own cooldown ceiling. The limit clears before that
+    // cooldown expires, so a request able to outlast its own penalty recovers.
+    let clock = now
+    globalThis.fetch = (async () => {
+      if (clock < now + 30_000) {
+        return new Response(JSON.stringify({ error: "rate_limit_error" }), {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          access_token: "fresh-token",
+          refresh_token: "fresh-refresh",
+          expires_in: 28_800,
+        }),
+        { status: 200 },
+      )
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now - 1_000)
+      const target = makeAccount(now - 1_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentials({
+        accessToken: "stale-token",
+        refreshToken: "stale-refresh",
+        expiresAt: now - 1_000,
+      })
+
+      // Track the time a real request would spend waiting out the cooldown.
+      const advance = async (ms: number) => {
+        clock += ms
+        Date.now = () => clock
+      }
+
+      const creds = await credentialsModule.getCredentialsWithBackoff({
+        now: () => clock,
+        sleep: advance,
+      })
+
+      assert.ok(
+        creds,
+        "a request must recover once the cooldown fits inside its wait budget",
+      )
+      assert.equal(creds!.accessToken, "fresh-token")
+      assert.equal(creds!.refreshToken, "fresh-refresh")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
   it("adopts a token a sibling instance/CLI writes to the store during the cooldown", async () => {
     const originalFetch = globalThis.fetch
     const originalNow = Date.now

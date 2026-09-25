@@ -12,6 +12,7 @@ import {
   resetRefreshBackoffState,
   BASE_COOLDOWN_MS,
   MAX_COOLDOWN_MS,
+  REQUEST_WAIT_BUDGET_MS,
 } from "./refresh-backoff.ts"
 
 const SRC = "Claude Code-credentials"
@@ -73,6 +74,30 @@ describe("refresh-backoff", () => {
       assert.ok(b > a, "second failure backs off longer")
       assert.ok(c <= MAX_COOLDOWN_MS, "backoff is capped")
       assert.ok(a >= BASE_COOLDOWN_MS / 2, "first backoff near the base floor")
+    })
+
+    it("keeps every cooldown inside the request wait budget", () => {
+      // A cooldown the request path cannot outlast is a permanent wedge: each
+      // request gives up while the penalty still runs, and the consecutive-failure
+      // count only resets on a success that can no longer happen.
+      assert.ok(
+        MAX_COOLDOWN_MS < REQUEST_WAIT_BUDGET_MS,
+        "the cooldown ceiling must leave room in the request wait budget",
+      )
+      for (let consecutive = 1; consecutive <= 10; consecutive++) {
+        for (const r of [0, 0.25, 0.5, 0.75, 1]) {
+          assert.ok(
+            computeBackoffMs(consecutive, { rng: () => r }) <
+              REQUEST_WAIT_BUDGET_MS,
+            `consecutive=${consecutive} rng=${r} exceeds the wait budget`,
+          )
+        }
+      }
+      // A server hint far beyond the window must clamp into the budget too.
+      assert.ok(
+        computeBackoffMs(1, { retryAfterMs: 3_600_000, rng: () => 0 }) <
+          REQUEST_WAIT_BUDGET_MS,
+      )
     })
 
     it("applies jitter within the [50%, 100%] band of the scheduled delay", () => {
