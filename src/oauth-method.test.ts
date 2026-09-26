@@ -47,6 +47,7 @@ function makeDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps & {
       calls.saveAccountSource.push(source)
     },
     reloadCredentialsFromSource: () => null,
+    readStoredCredentials: () => null,
     refreshViaOAuth: async () => null,
     writeBackCredentials: (source, creds, configDir, expected) => {
       calls.writeBackCredentials.push([source, creds, configDir, expected])
@@ -362,6 +363,62 @@ describe("refreshOAuthCredential", () => {
       "refresh_resynced_from_keychain",
       { source: "acct" },
     ])
+  })
+
+  it("uses the stored refresh token even when the stored access token has expired", async () => {
+    let tokenUsed: string | undefined
+    const deps = makeDeps({
+      reloadCredentialsFromSource: () => null,
+      readStoredCredentials: (source, configDir) => {
+        assert.equal(source, "acct")
+        assert.equal(configDir, "/tmp/claude")
+        return {
+          accessToken: "expired-stored-access",
+          refreshToken: "rotated-stored-refresh",
+          expiresAt: 0,
+        }
+      },
+      refreshViaOAuth: async (token) => {
+        tokenUsed = token
+        return {
+          accessToken: "refreshed-access",
+          refreshToken: "refreshed-refresh",
+          expiresAt: 333,
+        }
+      },
+    })
+
+    const result = await refreshOAuthCredential(value, deps)
+
+    assert.equal(tokenUsed, "rotated-stored-refresh")
+    assert.equal(result.refresh, "refreshed-refresh")
+    assert.equal(
+      deps.calls.writeBackCredentials[0]?.[3],
+      "expired-stored-access",
+    )
+  })
+
+  it("falls back to OpenCode's refresh token when the store read throws", async () => {
+    let tokenUsed: string | undefined
+    const deps = makeDeps({
+      reloadCredentialsFromSource: () => null,
+      readStoredCredentials: () => {
+        throw new Error("keychain locked")
+      },
+      refreshViaOAuth: async (token) => {
+        tokenUsed = token
+        return {
+          accessToken: "refreshed-access",
+          refreshToken: "refreshed-refresh",
+          expiresAt: 333,
+        }
+      },
+    })
+
+    await refreshOAuthCredential(value, deps)
+
+    assert.equal(tokenUsed, "old-refresh")
+    assert.equal(deps.calls.writeBackCredentials[0]?.[3], "old-access")
   })
 
   it("preserves the Claude Code OAuth marker across refresh", async () => {
