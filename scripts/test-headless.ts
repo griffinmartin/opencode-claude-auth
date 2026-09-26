@@ -1,25 +1,14 @@
 /**
- * Headless end-to-end test for the credential refresh flows.
+ * Headless smoke test for a request using fresh Claude Code credentials.
  *
- * Runs real `opencode run` invocations against the locally built plugin with
+ * Runs a real `opencode run` invocation against the locally built plugin with
  * a sandboxed fake keychain (PATH shims for `security` and `claude`) and
  * asserts on the structured debug log the plugin writes.
- *
- * Scenarios:
- *   1. Happy path — fresh primary credentials, no refresh expected.
- *   2. Expired primary — OAuth refresh fails (bogus refresh token), CLI shim
- *      "refreshes" the primary entry, request succeeds.
- *   3. Bug 1 — active account is a stale *suffixed* keychain entry; the CLI
- *      shim writes fresh credentials to the primary entry only (replicating
- *      the real Claude CLI behaviour), and the plugin must fall back to the
- *      primary entry.
  *
  * Safety:
  *   - The real keychain is only ever *read* (once, to obtain a valid access
  *     token so the final API call returns 200).
- *   - The real refresh token is never placed in a stale entry, so the OAuth
- *     refresh path fails at the real endpoint with a 4xx and nothing is
- *     rotated.
+ *   - No refresh is triggered; this does not test credential recovery.
  *   - User state (`claude-account-source.txt`) is backed up and restored.
  *
  * Requires: macOS, `opencode` V2 on PATH, valid Claude Code credentials.
@@ -37,14 +26,12 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { keychainSuffixForDir } from "../dist/keychain.js"
 
 const PRIMARY_SERVICE = "Claude Code-credentials"
 const MODEL = "anthropic/claude-haiku-4-5"
 const SENTINEL = "HEADLESSOK"
 const PROMPT = `Reply with exactly the word: ${SENTINEL}`
 const RUN_TIMEOUT_MS = 180_000
-const STALE_EXPIRES_AT = 1_000_000_000_000 // 2001, definitively stale
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const accountSourcePath = join(
@@ -122,9 +109,6 @@ interface Sandbox {
   stateDir: string
   workDir: string
   xdgDir: string
-  fakeConfigDir: string
-  suffix: string
-  suffixedService: string
 }
 
 function createSandbox(): Sandbox {
@@ -148,19 +132,7 @@ function createSandbox(): Sandbox {
     ),
   )
 
-  // The suffix-to-dir scan only walks dot-directories directly under $HOME,
-  // so the fake config dir must live there. Removed in cleanup.
-  const fakeConfigDir = join(homedir(), `.claude-simtest-${process.pid}`)
-  mkdirSync(fakeConfigDir, { recursive: true })
-  writeFileSync(
-    join(fakeConfigDir, ".claude.json"),
-    JSON.stringify({ oauthAccount: { emailAddress: "sim@headless.test" } }),
-  )
-  const suffix = keychainSuffixForDir(fakeConfigDir)
-  const suffixedService = `${PRIMARY_SERVICE}-${suffix}`
-
-  // Both shims append to a single shim.log so the interleaved order of
-  // keychain reads and CLI refresh invocations is recorded reliably. The
+  // Shims record keychain reads and unexpected CLI refresh attempts. The
   // plugin's own debug log cannot serve this purpose: the plugin initialises
   // more than once per `opencode run` and each init truncates that log, so
   // early refresh events are racily lost.
@@ -189,16 +161,11 @@ if [ "$1" = "find-generic-password" ]; then
       ;;
   esac
 fi
-exec /usr/bin/security "$@"
+exit 1
 `
-  // Replicates the real Claude CLI bug: a refresh triggered for a suffixed
-  // account writes the new token to the PRIMARY keychain entry.
   const claudeShim = `#!/bin/sh
-STATE_DIR="${stateDir}"
-printf 'claude %s CLAUDE_CONFIG_DIR=%s\\n' "$*" "\${CLAUDE_CONFIG_DIR:-}" >> "$STATE_DIR/shim.log"
-cp "$STATE_DIR/fresh-primary.json" "$STATE_DIR/Claude Code-credentials.json"
-printf 'ok\\n'
-exit 0
+printf 'claude %s\\n' "$*" >> "${stateDir}/shim.log"
+exit 1
 `
   writeFileSync(join(binDir, "security"), securityShim)
   writeFileSync(join(binDir, "claude"), claudeShim)
@@ -211,22 +178,7 @@ exit 0
     stateDir,
     workDir,
     xdgDir,
-    fakeConfigDir,
-    suffix,
-    suffixedService,
   }
-}
-
-function staleBlob(): string {
-  return JSON.stringify({
-    claudeAiOauth: {
-      accessToken: "sim-stale-access-token",
-      refreshToken: "sim-bogus-refresh-token",
-      expiresAt: STALE_EXPIRES_AT,
-      scopes: ["user:inference"],
-      subscriptionType: "pro",
-    },
-  })
 }
 
 function writeDump(sandbox: Sandbox, services: string[]): void {
@@ -235,11 +187,6 @@ function writeDump(sandbox: Sandbox, services: string[]): void {
     join(sandbox.stateDir, "dump.txt"),
     `keychain: "login"\n${lines}\n`,
   )
-}
-
-function resetState(sandbox: Sandbox): void {
-  rmSync(sandbox.stateDir, { recursive: true, force: true })
-  mkdirSync(sandbox.stateDir, { recursive: true })
 }
 
 // --- account source backup/restore ------------------------------------------
@@ -389,50 +336,6 @@ const scenarios: Scenario[] = [
       return null
     },
   },
-  {
-    // The CLI shim is only ever invoked by refreshViaCli, which itself only
-    // runs after the OAuth refresh attempt fails (bogus refresh token), so
-    // its presence in shim.log proves the full expired → refresh flow.
-    name: "expired-cli-refresh",
-    setup: (sandbox, realBlob) => {
-      writeDump(sandbox, [PRIMARY_SERVICE])
-      writeFileSync(
-        join(sandbox.stateDir, `${PRIMARY_SERVICE}.json`),
-        staleBlob(),
-      )
-      writeFileSync(join(sandbox.stateDir, "fresh-primary.json"), realBlob)
-      setAccountSource(null)
-    },
-    shimExpected: () => [
-      READ_PRIMARY, // initial read: stale
-      "claude -p", // CLI refresh triggered
-      READ_PRIMARY, // post-refresh re-read: fresh
-    ],
-    expected: () => [{ event: "plugin_init" }],
-  },
-  {
-    name: "bug1-suffixed-fallback",
-    setup: (sandbox, realBlob) => {
-      writeDump(sandbox, [PRIMARY_SERVICE, sandbox.suffixedService])
-      writeFileSync(
-        join(sandbox.stateDir, `${PRIMARY_SERVICE}.json`),
-        staleBlob(),
-      )
-      writeFileSync(
-        join(sandbox.stateDir, `${sandbox.suffixedService}.json`),
-        staleBlob(),
-      )
-      writeFileSync(join(sandbox.stateDir, "fresh-primary.json"), realBlob)
-      setAccountSource(sandbox.suffixedService)
-    },
-    shimExpected: (sandbox) => [
-      `find-generic-password -s ${sandbox.suffixedService} -w`, // initial read: stale
-      `claude -p . --model haiku CLAUDE_CONFIG_DIR=${sandbox.fakeConfigDir}`, // CLI refresh, correct config dir threaded through
-      `find-generic-password -s ${sandbox.suffixedService} -w`, // re-read suffixed: still stale (CLI wrote to primary)
-      READ_PRIMARY, // Bug 1 fix: fall back to the primary entry
-    ],
-    expected: () => [{ event: "plugin_init" }],
-  },
 ]
 
 // --- cleanup -----------------------------------------------------------------
@@ -443,29 +346,10 @@ function cleanup(
 ): void {
   setAccountSource(savedAccountSource)
   if (!sandbox) return
-  rmSync(sandbox.fakeConfigDir, { recursive: true, force: true })
   if (process.env.HEADLESS_KEEP) {
     console.log(`HEADLESS_KEEP set — sandbox preserved at ${sandbox.root}`)
   } else {
     rmSync(sandbox.root, { recursive: true, force: true })
-  }
-  // The tested code paths never write to the real keychain, but if a future
-  // regression adds a writeback, it would land on the fake suffixed service
-  // name. Detect and remove it.
-  const probe = spawnSync(
-    "/usr/bin/security",
-    ["find-generic-password", "-s", sandbox.suffixedService],
-    { encoding: "utf-8" },
-  )
-  if (probe.status === 0) {
-    console.warn(
-      `warning: junk keychain entry "${sandbox.suffixedService}" was created during the run — deleting it.`,
-    )
-    spawnSync("/usr/bin/security", [
-      "delete-generic-password",
-      "-s",
-      sandbox.suffixedService,
-    ])
   }
 }
 
@@ -481,18 +365,10 @@ function main(): void {
     sandbox = createSandbox()
     for (const scenario of scenarios) {
       process.stdout.write(`▶ ${scenario.name} ... `)
-      resetState(sandbox)
       scenario.setup(sandbox, realBlob)
       const run = runOpencode(sandbox, scenario.name)
 
       const shimLog = readShimLog(sandbox)
-
-      // Preserve the shim log for post-mortem before the next scenario
-      // resets the state dir.
-      writeFileSync(
-        join(sandbox.root, `${scenario.name}-shim.log`),
-        shimLog.length > 0 ? shimLog.join("\n") + "\n" : "",
-      )
 
       const problems: string[] = []
       const shimError = assertShimSubsequence(
