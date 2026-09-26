@@ -15,22 +15,23 @@
     "url": "git+https://github.com/griffinmartin/opencode-claude-auth.git"
   },
   "files": [
+    "index.js",
     "opencode-claude-auth.js",
     "dist",
     "installation.md"
   ],
   "type": "module",
-  "main": "opencode-claude-auth.js",
-  "module": "opencode-claude-auth.js",
+  "main": "index.js",
+  "module": "index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./index.js"
     },
     "./server": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./index.js"
     },
     "./claude-auth-plugin": {
       "types": "./dist/index.d.ts",
@@ -52,6 +53,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc && cp src/anthropic-prompt.txt dist/",
     "test": "node --test --experimental-strip-types src/**/*.test.ts scripts/**/*.test.ts",
+    "test:isolated": "sh scripts/test-isolated.sh",
     "test:models": "pnpm run build && node scripts/test-models.ts",
     "test:headless": "pnpm run build && node --experimental-strip-types scripts/test-headless.ts",
     "intercept": "pnpm run build && node --experimental-strip-types scripts/intercept-claude.ts",
@@ -61,17 +63,17 @@
     "lint": "oxlint && oxfmt --check .",
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
-    "prepublishOnly": "pnpm run build && pnpm test"
+    "prepublishOnly": "pnpm run build && pnpm run test:isolated"
+  },
+  "dependencies": {
+    "@opencode/plugin": "latest"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "latest",
+    "@opencode/client": "latest",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
     "typescript": "^5.0.0"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*"
   },
   "packageManager": "pnpm@10.32.1"
 }

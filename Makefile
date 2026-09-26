@@ -4,7 +4,7 @@ build:
 	pnpm run build
 
 test:
-	pnpm test
+	pnpm run test:isolated
 
 test-models:
 	pnpm run test:models

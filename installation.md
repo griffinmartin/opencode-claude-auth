@@ -1,10 +1,10 @@
 # Install opencode-claude-auth
 
-These instructions are designed for AI coding agents.
+These instructions are designed for AI coding agents. This version requires **OpenCode 2** — it will not load on OpenCode 1.
 
 ## Prerequisites
 
-Before installing, verify you have OpenCode and Claude Code installed and authenticated.
+Before installing, verify you have OpenCode 2 and Claude Code installed and authenticated.
 
 ### Check OpenCode version
 
@@ -12,7 +12,7 @@ Before installing, verify you have OpenCode and Claude Code installed and authen
 opencode --version
 ```
 
-You should see a version number (e.g., `1.2.28`).
+You need an OpenCode 2 build. See the [OpenCode 2 migration guide](https://opencode.ai/v2/docs/migrate-v1) if you're still on an OpenCode 1 build (`1.x`).
 
 ### Check Claude Code credentials (macOS)
 
@@ -46,13 +46,15 @@ This will prompt you to log in and store credentials in Keychain (macOS) or `~/.
 
 Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`.
 
-Add `opencode-claude-auth@latest` to the `plugin` array:
+Add `opencode-claude-auth@latest` to the `plugins` array:
 
 ```json
 {
-  "plugin": ["opencode-claude-auth@latest"]
+  "plugins": ["opencode-claude-auth@latest"]
 }
 ```
+
+> OpenCode 2 uses the `plugins` key (plural). OpenCode 1 used `plugin` (singular) — using the wrong key for your OpenCode version means the plugin silently never loads.
 
 Or run this command to do it automatically:
 
@@ -60,7 +62,7 @@ Or run this command to do it automatically:
 node -e "
 const fs = require('fs'), p = require('path').join(require('os').homedir(), '.config/opencode/opencode.json');
 const c = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p,'utf8')) : {};
-c.plugin = [...new Set([...(Array.isArray(c.plugin) ? c.plugin : []), 'opencode-claude-auth@latest'])];
+c.plugins = [...new Set([...(Array.isArray(c.plugins) ? c.plugins : []), 'opencode-claude-auth@latest'])];
 fs.mkdirSync(require('path').dirname(p), {recursive:true});
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 console.log('Added opencode-claude-auth@latest to', p);
@@ -69,7 +71,13 @@ console.log('Added opencode-claude-auth@latest to', p);
 
 The `@latest` tag ensures OpenCode always pulls the newest version on startup. No manual `npm install` is needed — OpenCode [automatically installs npm plugins using Bun at startup](https://opencode.ai/docs/plugins/#how-plugins-are-installed).
 
-### Step 2: Verification
+### Step 2: Connect it
+
+Restart OpenCode, then in the TUI run `/connect`, choose **Anthropic**, and select **Import Claude Code subscription**. Existing Claude Code credentials in the Keychain, `~/.claude/.credentials.json`, or `$CLAUDE_CONFIG_DIR/.credentials.json` are imported without another browser login.
+
+Use `/models` and pick a model under **Anthropic**.
+
+### Step 3: Verification
 
 Verify the plugin was added:
 
@@ -77,11 +85,15 @@ Verify the plugin was added:
 cat ~/.config/opencode/opencode.json
 ```
 
-You should see `opencode-claude-auth@latest` in the `plugin` array.
+You should see `opencode-claude-auth@latest` in the `plugins` array. You can also confirm the plugin loaded with:
+
+```bash
+opencode plugin list
+```
+
+The list should contain `griffinmartin.claude-auth`.
 
 ## Upgrading
-
-If you previously installed `opencode-claude-auth` without the `@latest` tag, update your config to use `opencode-claude-auth@latest` as shown above.
 
 If the plugin isn't picking up a new version, clear the cached package and restart OpenCode:
 
@@ -89,9 +101,15 @@ If the plugin isn't picking up a new version, clear the cached package and resta
 rm -rf ~/.cache/opencode/packages/opencode-claude-auth@latest/
 ```
 
+## Migrating from OpenCode 1
+
+If you were previously running this plugin under OpenCode 1, this version drops OpenCode 1 support entirely — it targets OpenCode 2's plugin and auth APIs, which are not compatible with OpenCode 1. If you still need OpenCode 1, pin `opencode-claude-auth` to a version prior to this change instead of tracking `@latest`.
+
+The old OpenCode 1 connection isn't reused. Run `claude` if Claude Code isn't already signed in, restart OpenCode 2, then follow [Step 2](#step-2-connect-it) above to reconnect.
+
 ## Done
 
-The plugin is now installed and configured. When you run OpenCode, it will automatically use your Claude Code credentials — no separate login needed.
+The plugin is now installed and connected. When you run OpenCode, it will automatically use your Claude Code subscription credentials — no separate login needed.
 
 ## Troubleshooting
 

@@ -30,6 +30,18 @@ function captureLog(fn: () => void): string[] {
   return lines
 }
 
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((block) =>
+      block && typeof block === "object" && "text" in block
+        ? String(block.text)
+        : "",
+    )
+    .join("\n")
+}
+
 describe("transforms", () => {
   it("transformBody moves non-core system text to user message and PascalCase-prefixes tool names", () => {
     const input = JSON.stringify({
@@ -78,13 +90,13 @@ describe("transforms", () => {
     assert.equal(typeof output, "string")
     const parsed = JSON.parse(output as string) as {
       system: Array<{ text: string }>
-      messages: Array<{ content: string }>
+      messages: Array<{ content: unknown }>
     }
 
     // Non-core system text should be moved to user message
     assert.equal(parsed.system.length, 1) // only billing header
     assert.ok(
-      parsed.messages[0].content.includes(
+      contentText(parsed.messages[0].content).includes(
         "Use opencode-claude-auth plugin instructions as-is.",
       ),
     )
@@ -105,13 +117,13 @@ describe("transforms", () => {
     assert.equal(typeof output, "string")
     const parsed = JSON.parse(output as string) as {
       system: Array<{ text: string }>
-      messages: Array<{ content: string }>
+      messages: Array<{ content: unknown }>
     }
 
     // Non-core system text should be relocated
     assert.equal(parsed.system.length, 1) // only billing header
     assert.ok(
-      parsed.messages[0].content.includes(
+      contentText(parsed.messages[0].content).includes(
         "OpenCode docs: https://example.com/opencode/docs and path /var/opencode/bin",
       ),
     )
@@ -171,7 +183,7 @@ describe("transforms", () => {
     const output = transformBody(input)
     const parsed = JSON.parse(output as string) as {
       system: Array<{ type: string; text: string }>
-      messages: Array<{ content: string }>
+      messages: Array<{ content: unknown }>
     }
 
     // system[0] = billing header, system[1] = identity prefix
@@ -180,18 +192,21 @@ describe("transforms", () => {
     // remainder is relocated to user message
     assert.equal(parsed.system.length, 2)
     assert.ok(
-      parsed.messages[0].content.includes("Working directory: /home/test"),
+      contentText(parsed.messages[0].content).includes(
+        "Working directory: /home/test",
+      ),
     )
   })
 
-  it("transformBody preserves identity without cache_control and relocates remainder", () => {
+  it("transformBody preserves a relocated system marker and its TTL", () => {
     const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const oneHour = { type: "ephemeral", ttl: "1h" }
     const input = JSON.stringify({
       system: [
         {
           type: "text",
           text: `${identity}\nMore content here`,
-          cache_control: { type: "ephemeral", ttl: "1h" },
+          cache_control: oneHour,
         },
       ],
       messages: [{ role: "user", content: "test" }],
@@ -199,8 +214,11 @@ describe("transforms", () => {
 
     const output = transformBody(input)
     const parsed = JSON.parse(output as string) as {
+      cache_control?: unknown
       system: Array<{ text: string; cache_control?: unknown }>
-      messages: Array<{ content: string }>
+      messages: Array<{
+        content: Array<{ text?: string; cache_control?: unknown }>
+      }>
     }
 
     // Identity block should NOT have cache_control
@@ -211,7 +229,118 @@ describe("transforms", () => {
     )
     // Remainder is relocated to user message, not kept in system
     assert.equal(parsed.system.length, 2)
-    assert.ok(parsed.messages[0].content.includes("More content here"))
+    assert.ok(
+      contentText(parsed.messages[0].content).includes("More content here"),
+    )
+    // The caller's explicit marker (and TTL) survives relocation; no
+    // automatic policy is added on top of it.
+    assert.deepEqual(parsed.messages[0].content[0].cache_control, oneHour)
+    assert.equal(parsed.cache_control, undefined)
+    assert.equal((output as string).match(/cache_control/g)?.length, 1)
+  })
+
+  it("transformBody adds bounded default cache boundaries after OAuth rewrites", () => {
+    const input = JSON.stringify({
+      system: [{ type: "text", text: "Stable OpenCode system prompt" }],
+      tools: [{ name: "read" }, { name: "search" }],
+      messages: [{ role: "user", content: "latest" }],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      cache_control?: unknown
+      tools: Array<{ cache_control?: unknown }>
+      messages: Array<{
+        content: Array<{ text?: string; cache_control?: unknown }>
+      }>
+    }
+
+    assert.deepEqual(parsed.cache_control, { type: "ephemeral" })
+    assert.deepEqual(parsed.tools[1].cache_control, { type: "ephemeral" })
+    assert.deepEqual(parsed.messages[0].content[0].cache_control, {
+      type: "ephemeral",
+    })
+    assert.equal(parsed.messages[0].content[1].cache_control, undefined)
+    assert.equal((output as string).match(/cache_control/g)?.length, 3)
+  })
+
+  it("transformBody marks the reusable history boundary before a warming suffix", () => {
+    const input = JSON.stringify({
+      system: [{ type: "text", text: "Stable OpenCode system prompt" }],
+      tools: [{ name: "read" }, { name: "search" }],
+      messages: [
+        { role: "user", content: "initial prompt" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private", signature: "sig" },
+            { type: "text", text: "stable reply" },
+          ],
+        },
+        { role: "user", content: "transient keep-alive" },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      cache_control?: unknown
+      tools: Array<{ cache_control?: unknown }>
+      messages: Array<{
+        content:
+          | string
+          | Array<{
+              type?: string
+              cache_control?: unknown
+            }>
+      }>
+    }
+    const assistant = parsed.messages[1].content
+
+    assert.ok(Array.isArray(assistant))
+    assert.equal(assistant[0].cache_control, undefined)
+    assert.deepEqual(assistant[1].cache_control, { type: "ephemeral" })
+    assert.equal(parsed.messages[2].content, "transient keep-alive")
+    assert.deepEqual(parsed.tools[1].cache_control, { type: "ephemeral" })
+    assert.deepEqual(parsed.cache_control, { type: "ephemeral" })
+    assert.equal((output as string).match(/cache_control/g)?.length, 4)
+  })
+
+  it("transformBody preserves explicit cache markers without adding automatic caching", () => {
+    const oneHour = { type: "ephemeral", ttl: "1h" }
+    const input = JSON.stringify({
+      tools: [{ name: "read", cache_control: oneHour }],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "latest" }],
+        },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      cache_control?: unknown
+      tools: Array<{ cache_control?: unknown }>
+    }
+
+    assert.deepEqual(parsed.tools[0].cache_control, oneHour)
+    assert.equal(parsed.cache_control, undefined)
+    assert.equal((output as string).match(/cache_control/g)?.length, 1)
+  })
+
+  it("transformBody treats a null cache policy as absent", () => {
+    const output = transformBody(
+      JSON.stringify({
+        cache_control: null,
+        system: [{ type: "text", text: "Stable OpenCode system prompt" }],
+        messages: [{ role: "user", content: "latest" }],
+      }),
+    )
+    const parsed = JSON.parse(output as string) as {
+      cache_control?: unknown
+    }
+
+    assert.deepEqual(parsed.cache_control, { type: "ephemeral" })
   })
 
   it("transformBody does not split identity-only system entry", () => {
@@ -246,7 +375,7 @@ describe("transforms", () => {
     const output = transformBody(input)
     const parsed = JSON.parse(output as string) as {
       system: Array<{ text: string }>
-      messages: Array<{ content: string }>
+      messages: Array<{ content: unknown }>
     }
 
     const billingEntries = parsed.system.filter((e) =>
@@ -262,7 +391,7 @@ describe("transforms", () => {
       `Expected computed cch, got: ${billingEntries[0].text}`,
     )
     // "prompt" should be relocated to user message
-    assert.ok(parsed.messages[0].content.includes("prompt"))
+    assert.ok(contentText(parsed.messages[0].content).includes("prompt"))
   })
 
   it("transformBody relocates multiple non-core system entries to user message as content blocks", () => {
@@ -301,12 +430,12 @@ describe("transforms", () => {
       ),
     )
     assert.ok(
-      parsed.messages[0].content[0].text.includes(
+      parsed.messages[0].content[1].text.includes(
         "Custom instructions block B",
       ),
     )
     // Original user content preserved
-    assert.equal(parsed.messages[0].content[1].text, "hello")
+    assert.equal(parsed.messages[0].content[2].text, "hello")
   })
 
   it("transformBody keeps system intact when no messages exist", () => {
@@ -929,7 +1058,7 @@ describe("transforms", () => {
     assert.equal(parsed.messages.length, 1)
     assert.equal(parsed.messages[0].role, "user")
     assert.ok(
-      (parsed.messages[0].content as string).includes("hello"),
+      contentText(parsed.messages[0].content).includes("hello"),
       "User message content should be preserved",
     )
   })
