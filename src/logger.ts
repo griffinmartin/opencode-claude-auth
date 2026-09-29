@@ -63,15 +63,33 @@ export function closeLogger(): void {
   logStream = null
 }
 
+const REDACTED_KEYS = new Set([
+  "refreshToken",
+  "x-api-key",
+  "accessToken",
+  // Pasted long-lived tokens (src/token-store.ts) travel under these names.
+  "token",
+  "tokens",
+  "authorization",
+])
+
+// Claude Code OAuth tokens (`sk-ant-oat…`) and API keys (`sk-ant-api…`) are not
+// JWT-shaped, so the pattern above cannot catch them. They must be matched by
+// value too: a pasted token logged under an unanticipated key would otherwise
+// land in a file users are explicitly told is safe to attach to an issue.
+const ANTHROPIC_SECRET_PATTERN = /^sk-ant-[A-Za-z0-9_-]+/
+
 function redactValue(key: string, value: unknown): unknown {
   if (typeof value !== "string") return value
 
-  if (key === "refreshToken" || key === "x-api-key") {
+  if (REDACTED_KEYS.has(key)) {
     return "REDACTED"
   }
 
-  if (key === "accessToken") {
-    return "REDACTED"
+  if (ANTHROPIC_SECRET_PATTERN.test(value)) {
+    // Keep the tail: it is what the account picker shows, so a log line stays
+    // matchable to an account without carrying a usable secret.
+    return `sk-ant-...REDACTED...${value.slice(-6)}`
   }
 
   if (JWT_PATTERN.test(value)) {

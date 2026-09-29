@@ -6,3 +6,5 @@ dist/
 .sisyphus/
 .opencode/
 docs/
+core
+core.*

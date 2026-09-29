@@ -3,7 +3,13 @@ import crypto from "node:crypto"
 import { config } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
-import { fetchWithRetry } from "./http.ts"
+import {
+  fetchClaudeMessages as fetchWithRetry,
+  isSyntheticDeadlineAbort,
+  sleepUntilStateChange,
+  stateRevision,
+  throwIfAborted,
+} from "./http.ts"
 import {
   addExcludedBeta,
   getExcludedBetas,
@@ -31,8 +37,35 @@ import {
   saveAccountSource,
   refreshAccountsList,
   refreshIfNeeded,
+  retryAfterCooldownWait,
+  noteAccountSucceeded,
+  chooseInitialAccount,
   type ClaudeCredentials,
 } from "./credentials.ts"
+import {
+  activeCooldowns,
+  clearWaitAttempt,
+  createWaitAttemptId,
+  formatRemaining,
+  getCooldownUntil,
+  getRotationConfig,
+  getRotationWaitConfig,
+  publishWaitAttempt,
+  readRotationState,
+  getRotationStatePath,
+  cooldownFromResponse,
+  markRateLimited,
+} from "./rotation.ts"
+import {
+  addTokens,
+  isTokenSource,
+  listTokenEntries,
+  parsePastedTokens,
+  removeToken,
+  tokenFingerprint,
+  validateTokenInput,
+  getTokenStorePath,
+} from "./token-store.ts"
 
 export {
   addExcludedBeta,
@@ -168,11 +201,338 @@ export function buildRequestHeaders(
   return headers
 }
 
+/**
+ * Tell the user an account switched, without touching stdout.
+ *
+ * `console.warn` is not available for this: it draws over the OpenCode TUI,
+ * which is why API errors were moved off it in 2.0.1 and why a test asserts a
+ * quota 429 prints nothing. A toast is the supported channel, and it is
+ * strictly best-effort — a failed notification must never fail the request
+ * that triggered it, and `client` is absent in unit tests and headless runs.
+ */
+type ToastClient = {
+  tui?: {
+    showToast?: (options: {
+      body: {
+        title?: string
+        message: string
+        variant: "info" | "success" | "warning" | "error"
+        duration?: number
+      }
+    }) => unknown
+  }
+}
+
+function notify(
+  client: ToastClient | undefined,
+  message: string,
+  variant: "info" | "success" | "warning" | "error",
+  title = "Claude auth",
+): void {
+  log("notify", { message, variant })
+  try {
+    const result = client?.tui?.showToast?.({
+      body: { title, message, variant, duration: 6000 },
+    })
+    void Promise.resolve(result).catch(() => {})
+  } catch {
+    // Never let notification failure surface as a request failure.
+  }
+}
+
+/**
+ * Clock, sleeper, and entropy source for the quota-wait loop, behind a seam
+ * so tests can travel time instead of napping. Production always runs on the
+ * wall clock and the abort-aware sleep from http.ts.
+ */
+type RotationWaitDeps = {
+  now: () => number
+  sleep: (
+    ms: number,
+    signal?: AbortSignal | null,
+    revision?: string,
+  ) => Promise<void>
+  rng: () => number
+}
+
+const availabilityPaths = () => [getRotationStatePath(), getTokenStorePath()]
+const availabilitySleep: RotationWaitDeps["sleep"] = (ms, signal, revision) =>
+  sleepUntilStateChange(
+    Math.min(ms, 60_000),
+    signal,
+    availabilityPaths(),
+    revision,
+  )
+
+let rotationWaitDeps: RotationWaitDeps = {
+  now: () => Date.now(),
+  sleep: availabilitySleep,
+  rng: () => Math.random(),
+}
+
+/** Test seam: replace the wait loop's relationship with time. Pass null to reset. */
+export function __setRotationWaitDepsForTests(
+  deps: Partial<RotationWaitDeps> | null,
+): void {
+  rotationWaitDeps = {
+    now: deps?.now ?? (() => Date.now()),
+    sleep: deps?.sleep ?? availabilitySleep,
+    rng: deps?.rng ?? (() => Math.random()),
+  }
+}
+
+type AvailabilityContext = {
+  cycles: number
+  elapsedMs: number
+  invalid: Set<string>
+  signal?: AbortSignal | null
+  lastEarliestUntil?: number
+  lastEarliestLabel?: string
+}
+
+type AcquireResult =
+  | { account: ClaudeAccount; credentials: ClaudeCredentials }
+  | { deferredToOpenCodeRetry: true }
+  | null
+
+function isDeferred(
+  result: unknown,
+): result is { deferredToOpenCodeRetry: true } {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { deferredToOpenCodeRetry?: unknown })
+      .deferredToOpenCodeRetry === true
+  )
+}
+
+/**
+ * Answer a client-side 429 with an *authoritative* retry-after derived from our
+ * own persisted earliest-bench (never the possibly stale header of whichever
+ * account happened to 429 first). OpenCode's retry machinery then resumes at
+ * the benchmark time, and on that retry the request goes through immediately.
+ */
+function deferred429(context: AvailabilityContext): Response {
+  const until = context.lastEarliestUntil ?? rotationWaitDeps.now() + 30_000
+  const seconds = Math.max(
+    1,
+    Math.ceil((until - rotationWaitDeps.now()) / 1000),
+  )
+  return new Response(
+    JSON.stringify({
+      type: "error",
+      error: {
+        type: "rate_limit_error",
+        message: `Claude quota: ${seconds}s until next eligible account${context.lastEarliestLabel ? ` (${context.lastEarliestLabel})` : ""}; OpenCode will retry automatically.`,
+      },
+    }),
+    {
+      status: 429,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": String(seconds),
+      },
+    },
+  )
+}
+
+/** The sole owner of quota waiting. File events wake it early; timer ticks
+ * re-read local state only. HTTP is attempted only after a candidate is eligible.
+ * It never re-benches a stale response while waiting; OpenCode's own wrapper
+ * abort converts to a benchmark-accurate deferred retry, never a cached 429
+ * and never a fake cancellation. The caller's signal stays honest for Stop. */
+async function acquireAvailableAccount(
+  context: AvailabilityContext,
+  client?: ToastClient,
+): Promise<AcquireResult> {
+  const options = getRotationWaitConfig()
+  const id = createWaitAttemptId()
+  let startedAt: number | undefined
+  let nextProgressAt = 0
+  try {
+    for (;;) {
+      throwIfAborted(context.signal)
+      const revision = stateRevision(availabilityPaths())
+      const now = rotationWaitDeps.now()
+      const roster = refreshAccountsList()
+      const state = readRotationState()
+      const usable = roster.filter(
+        (account) => !context.invalid.has(account.source),
+      )
+      if (
+        usable.some(
+          (account) => !(state.cooldowns[account.source]?.until > now),
+        )
+      ) {
+        const candidate = await retryAfterCooldownWait({
+          triedSources: new Set(),
+          invalidSources: context.invalid,
+          signal: context.signal,
+          now,
+        })
+        throwIfAborted(context.signal)
+        if (candidate) {
+          if (startedAt !== undefined)
+            log("rotation_wait_wake", {
+              source: candidate.account.source,
+              cycle: context.cycles,
+            })
+          return candidate
+        }
+        continue // failed candidates were excluded, not given imaginary cooldowns
+      }
+      const limited = usable
+        .map((account) => ({ account, entry: state.cooldowns[account.source] }))
+        .filter((item) => item.entry?.until > now)
+        .sort((a, b) => a.entry.until - b.entry.until)
+      const earliest = limited[0]
+      context.lastEarliestUntil = earliest?.entry?.until
+      context.lastEarliestLabel = earliest?.account.label
+      if (!earliest) return null
+      if (!options.enabled) return null
+      if (options.maxCycles > 0 && context.cycles >= options.maxCycles)
+        return null
+      if (startedAt === undefined) startedAt = now
+      context.cycles++
+
+      // Keep this deadline fixed across progress ticks: neither the safety
+      // margin nor the jitter should disappear or be redrawn on each tick.
+      const deadline =
+        earliest.entry.until +
+        options.marginMs +
+        Math.floor(rotationWaitDeps.rng() * options.jitterMs)
+      log("rotation_wait_start", {
+        cycle: context.cycles,
+        earliestSource: earliest.account.source,
+        earliestAt: earliest.entry.until,
+        waitMs: Math.max(0, deadline - now),
+      })
+      if (context.cycles === 1) {
+        notify(
+          client,
+          `Claude quota wait: next eligible account ${earliest.account.label} at ${new Date(deadline).toISOString()}; re-evaluating automatically.`,
+          "warning",
+        )
+        nextProgressAt = now + options.progressMs
+      }
+      const budgetLeft =
+        options.maxWaitTotalMs > 0
+          ? options.maxWaitTotalMs - context.elapsedMs
+          : Infinity
+      if (budgetLeft <= 0) return null
+      publishWaitAttempt(
+        id,
+        {
+          cycle: context.cycles,
+          startedAt,
+          plannedSource: earliest.account.source,
+          plannedLabel: earliest.account.label,
+          until: deadline,
+          waitMs: Math.max(0, deadline - now),
+        },
+        now,
+      )
+
+      const sleepDelta = async (ms: number): Promise<void> => {
+        const t0 = rotationWaitDeps.now()
+        try {
+          await rotationWaitDeps.sleep(ms, context.signal, revision)
+        } finally {
+          context.elapsedMs += Math.max(0, rotationWaitDeps.now() - t0)
+        }
+      }
+
+      for (;;) {
+        const tickAt = rotationWaitDeps.now()
+        const leftMs = deadline - tickAt
+        if (leftMs <= 0) break
+        const remainingBudget =
+          options.maxWaitTotalMs > 0
+            ? options.maxWaitTotalMs - context.elapsedMs
+            : Infinity
+        if (remainingBudget <= 0) return null
+        if (options.progressMs > 0 && tickAt >= nextProgressAt) {
+          publishWaitAttempt(
+            id,
+            {
+              cycle: context.cycles,
+              startedAt,
+              plannedSource: earliest.account.source,
+              plannedLabel: earliest.account.label,
+              until: deadline,
+              waitMs: leftMs,
+            },
+            tickAt,
+          )
+          notify(
+            client,
+            `Next attempt in ~${formatRemaining(leftMs)} via ${earliest.account.label}.`,
+            "info",
+          )
+          nextProgressAt = tickAt + options.progressMs
+        }
+        await sleepDelta(
+          Math.min(leftMs, options.progressMs || Infinity, remainingBudget),
+        )
+        throwIfAborted(context.signal)
+        // Re-plan immediately on a roster/bench change. Reusing the old
+        // revision in another watcher would otherwise cause a tight loop of
+        // already-changed revisions until the entire chunk count ran out.
+        if (stateRevision(availabilityPaths()) !== revision) break
+        // A frozen test clock (or a clock adjustment) must not bypass an
+        // explicit cycle cap. Real timers normally advance the wall clock.
+        if (rotationWaitDeps.now() <= tickAt) break
+      }
+    }
+  } catch (error) {
+    if (context.signal?.aborted && isSyntheticDeadlineAbort(context.signal)) {
+      // OpenCode's outer window (default 300 s) closed before the bench reset.
+      // That is not a user cancellation: hand the flow back so we can defer
+      // resumption to OpenCode's retry policy with an accurate retry-after,
+      // instead of killing this turn with an abort it cannot distinguish.
+      log("rotation_wait_outer_timeout", {
+        cycle: context.cycles,
+        elapsedMs: context.elapsedMs,
+      })
+      return { deferredToOpenCodeRetry: true }
+    }
+    if (context.signal?.aborted)
+      log("rotation_wait_aborted", {
+        cycle: context.cycles,
+        elapsedMs: context.elapsedMs,
+      })
+    throw error
+  } finally {
+    clearWaitAttempt(id)
+  }
+}
+
+/** Picker hint combining the active marker with any rate-limit cooldown. */
+function accountHint(
+  source: string,
+  activeSource: string | null,
+  now = Date.now(),
+): string | undefined {
+  const until = getCooldownUntil(source, now)
+  const parts: string[] = []
+  if (source === activeSource) parts.push("active")
+  if (until !== null) {
+    parts.push(`rate-limited, ${formatRemaining(until - now)} left`)
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined
+}
+
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const PROACTIVE_REFRESH_THRESHOLD_MS = 60 * 60 * 1000 // 1 hour before expiry
 
-const plugin: Plugin = async () => {
+// Named to avoid shadowing the `input` parameter of the auth loader's fetch.
+const plugin: Plugin = async (pluginInput) => {
   initLogger()
+
+  // Optional by design: unit tests construct the plugin with no input, and a
+  // headless server has no TUI to toast into. Rotation must work in both.
+  const toastClient = (pluginInput as { client?: ToastClient } | undefined)
+    ?.client
 
   let accounts: ClaudeAccount[] = []
   try {
@@ -193,9 +553,11 @@ const plugin: Plugin = async () => {
 
   if (accounts.length > 0) {
     const persistedSource = loadPersistedAccountSource()
+    // Steps over an account that is still benched from a rate limit hit in an
+    // earlier session, so restarting OpenCode during a usage limit lands on a
+    // working account instead of replaying the limit on the first prompt.
     const defaultAccount =
-      (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
-      accounts[0]
+      chooseInitialAccount(accounts, persistedSource) ?? accounts[0]
 
     setActiveAccountSource(defaultAccount.source)
 
@@ -203,6 +565,8 @@ const plugin: Plugin = async () => {
       accountCount: accounts.length,
       sources: accounts.map((a) => a.source),
       activeSource: defaultAccount.source,
+      pastedTokens: accounts.filter((a) => isTokenSource(a.source)).length,
+      cooldowns: activeCooldowns().length,
     })
 
     const initialCreds = await getCachedCredentials()
@@ -307,9 +671,63 @@ const plugin: Plugin = async () => {
         return {
           apiKey: "",
           baseURL: "https://api.anthropic.com/v1",
+          // OpenCode's header deadline wraps this entire fetch, including the
+          // quota sleep. Actual network attempts have their own deadline below.
+          ...(getRotationConfig().enabled && getRotationWaitConfig().enabled
+            ? { headerTimeout: false, timeout: false }
+            : {}),
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const requestInit = init ?? {}
-            let latest = await getCachedCredentials()
+            const requestInit = {
+              ...init,
+              signal:
+                init?.signal ??
+                (input instanceof Request ? input.signal : undefined),
+            }
+            throwIfAborted(requestInit.signal)
+            const availability: AvailabilityContext = {
+              cycles: 0,
+              elapsedMs: 0,
+              invalid: new Set(),
+              signal: requestInit.signal,
+            }
+            let selectedAccount = getActiveAccount()
+            // The sticky source may have been benched by another concurrent
+            // request. Skip it before sending anything if a healthy source is
+            // already available — no unnecessary 429 just to trigger rotation.
+            if (
+              getRotationConfig().enabled &&
+              selectedAccount &&
+              getCooldownUntil(
+                selectedAccount.source,
+                rotationWaitDeps.now(),
+              ) !== null
+            ) {
+              const eligible = await acquireAvailableAccount(
+                availability,
+                toastClient,
+              )
+              if (isDeferred(eligible)) {
+                log("rotation_deferred_retry", {
+                  phase: "preflight",
+                  deferredAt: availability.lastEarliestUntil,
+                })
+                return deferred429(availability)
+              }
+              if (eligible) {
+                selectedAccount = eligible.account
+                syncAuthJson(eligible.credentials)
+              } else if (getRotationWaitConfig().enabled) {
+                throw new Error(
+                  "Claude quota wait budget exhausted or no usable accounts remain.",
+                )
+              }
+            }
+            // Account selection is shared process state; another concurrent
+            // turn can switch it during our HTTP call. Attribute this request's
+            // response to the source whose token it actually sent.
+            let servingSource = selectedAccount?.source ?? null
+            let latest = await getCachedCredentials(selectedAccount)
+            throwIfAborted(requestInit.signal)
             if (!latest) {
               // A transient refresh rate-limit must not surface as a hard error.
               // Wait (bounded, abort-aware) for our cooldown to clear or for a
@@ -442,7 +860,9 @@ const plugin: Plugin = async () => {
               // the request. It logs so a future reload that does throw is
               // diagnosable rather than silently null-coalesced.
               try {
-                candidate = reloadCredentialsFromSource()
+                candidate = reloadCredentialsFromSource(
+                  servingSource ?? undefined,
+                )
               } catch (err) {
                 log("auth_recovery_reload_threw", {
                   modelId,
@@ -453,7 +873,10 @@ const plugin: Plugin = async () => {
 
               if (!candidate || candidate.accessToken === tokenInUse) {
                 try {
-                  candidate = await forceRefreshActiveAccount()
+                  candidate = await forceRefreshActiveAccount(
+                    undefined,
+                    servingSource ?? undefined,
+                  )
                 } catch (err) {
                   // A rejected refresh and a refresh that returned null are
                   // different operator-facing diagnoses; auth_recovery_
@@ -526,7 +949,9 @@ const plugin: Plugin = async () => {
               // does throw should be diagnosable rather than silently
               // coalesced to "nothing rotated".
               try {
-                rotated = reloadCredentialsFromSource()
+                rotated = reloadCredentialsFromSource(
+                  servingSource ?? undefined,
+                )
               } catch (err) {
                 log("rate_limit_reload_threw", {
                   modelId,
@@ -564,6 +989,137 @@ const plugin: Plugin = async () => {
                   status: response.status,
                 })
               }
+            }
+
+            // Still rate-limited after the external-switch check, so this
+            // account is genuinely out of allowance as far as this session can
+            // tell. Bench it and walk down the priority order.
+            //
+            // Ordered after the external-switch block on purpose: if another
+            // process already rotated us onto a healthy account, that costs no
+            // cooldown and no switch. Ordered before the long-context beta loop
+            // for the reason that loop documents from the other side — a
+            // long-context 429 is a header problem that every account shares,
+            // so rotating around it would bench the whole pool for a fault no
+            // account can avoid. That case is excluded explicitly below rather
+            // than by ordering alone, because reaching the beta loop first
+            // would mean the account was already benched by then.
+            //
+            // When every account is benched, tried, or broken, the loop does
+            // NOT fail: it sleeps until the soonest recorded bench expires
+            // (a real sleep — no polling, no probe requests), re-evaluates the
+            // pool, and resends this identical request. A long-running task
+            // survives a quota window however long it is; the abort signal is
+            // the escape hatch, and OPENCODE_CLAUDE_AUTH_ROTATE_WAIT* can
+            // bound or disable the waiting for callers that prefer to fail.
+            if (response.status === 429 && getRotationConfig().enabled) {
+              const rotationConfig = getRotationConfig()
+              let switches = 0
+              while (response.status === 429) {
+                throwIfAborted(requestInit.signal)
+
+                // Body is needed both to exclude long-context errors and to
+                // tell an explained usage limit from a bare 429. Cloned so
+                // the response stays readable if we end up returning it.
+                let limitBody = ""
+                try {
+                  limitBody = await response.clone().text()
+                } catch {
+                  // An unreadable body is not a reason to skip rotation; it
+                  // only costs the body-derived reason label.
+                }
+
+                if (isLongContextError(limitBody)) {
+                  log("rotation_skipped_long_context", { modelId })
+                  break
+                }
+
+                const limitedSource = servingSource
+                if (!limitedSource) break
+
+                const { ms, reason } = cooldownFromResponse(
+                  response.headers,
+                  limitBody,
+                  rotationConfig,
+                  rotationWaitDeps.now(),
+                )
+                markRateLimited(
+                  limitedSource,
+                  ms,
+                  reason,
+                  rotationWaitDeps.now(),
+                )
+                // Automatic mode must visit every configured account. The
+                // legacy switch cap remains only for explicit fail-fast mode.
+                if (
+                  !getRotationWaitConfig().enabled &&
+                  switches >= rotationConfig.maxSwitchesPerRequest
+                )
+                  break
+                const rotated = await acquireAvailableAccount(
+                  availability,
+                  toastClient,
+                )
+                if (isDeferred(rotated)) {
+                  // OpenCode's wrapper aborted mid-sleep at its own deadline:
+                  // answer with an authoritative retry-after so its retry
+                  // machinery resumes exactly when the bench becomes eligible.
+                  void response.body?.cancel().catch(() => {})
+                  response = deferred429(availability)
+                  switches++
+                  log("rotation_deferred_retry", {
+                    modelId,
+                    limitedSource,
+                    deferredAt: availability.lastEarliestUntil,
+                    remainingMs: availability.lastEarliestUntil
+                      ? Math.max(
+                          0,
+                          availability.lastEarliestUntil -
+                            rotationWaitDeps.now(),
+                        )
+                      : null,
+                  })
+                  break
+                }
+                throwIfAborted(requestInit.signal)
+                if (!rotated) break
+                void response.body?.cancel().catch(() => {})
+
+                servingSource = rotated.account.source
+                tokenInUse = rotated.credentials.accessToken
+                syncAuthJson(rotated.credentials)
+                notify(
+                  toastClient,
+                  `Rate limit reached — switched to ${rotated.account.label}.`,
+                  "warning",
+                )
+
+                response = await fetchWithRetry(requestUrl, {
+                  ...requestInit,
+                  body,
+                  headers: buildRequestHeaders(
+                    input,
+                    requestInit,
+                    tokenInUse,
+                    modelId,
+                    getExcludedBetas(modelId),
+                  ),
+                })
+                log("rotation_retry_response", {
+                  modelId,
+                  source: rotated.account.source,
+                  status: response.status,
+                  switchCount: ++switches,
+                })
+              }
+            }
+
+            // An account that just served a request is demonstrably not
+            // limited, so retire any bench it was still carrying — a cooldown
+            // derived from a capped estimate should not outlive the limit it
+            // was guessing at.
+            if (response.ok) {
+              if (servingSource) noteAccountSucceeded(servingSource)
             }
 
             // Check for long-context beta errors and retry with betas excluded
@@ -660,11 +1216,16 @@ const plugin: Plugin = async () => {
                 type: "select" as const,
                 key: "account",
                 message: "Select which Claude Code account to use:",
-                options: currentAccounts.map((a) => ({
-                  label: a.label,
-                  value: a.source,
-                  hint: a.source === currentSource ? "active" : undefined,
-                })),
+                // Rate-limited accounts stay selectable; the hint carries the
+                // wait so the choice is informed.
+                options: currentAccounts.map((a) => {
+                  const hint = accountHint(a.source, currentSource)
+                  // `hint: undefined` fails the server's auth-method schema,
+                  // which serves GET /provider/auth for the TUI's /connect.
+                  return hint
+                    ? { label: a.label, value: a.source, hint }
+                    : { label: a.label, value: a.source }
+                }),
               },
             ]
           },
@@ -702,6 +1263,178 @@ const plugin: Plugin = async () => {
                   access: creds.accessToken,
                   refresh: creds.refreshToken,
                   expires: creds.expiresAt,
+                }
+              },
+            }
+          },
+        },
+        {
+          type: "oauth",
+          label: "Add Claude token (paste from `claude setup-token`)",
+
+          get prompts() {
+            return [
+              {
+                type: "text" as const,
+                key: "tokens",
+                message:
+                  "Paste one or more tokens from `claude setup-token` (separate multiple with a space or comma):",
+                placeholder: "sk-ant-oat01-… sk-ant-oat01-…",
+                validate: validateTokenInput,
+              },
+              {
+                type: "text" as const,
+                key: "label",
+                message: "Label for these accounts (optional, e.g. work):",
+                placeholder: "work",
+              },
+            ]
+          },
+
+          async authorize(inputs) {
+            const { tokens, invalid } = parsePastedTokens(inputs?.tokens ?? "")
+            const result = addTokens(tokens, inputs?.label)
+
+            // Activate a newly added token straight away: pasting one is an
+            // explicit statement of intent to use it, and leaving the session
+            // on the old account would make the feature look inert.
+            const roster = refreshAccountsList()
+            const target = result.added[0]
+              ? roster.find(
+                  (a) => a.source === `token:${result.added[0]?.id ?? ""}`,
+                )
+              : undefined
+
+            let creds: ClaudeCredentials | null = null
+            if (target) {
+              setActiveAccountSource(target.source)
+              saveAccountSource(target.source)
+              creds = await getCachedCredentials()
+              if (creds) syncAuthJson(creds)
+            } else {
+              creds = await getCachedCredentials()
+            }
+
+            const parts: string[] = []
+            if (result.added.length > 0) {
+              parts.push(
+                `Added ${result.added.length} token${result.added.length === 1 ? "" : "s"}`,
+              )
+            }
+            if (result.duplicates.length > 0) {
+              parts.push(`${result.duplicates.length} already stored`)
+            }
+            if (invalid.length > 0) {
+              parts.push(`${invalid.length} ignored (not a valid token)`)
+            }
+            if (!result.persisted) {
+              parts.push(
+                "WARNING: could not write the token store — tokens apply to this session only",
+              )
+            }
+            if (target) parts.push(`now using ${target.label}`)
+            parts.push(`${roster.length} accounts available for rotation`)
+
+            const summary = parts.join("; ")
+
+            // A paste that produced nothing usable must not report success —
+            // OpenCode would record an auth entry for an account that cannot
+            // serve a request.
+            if (!creds) {
+              return {
+                url: "",
+                instructions: `${summary}. No usable credentials — run \`claude\` or paste a valid token.`,
+                method: "auto",
+                async callback() {
+                  return { type: "failed" }
+                },
+              }
+            }
+
+            const activeCreds = creds
+            return {
+              url: "",
+              instructions: `${summary}.`,
+              method: "auto",
+              async callback() {
+                return {
+                  type: "success",
+                  provider: "anthropic",
+                  access: activeCreds.accessToken,
+                  refresh: activeCreds.refreshToken,
+                  expires: activeCreds.expiresAt,
+                }
+              },
+            }
+          },
+        },
+        {
+          type: "oauth",
+          label: "Remove a stored Claude token",
+
+          get prompts() {
+            const entries = listTokenEntries().filter(
+              // Environment-supplied tokens have no stored record to delete;
+              // removing one means unsetting the variable.
+              (e) => e.addedAt !== 0,
+            )
+            if (entries.length === 0) return []
+            return [
+              {
+                type: "select" as const,
+                key: "id",
+                message: "Which stored token should be removed?",
+                options: entries.map((e) => ({
+                  label: e.label
+                    ? `${e.label} (${tokenFingerprint(e.token)})`
+                    : `Token ${tokenFingerprint(e.token)}`,
+                  value: e.id,
+                })),
+              },
+            ]
+          },
+
+          async authorize(inputs) {
+            const id = inputs?.id
+            const removed = id ? removeToken(id) : false
+            const roster = refreshAccountsList()
+
+            // The removed token may have been the active account, so re-resolve
+            // rather than assuming the session still has usable credentials.
+            const stillActive = getActiveAccount()
+            if (!stillActive && roster[0]) {
+              setActiveAccountSource(roster[0].source)
+              saveAccountSource(roster[0].source)
+            }
+            const creds = await getCachedCredentials()
+
+            const summary = removed
+              ? `Removed the token; ${roster.length} accounts remain`
+              : "No matching token was stored"
+
+            if (!creds) {
+              return {
+                url: "",
+                instructions: `${summary}. No usable credentials remain — run \`claude\` or paste a token.`,
+                method: "auto",
+                async callback() {
+                  return { type: "failed" }
+                },
+              }
+            }
+
+            const activeCreds = creds
+            return {
+              url: "",
+              instructions: `${summary}. Using ${getActiveAccount()?.label ?? "the remaining account"}.`,
+              method: "auto",
+              async callback() {
+                return {
+                  type: "success",
+                  provider: "anthropic",
+                  access: activeCreds.accessToken,
+                  refresh: activeCreds.refreshToken,
+                  expires: activeCreds.expiresAt,
                 }
               },
             }

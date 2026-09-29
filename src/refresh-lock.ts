@@ -15,6 +15,7 @@
  */
 import {
   closeSync,
+  fstatSync,
   mkdirSync,
   openSync,
   statSync,
@@ -100,9 +101,15 @@ export function acquireRefreshLock(
       let stale = false
       try {
         stale = now() - statSync(path).mtimeMs > ttlMs
-      } catch {
-        // Vanished between open and stat — retry the acquire.
-        stale = true
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === "ENOENT") {
+          // The holder released between open and stat. Retry acquisition;
+          // do not unlink: another process may already have created its
+          // own lock at this path while we were handling ENOENT.
+          continue
+        }
+        log("refresh_lock_error", { source, error: String(statError) })
+        return NOOP_LOCK
       }
       if (stale) {
         log("refresh_lock_stale_takeover", { source })
@@ -122,17 +129,23 @@ export function acquireRefreshLock(
       // The lock is held regardless of whether the payload wrote.
     }
     log("refresh_lock_acquired", { source })
+    const owned = fstatSync(fd)
+    let released = false
     return {
       release() {
+        if (released) return
+        released = true
+        try {
+          const current = statSync(path)
+          if (current.dev === owned.dev && current.ino === owned.ino)
+            unlinkSync(path)
+        } catch {
+          // Already gone, or a stale takeover replaced our inode.
+        }
         try {
           closeSync(fd)
         } catch {
           // already closed
-        }
-        try {
-          unlinkSync(path)
-        } catch {
-          // already gone (e.g. a stale-takeover removed it)
         }
       },
     }

@@ -52,6 +52,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc && cp src/anthropic-prompt.txt dist/",
     "test": "node --test --experimental-strip-types src/**/*.test.ts scripts/**/*.test.ts",
+    "test:node18": "node --import tsx --test src/*.test.ts scripts/*.test.ts",
     "test:models": "pnpm run build && node scripts/test-models.ts",
     "test:headless": "pnpm run build && node --experimental-strip-types scripts/test-headless.ts",
     "intercept": "pnpm run build && node --experimental-strip-types scripts/intercept-claude.ts",
@@ -65,9 +66,12 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": "latest",
+    "@oxfmt/binding-linux-x64-gnu": "^0.41.0",
+    "@oxlint/binding-linux-x64-gnu": "^1.56.0",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {

@@ -70,6 +70,18 @@ async function loadKeychainWithMockedSecurity(
     "utf8",
   )
 
+  // These tests are about Keychain discovery, so the pasted-token source is
+  // stubbed empty: it contributes no accounts and claims no sources. Token
+  // behavior is covered in token-store.test.ts.
+  await writeFile(
+    join(tempDir, "token-store.ts"),
+    `export function isTokenSource(source) { return source.startsWith("token:") }
+export function readStaticCredentials() { return null }
+export function readTokenAccounts() { return [] }
+`,
+    "utf8",
+  )
+
   await writeFile(
     tempChildProcess,
     `const securityDump = ${JSON.stringify(securityDump)}

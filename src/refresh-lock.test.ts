@@ -51,7 +51,22 @@ describe("refresh-lock", () => {
       now: () => future,
     })
     assert.ok(takeover, "a stale lock is taken over")
+    held!.release()
+    assert.equal(
+      acquireRefreshLock(SRC, { dir }),
+      null,
+      "an expired holder must not release its successor's lock",
+    )
     takeover!.release()
+  })
+
+  it("makes repeated release harmless after another caller acquires", () => {
+    const first = acquireRefreshLock(SRC, { dir })!
+    first.release()
+    const second = acquireRefreshLock(SRC, { dir })!
+    first.release()
+    assert.equal(acquireRefreshLock(SRC, { dir }), null)
+    second.release()
   })
 
   it("does not take over a lock that is still within its TTL", () => {
