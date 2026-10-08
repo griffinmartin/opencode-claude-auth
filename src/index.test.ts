@@ -153,7 +153,7 @@ async function copySourceFiles(
           // Point the OAuth refresh at a local test server so the real
           // refreshViaOAuth path runs offline.
           source = source.replace(
-            "https://claude.ai/v1/oauth/token",
+            "https://platform.claude.com/v1/oauth/token",
             opts.oauthTokenUrl,
           )
         }

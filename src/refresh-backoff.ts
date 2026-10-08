@@ -2,11 +2,11 @@
  * Transient-vs-terminal classification and per-account backoff for OAuth token
  * refreshes.
  *
- * The token endpoint (`claude.ai/v1/oauth/token`) rate-limits refresh requests
- * with HTTP 429 `rate_limit_error`. That is transient — the refresh token is
- * still valid — but the plugin previously treated every non-OK refresh as a
- * hard failure, surfacing "credentials unavailable. Run `claude`" and then
- * hammering the same endpoint (and the `claude` CLI, which hits it too). This
+ * The token endpoint (`platform.claude.com/v1/oauth/token`) rate-limits refresh
+ * requests with HTTP 429 `rate_limit_error`. That is transient — the refresh
+ * token is still valid — but the plugin previously treated every non-OK refresh
+ * as a hard failure, surfacing "credentials unavailable. Run `claude`" and then
+ * hammering the same endpoint. This
  * module lets callers tell a transient rate-limit apart from a genuinely dead
  * refresh token (`invalid_grant`), and imposes a cooldown so a rate-limited
  * account is not re-hit until the window has plausibly cleared.
