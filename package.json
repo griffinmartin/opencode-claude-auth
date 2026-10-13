@@ -15,6 +15,7 @@
     "url": "git+https://github.com/griffinmartin/opencode-claude-auth.git"
   },
   "files": [
+    "index.js",
     "opencode-claude-auth.js",
     "dist",
     "installation.md"
@@ -62,6 +63,9 @@
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
     "prepublishOnly": "pnpm run build && pnpm test"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.28"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "latest",

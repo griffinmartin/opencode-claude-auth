@@ -7,7 +7,7 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { before, describe, it } from "node:test"
@@ -126,6 +126,8 @@ function buildAuthorizeResult(account: Account) {
 
 const SOURCE_FILES = [
   "index.ts",
+  "v2.ts",
+  "request.ts",
   "betas.ts",
   "model-config.ts",
   "signing.ts",
@@ -141,6 +143,13 @@ async function copySourceFiles(
   tempDir: string,
   opts?: { oauthTokenUrl?: string },
 ): Promise<void> {
+  // The copied index.ts statically imports @opencode/plugin, so the temp dir
+  // needs to resolve bare specifiers the same way the repo does.
+  await symlink(
+    new URL("../node_modules", import.meta.url),
+    join(tempDir, "node_modules"),
+    "dir",
+  ).catch(() => {})
   await Promise.all(
     SOURCE_FILES.map(async (file) => {
       let source = await readFile(new URL(`./${file}`, import.meta.url), "utf8")
@@ -809,7 +818,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     })) as unknown as typeof setInterval
 
     try {
-      const plugin = await helpers.default({} as never)
+      const plugin = await helpers.default.server({} as never)
       assert.equal(
         typeof plugin["experimental.chat.system.transform"],
         "function",
@@ -847,7 +856,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     })) as unknown as typeof setInterval
 
     try {
-      const plugin = await helpers.default({} as never)
+      const plugin = await helpers.default.server({} as never)
       const transform = plugin["experimental.chat.system.transform"] as (
         input: { model?: { providerID?: string } },
         output: { system: string[] },
@@ -891,7 +900,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     globalThis.setInterval = (() => fakeTimer) as unknown as typeof setInterval
 
     try {
-      await helpers.default({} as never)
+      await helpers.default.server({} as never)
       assert.ok(
         unrefCalled,
         "Expected .unref() to be called on the interval timer",
@@ -938,7 +947,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         bRefreshResult: "success",
       })
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       assert.ok(
         tickCallback,
         "Expected setInterval to capture the tick callback",
@@ -1029,7 +1038,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         bRefreshResult: "fail",
       })
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       assert.ok(tickCallback)
 
       const typedPlugin = plugin as {
@@ -1092,7 +1101,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         return new Response("ok")
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       assert.equal(typeof typedPlugin.auth?.loader, "function")
       const authConfig = await typedPlugin.auth!.loader!(
@@ -1150,7 +1159,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
           : new Response("ok", { status: 200 })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       assert.equal(typeof typedPlugin.auth?.loader, "function")
       const authConfig = await typedPlugin.auth!.loader!(
@@ -1233,7 +1242,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
           : new Response("data: {}\n\n", { status: 200 })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1306,7 +1315,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1381,7 +1390,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
           : new Response("data: {}\n\n", { status: 200 })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1464,7 +1473,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       assert.equal(typeof typedPlugin.auth?.loader, "function")
       const authConfig = await typedPlugin.auth!.loader!(
@@ -1546,7 +1555,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         warnings.push(args)
       }
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       assert.equal(typeof typedPlugin.auth?.loader, "function")
       const authConfig = await typedPlugin.auth!.loader!(
@@ -1625,7 +1634,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         return new Response('{"error":"expired"}', { status: 401 })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1699,7 +1708,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1781,7 +1790,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         return new Response("data: {}\n\n", { status: 200 })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1854,7 +1863,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({
@@ -1914,7 +1923,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         })
       }) as typeof fetch
 
-      const plugin = await helpersModule.default({} as never)
+      const plugin = await helpersModule.default.server({} as never)
       const typedPlugin = plugin as { auth?: { loader?: TestAuthLoader } }
       const authConfig = await typedPlugin.auth!.loader!(
         async () => ({

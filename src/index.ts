@@ -1,17 +1,16 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import crypto from "node:crypto"
-import { config } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
 import { fetchWithRetry } from "./http.ts"
 import {
   addExcludedBeta,
   getExcludedBetas,
-  getModelBetas,
   getNextBetaToExclude,
   isLongContextError,
   LONG_CONTEXT_BETAS,
 } from "./betas.ts"
+import { buildRequestHeaders, buildRequestUrl } from "./request.ts"
+import { createV2Plugin } from "./v2.ts"
 import {
   SYSTEM_IDENTITY,
   transformBody,
@@ -63,115 +62,19 @@ export {
   extractFirstUserMessageText,
 } from "./signing.ts"
 
-function getCliVersion(): string {
-  return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
-}
-
-function getUserAgent(): string {
-  return (
-    process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, sdk-cli)`
-  )
-}
-
-function getStainlessHeaders(): Record<string, string> {
-  return {
-    "x-stainless-arch": process.arch === "arm64" ? "arm64" : process.arch,
-    "x-stainless-lang": "js",
-    "x-stainless-os":
-      process.platform === "darwin" ? "MacOS" : process.platform,
-    "x-stainless-package-version": "0.81.0",
-    "x-stainless-retry-count": "0",
-    "x-stainless-runtime": "node",
-    "x-stainless-runtime-version": process.version,
-    "x-stainless-timeout": "600",
-  }
-}
-
-function buildRequestUrl(input: RequestInfo | URL): string | URL {
-  const raw =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url
-
-  const url = new URL(raw)
-  if (url.pathname === "/v1/messages" && !url.searchParams.has("beta")) {
-    url.searchParams.set("beta", "true")
-  }
-
-  return typeof input === "string" ? url.toString() : url
-}
-
-// Stable per-process session ID, matching Claude Code's X-Claude-Code-Session-Id
-const sessionId = crypto.randomUUID()
-
-export function buildRequestHeaders(
-  input: RequestInfo | URL,
-  init: RequestInit,
-  accessToken: string,
-  modelId = "unknown",
-  excludedBetas?: Set<string>,
-): Headers {
-  const headers = new Headers()
-
-  if (input instanceof Request) {
-    input.headers.forEach((value, key) => {
-      headers.set(key, value)
-    })
-  }
-
-  if (init.headers instanceof Headers) {
-    init.headers.forEach((value, key) => {
-      headers.set(key, value)
-    })
-  } else if (Array.isArray(init.headers)) {
-    for (const [key, value] of init.headers) {
-      if (typeof value !== "undefined") {
-        headers.set(key, String(value))
-      }
-    }
-  } else if (init.headers) {
-    for (const [key, value] of Object.entries(init.headers)) {
-      if (typeof value !== "undefined") {
-        headers.set(key, String(value))
-      }
-    }
-  }
-
-  const modelBetas = getModelBetas(modelId, excludedBetas)
-  const incomingBeta = headers.get("anthropic-beta") ?? ""
-  const mergedBetas = [
-    ...new Set([
-      ...modelBetas,
-      ...incomingBeta
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ]),
-  ]
-
-  headers.set("authorization", `Bearer ${accessToken}`)
-  headers.set("anthropic-version", "2023-06-01")
-  headers.set("anthropic-beta", mergedBetas.join(","))
-  headers.set("anthropic-dangerous-direct-browser-access", "true")
-  headers.set("x-app", "cli")
-  headers.set("user-agent", getUserAgent())
-  headers.set("x-client-request-id", crypto.randomUUID())
-  headers.set("X-Claude-Code-Session-Id", sessionId)
-  for (const [key, value] of Object.entries(getStainlessHeaders())) {
-    if (!headers.has(key)) headers.set(key, value)
-  }
-  headers.delete("x-api-key")
-
-  return headers
-}
+// Request-building helpers live in ./request.ts so the V2 entrypoint can reuse
+// them. Re-exported here for backwards compatibility.
+export {
+  buildRequestHeaders,
+  buildRequestUrl,
+  getStainlessHeaders,
+  getUserAgent,
+} from "./request.ts"
 
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const PROACTIVE_REFRESH_THRESHOLD_MS = 60 * 60 * 1000 // 1 hour before expiry
 
-const plugin: Plugin = async () => {
+const v1Plugin: Plugin = async () => {
   initLogger()
 
   let accounts: ClaudeAccount[] = []
@@ -712,5 +615,14 @@ const plugin: Plugin = async () => {
   }
 }
 
-export const ClaudeAuthPlugin = plugin
-export default plugin
+// Retained for backwards compatibility with callers that import the V1 plugin
+// function directly.
+export const ClaudeAuthPlugin = v1Plugin
+
+// Dual API entrypoint: OpenCode 2 calls `setup` (./v2.ts) while OpenCode 1 calls
+// `server`. See
+// https://opencode.ai/v2/docs/build/plugins/migrate-v1#support-v1-and-v2-from-one-package
+export default {
+  ...createV2Plugin(),
+  server: v1Plugin,
+}
