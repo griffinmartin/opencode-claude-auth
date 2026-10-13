@@ -2,11 +2,11 @@
  * Transient-vs-terminal classification and per-account backoff for OAuth token
  * refreshes.
  *
- * The token endpoint (`claude.ai/v1/oauth/token`) rate-limits refresh requests
- * with HTTP 429 `rate_limit_error`. That is transient — the refresh token is
- * still valid — but the plugin previously treated every non-OK refresh as a
- * hard failure, surfacing "credentials unavailable. Run `claude`" and then
- * hammering the same endpoint (and the `claude` CLI, which hits it too). This
+ * The token endpoint (`platform.claude.com/v1/oauth/token`) rate-limits refresh
+ * requests with HTTP 429 `rate_limit_error`. That is transient — the refresh
+ * token is still valid — but the plugin previously treated every non-OK refresh
+ * as a hard failure, surfacing "credentials unavailable. Run `claude`" and then
+ * hammering the same endpoint. This
  * module lets callers tell a transient rate-limit apart from a genuinely dead
  * refresh token (`invalid_grant`), and imposes a cooldown so a rate-limited
  * account is not re-hit until the window has plausibly cleared.
@@ -21,8 +21,39 @@ export const BASE_COOLDOWN_MS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000
 })()
 
-/** Hard ceiling for a single cooldown, regardless of consecutive failures. */
-export const MAX_COOLDOWN_MS = 60_000
+/**
+ * How long a single request will wait for usable credentials before giving up.
+ *
+ * This and {@link MAX_COOLDOWN_MS} are two halves of one policy — how patient
+ * a request is versus how long the endpoint is penalised — so they are declared
+ * together here to keep the two files that consume them from drifting apart.
+ */
+export const REQUEST_WAIT_BUDGET_MS = (() => {
+  const raw = process.env.OPENCODE_CLAUDE_AUTH_REFRESH_WAIT_MS
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 45_000
+})()
+
+/**
+ * Slice of the request budget held back for the refresh attempt itself once the
+ * cooldown clears. Without it a cooldown may legally grow to the whole budget
+ * and leave the attempt no time to run, so the request could never recover.
+ */
+const REFRESH_ATTEMPT_RESERVE_MS = 10_000
+
+/**
+ * Hard ceiling for a single cooldown, regardless of consecutive failures.
+ *
+ * Must stay below {@link REQUEST_WAIT_BUDGET_MS} minus the attempt reserve.
+ * A cooldown longer than the budget that has to outlast it is a permanent
+ * wedge: every request gives up while the penalty is still running, the
+ * consecutive-failure count only resets on success, and the account can never
+ * exchange its refresh token again for the life of the process.
+ */
+export const MAX_COOLDOWN_MS = Math.max(
+  1_000,
+  REQUEST_WAIT_BUDGET_MS - REFRESH_ATTEMPT_RESERVE_MS,
+)
 
 /**
  * OAuth token-endpoint error codes that mean the refresh token itself is no
