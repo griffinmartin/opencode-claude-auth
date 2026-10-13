@@ -172,29 +172,6 @@ export function createV2Plugin() {
         { providerID: "anthropic" },
       )
 
-      // V1 zeroed every anthropic model's cost inside `auth.loader`, which also ran
-      // in API key mode. Usage on Claude Code credentials is billed to the
-      // subscription, so the guessed API pricing would be misleading — but a user
-      // with no Claude Code credentials is genuinely paying API prices.
-      if (accounts.length > 0) {
-        await ctx.model.transform((editor) => {
-          for (const model of editor.list("anthropic")) {
-            editor.update(
-              String(model.providerID),
-              String(model.id),
-              (draft) => {
-                draft.cost = draft.cost.map((tier) => ({
-                  ...tier,
-                  input: 0 as never,
-                  output: 0 as never,
-                  cache: { read: 0 as never, write: 0 as never },
-                }))
-              },
-            )
-          }
-        })
-      }
-
       // V1's custom `fetch` signed the request and rewrote the URL/body. Rebuild
       // the Request here; the provider has already attached its own credentials,
       // but we replace them with the active Claude Code token so a refreshed
