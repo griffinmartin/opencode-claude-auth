@@ -1,6 +1,6 @@
 # Install opencode-claude-auth
 
-These instructions are designed for AI coding agents. This version requires **OpenCode 2** — it will not load on OpenCode 1.
+These instructions are designed for AI coding agents. This version requires **OpenCode 2** — it will not load on OpenCode 1. The last version that supports OpenCode 1 is **2.2.1** (see [Migrating from OpenCode 1](#migrating-from-opencode-1)).
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ Add `opencode-claude-auth@latest` to the `plugins` array:
 }
 ```
 
-> OpenCode 2 uses the `plugins` key (plural). OpenCode 1 used `plugin` (singular) — using the wrong key for your OpenCode version means the plugin silently never loads.
+> OpenCode 2 uses the `plugins` key (plural). OpenCode 1 used `plugin` (singular).
 
 Or run this command to do it automatically:
 
@@ -103,9 +103,19 @@ rm -rf ~/.cache/opencode/packages/opencode-claude-auth@latest/
 
 ## Migrating from OpenCode 1
 
-If you were previously running this plugin under OpenCode 1, this version drops OpenCode 1 support entirely — it targets OpenCode 2's plugin and auth APIs, which are not compatible with OpenCode 1. If you still need OpenCode 1, pin `opencode-claude-auth` to a version prior to this change instead of tracking `@latest`.
+If you were previously running this plugin under OpenCode 1, version 3.0.0 drops OpenCode 1 support entirely — it targets OpenCode 2's plugin and auth APIs, which are not compatible with OpenCode 1.
 
-The old OpenCode 1 connection isn't reused. Run `claude` if Claude Code isn't already signed in, restart OpenCode 2, then follow [Step 2](#step-2-connect-it) above to reconnect.
+1. Upgrade OpenCode — see the [OpenCode 2 migration guide](https://opencode.ai/v2/docs/migrate-v1).
+2. Move `opencode-claude-auth@latest` from the `plugin` key (OpenCode 1) to the `plugins` key (OpenCode 2), as in [Step 1](#step-1-add-to-opencode-configuration).
+3. The old OpenCode 1 connection isn't reused. Run `claude` if Claude Code isn't already signed in, restart OpenCode 2, then follow [Step 2](#step-2-connect-it) above to reconnect.
+
+If you still need OpenCode 1, pin **2.2.1** — the last release that supports it — instead of tracking `@latest`:
+
+```json
+{
+  "plugin": ["opencode-claude-auth@2.2.1"]
+}
+```
 
 ## Done
 
