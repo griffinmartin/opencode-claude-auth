@@ -6,7 +6,14 @@
 
 Self-contained Anthropic auth provider for OpenCode 2 using your Claude Code subscription credentials — no separate login or API key needed.
 
-> **Requires OpenCode 2.** From 3.0.0 this plugin targets OpenCode 2's plugin and auth APIs and will not load on OpenCode 1. **2.2.1 is the last version that supports OpenCode 1** — see [Migrating from OpenCode 1](#migrating-from-opencode-1).
+> **3.0.0 and later require OpenCode 2.0+ and will not load on OpenCode 1.x.** The last version that supports OpenCode 1.x is **2.2.1** — see [Migrating from OpenCode 1](#migrating-from-opencode-1).
+
+## Compatibility
+
+| opencode-claude-auth | OpenCode  | Config key | Install                       |
+| -------------------- | --------- | ---------- | ----------------------------- |
+| 3.0.0+               | 2.0+ only | `plugins`  | `opencode-claude-auth@latest` |
+| 2.2.1 and earlier    | 1.x       | `plugin`   | `opencode-claude-auth@2.2.1`  |
 
 ## How it works
 
