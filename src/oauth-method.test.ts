@@ -48,6 +48,10 @@ function makeDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps & {
     },
     reloadCredentialsFromSource: () => null,
     readStoredCredentials: () => null,
+    // No tracked account by default, so refresh tests exercise the direct
+    // exchange used for credentials the plugin no longer knows about.
+    getAccountBySource: () => null,
+    rotateAccountCredentials: async () => null,
     refreshViaOAuth: async () => null,
     writeBackCredentials: (source, creds, configDir, expected) => {
       calls.writeBackCredentials.push([source, creds, configDir, expected])
@@ -545,6 +549,73 @@ describe("refreshOAuthCredential", () => {
       depsNoSource,
     )
     assert.deepEqual(depsNoSource.calls.setActiveAccountSource, [])
+  })
+
+  describe("for an account the plugin tracks", () => {
+    const tracked = account({ source: "acct" })
+    const rotated = {
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+      expiresAt: 444,
+    }
+
+    it("rotates through the shared refresh instead of exchanging the token itself", async () => {
+      let rotatedAccount: ClaudeAccount | undefined
+      let directExchange = false
+      const deps = makeDeps({
+        getAccountBySource: (source) => (source === "acct" ? tracked : null),
+        rotateAccountCredentials: async (target) => {
+          rotatedAccount = target
+          return rotated
+        },
+        refreshViaOAuth: async () => {
+          directExchange = true
+          return null
+        },
+      })
+
+      const result = await refreshOAuthCredential(value, deps)
+
+      assert.equal(rotatedAccount, tracked)
+      assert.equal(directExchange, false)
+      assert.equal(result.access, "rotated-access")
+      assert.equal(result.refresh, "rotated-refresh")
+      assert.equal(result.expires, 444)
+      // The shared refresh already persisted the rotation to the store.
+      assert.equal(deps.calls.writeBackCredentials.length, 0)
+    })
+
+    it("still resyncs from the keychain before rotating", async () => {
+      let rotations = 0
+      const deps = makeDeps({
+        getAccountBySource: () => tracked,
+        reloadCredentialsFromSource: () => ({
+          accessToken: "fresh-access",
+          refreshToken: "fresh-refresh",
+          expiresAt: 999,
+        }),
+        rotateAccountCredentials: async () => {
+          rotations += 1
+          return rotated
+        },
+      })
+
+      const result = await refreshOAuthCredential(value, deps)
+
+      assert.equal(result.access, "fresh-access")
+      assert.equal(rotations, 0)
+    })
+
+    it("throws a clear error when the shared refresh produces nothing", async () => {
+      const deps = makeDeps({
+        getAccountBySource: () => tracked,
+        rotateAccountCredentials: async () => null,
+      })
+      await assert.rejects(
+        () => refreshOAuthCredential(value, deps),
+        /Run `claude` to re-authenticate/,
+      )
+    })
   })
 })
 

@@ -56,6 +56,11 @@ async function loadCredentialsWithCountingKeychain(
       },
       thresholdMs?: number,
     ) => Promise<Creds | null>
+    rotateAccountCredentials: (account: {
+      label: string
+      source: string
+      credentials: Creds
+    }) => Promise<Creds | null>
     initAccounts: (accounts: unknown[]) => void
     invalidateCredentialCache: () => void
     refreshAccountsList: () => unknown[]
@@ -3041,6 +3046,57 @@ describe("getCredentialsWithBackoff (transient rate-limit resilience)", () => {
       // the sibling's fresh token from the store instead.
       const adopted = await credentialsModule.refreshIfNeeded(target)
       assert.equal(adopted?.accessToken, "sibling-rotated-token")
+    } finally {
+      globalThis.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+})
+
+describe("rotateAccountCredentials", () => {
+  it("rotates a still-valid token through one shared exchange", async () => {
+    const originalFetch = globalThis.fetch
+    const originalNow = Date.now
+    const now = 1_700_000_000_000
+    Date.now = () => now
+    let exchanges = 0
+    globalThis.fetch = (async () => {
+      exchanges += 1
+      return new Response(
+        JSON.stringify({
+          access_token: "sk-ant-oat01-rotated",
+          refresh_token: "sk-ant-ort01-rotated",
+          expires_in: 28_800,
+        }),
+        { status: 200 },
+      )
+    }) as typeof fetch
+
+    try {
+      const { credentialsModule, keychainModule } =
+        await loadCredentialsWithCountingKeychain(now + 8 * 60 * 60_000)
+      const target = makeAccount(now + 8 * 60 * 60_000)
+      credentialsModule.initAccounts([target])
+      keychainModule.__setCredentialsForSource("keychain", {
+        ...target.credentials,
+      })
+
+      // OpenCode's refresh callback and the plugin's own request path can ask
+      // at the same moment; rotating twice would burn one of the two tokens.
+      const [first, second] = await Promise.all([
+        credentialsModule.rotateAccountCredentials(target),
+        credentialsModule.rotateAccountCredentials(target),
+      ])
+
+      assert.equal(exchanges, 1)
+      assert.equal(first?.accessToken, "sk-ant-oat01-rotated")
+      assert.equal(second?.accessToken, "sk-ant-oat01-rotated")
+      assert.deepEqual(
+        keychainModule
+          .__getWrites()
+          .map((write) => [write.source, write.expectedPriorAccessToken]),
+        [["keychain", "existing-token"]],
+      )
     } finally {
       globalThis.fetch = originalFetch
       Date.now = originalNow

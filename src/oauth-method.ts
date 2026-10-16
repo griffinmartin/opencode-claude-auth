@@ -1,11 +1,13 @@
 import { Credential, Integration } from "@opencode/plugin"
 import type { IntegrationOAuthMethod } from "@opencode/plugin/promise/integration"
 import {
+  getAccountBySource,
   getCachedCredentials,
   loadPersistedAccountSource,
   refreshAccountsList,
   refreshViaOAuth,
   reloadCredentialsFromSource,
+  rotateAccountCredentials,
   saveAccountSource,
   setActiveAccountSource,
 } from "./credentials.ts"
@@ -48,6 +50,11 @@ export interface OAuthDeps {
     source: string,
     configDir: string | undefined,
   ) => ClaudeCredentials | null
+  getAccountBySource: (source: string) => ClaudeAccount | null
+  /** Single-flight, lock-guarded rotation that also persists the result. */
+  rotateAccountCredentials: (
+    account: ClaudeAccount,
+  ) => Promise<ClaudeCredentials | null>
   refreshViaOAuth: (refreshToken: string) => Promise<ClaudeCredentials | null>
   writeBackCredentials: (
     source: string,
@@ -199,6 +206,26 @@ export async function refreshOAuthCredential(
     })
   }
 
+  // An account the plugin tracks is also refreshed by the request path. Rotate
+  // it through that same single-flight, cross-process-locked refresh: two
+  // independent exchanges of one refresh token would leave one side holding
+  // a token the other already spent.
+  const account = source ? deps.getAccountBySource(source) : null
+  if (account) {
+    const rotated = await deps.rotateAccountCredentials(account)
+    if (!rotated)
+      throw new Error(
+        "Claude OAuth refresh failed. Run `claude` to re-authenticate.",
+      )
+    return Credential.OAuth.make({
+      ...value,
+      methodID: METHOD_ID,
+      access: rotated.accessToken,
+      refresh: rotated.refreshToken,
+      expires: rotated.expiresAt,
+    })
+  }
+
   // The reload above rejects a store whose access token is about to expire,
   // but its refresh token can still be newer than ours: after a sleep past
   // expiry, `claude` may have rotated it while our copy is already dead.
@@ -249,6 +276,8 @@ export const realOAuthDeps: OAuthDeps = {
   saveAccountSource,
   reloadCredentialsFromSource,
   readStoredCredentials: refreshAccount,
+  getAccountBySource,
+  rotateAccountCredentials,
   refreshViaOAuth,
   writeBackCredentials,
   log,

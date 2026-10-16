@@ -580,6 +580,18 @@ export async function refreshIfNeeded(
 }
 
 /**
+ * Rotate the account's tokens now, however long they have left. Goes through
+ * refreshIfNeeded, so it joins an in-flight exchange and takes the
+ * cross-process lock: OpenCode's own refresh callback and the request path
+ * can't both spend the same refresh token.
+ */
+export function rotateAccountCredentials(
+  account: ClaudeAccount,
+): Promise<ClaudeCredentials | null> {
+  return refreshIfNeeded(account, Number.POSITIVE_INFINITY)
+}
+
+/**
  * Re-read the account's own source and adopt a token another OpenCode instance
  * or the `claude` CLI has just written. Returns the adopted credentials when
  * the store now holds a distinct, still-valid token, else null.
