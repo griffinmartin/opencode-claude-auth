@@ -66,10 +66,10 @@
     "prepublishOnly": "pnpm run build && pnpm run test:isolated"
   },
   "dependencies": {
-    "@opencode/plugin": "latest"
+    "@opencode/plugin": "2.0.31"
   },
   "devDependencies": {
-    "@opencode/client": "latest",
+    "@opencode/client": "2.0.31",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
