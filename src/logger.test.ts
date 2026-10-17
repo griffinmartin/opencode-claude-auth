@@ -159,6 +159,19 @@ describe("logger", () => {
 })
 
 describe("redact", () => {
+  it("redacts nested, mixed-case credentials and bearer tokens inside errors", () => {
+    const result = redact({
+      Authorization: "Bearer sensitive-oauth-token",
+      error: "request failed with Bearer sensitive-oauth-token",
+      nested: {
+        credentials: [{ Refresh_Token: "secret-1" }],
+        headers: { "X-API-KEY": "secret-2" },
+      },
+    })
+    const serialized = JSON.stringify(result)
+    assert.doesNotMatch(serialized, /sensitive-oauth-token|secret-1|secret-2/)
+  })
+
   it("fully redacts accessToken", () => {
     const result = redact({
       accessToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.abc123",

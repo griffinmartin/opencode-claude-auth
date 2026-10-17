@@ -27,7 +27,8 @@ const sessionID = crypto.randomUUID()
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-function buildRequestURL(input: RequestInfo | URL) {
+/** Never attach a Claude subscription token to a configurable third-party URL. */
+export function assertTrustedClaudeEndpoint(input: RequestInfo | URL): URL {
   const raw =
     typeof input === "string"
       ? input
@@ -35,8 +36,24 @@ function buildRequestURL(input: RequestInfo | URL) {
         ? input.href
         : input.url
   const url = new URL(raw)
-  if (url.pathname === "/v1/messages" && !url.searchParams.has("beta"))
-    url.searchParams.set("beta", "true")
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "api.anthropic.com" ||
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/v1/messages"
+  ) {
+    throw new Error(
+      "Untrusted Claude subscription endpoint: only https://api.anthropic.com/v1/messages is permitted",
+    )
+  }
+  return url
+}
+
+function buildRequestURL(input: RequestInfo | URL) {
+  const url = assertTrustedClaudeEndpoint(input)
+  if (!url.searchParams.has("beta")) url.searchParams.set("beta", "true")
   return typeof input === "string" ? url.href : url
 }
 
@@ -49,6 +66,7 @@ export function buildRequestHeaders(
   modelID = "unknown",
   excludedBetas?: Set<string>,
 ) {
+  assertTrustedClaudeEndpoint(input)
   const headers = new Headers(
     input instanceof Request ? input.headers : undefined,
   )
@@ -113,6 +131,7 @@ export async function prepareClaudeRequest(
   accessToken: string,
   source?: string,
 ): Promise<Request> {
+  assertTrustedClaudeEndpoint(request)
   const body = await request.clone().text()
   const modelID = modelFromBody(body)
   const account = resolveAccount(source)
@@ -135,10 +154,12 @@ export async function prepareClaudeRequest(
     ),
     body: transformBody(body),
     signal: request.signal,
+    redirect: "error",
   })
 }
 
 async function sendRequest(request: Request, send: Fetch): Promise<Response> {
+  assertTrustedClaudeEndpoint(request)
   return fetchWithRetry(
     request.url,
     {
@@ -146,6 +167,7 @@ async function sendRequest(request: Request, send: Fetch): Promise<Response> {
       headers: request.headers,
       body: await request.clone().text(),
       signal: request.signal,
+      redirect: "error",
     },
     3,
     send,

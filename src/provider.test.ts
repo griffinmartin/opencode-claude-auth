@@ -22,6 +22,52 @@ const messageRequest = () =>
   })
 
 describe("Claude subscription transport", () => {
+  it("refuses to attach subscription credentials to untrusted endpoints", async () => {
+    const untrusted = [
+      "http://api.anthropic.com/v1/messages",
+      "https://api.anthropic.com.evil.example/v1/messages",
+      "https://evil.example/v1/messages",
+      "https://api.anthropic.com:8443/v1/messages",
+      "https://api.anthropic.com@evil.example/v1/messages",
+      "https://api.anthropic.com/v1/complete",
+      "https://localhost/v1/messages",
+    ]
+    for (const url of untrusted) {
+      assert.throws(
+        () => buildRequestHeaders(url, {}, "sensitive-token"),
+        /Untrusted Claude subscription endpoint/,
+        url,
+      )
+      let sent = false
+      // The Fetch API itself refuses userinfo URLs before the plugin runs.
+      if (!url.includes("@")) {
+        await assert.rejects(
+          () =>
+            claudeSubscriptionFetch("sensitive-token", async () => {
+              sent = true
+              return new Response("ok")
+            })(new Request(url, { method: "POST", body: "{}" })),
+          /Untrusted Claude subscription endpoint/,
+          url,
+        )
+      }
+      assert.equal(sent, false, `no request may be sent to ${url}`)
+    }
+  })
+
+  it("fails closed on HTTP redirects for both first request and retries", async () => {
+    const prepared = await prepareClaudeRequest(messageRequest(), "oauth-token")
+    assert.equal(prepared.redirect, "error")
+    const redirects: RequestInit["redirect"][] = []
+    await claudeSubscriptionFetch("oauth-token", async (_input, init) => {
+      redirects.push(init?.redirect)
+      return redirects.length === 1
+        ? new Response("retry", { status: 429 })
+        : new Response("ok")
+    })(messageRequest())
+    assert.deepEqual(redirects, ["error", "error"])
+  })
+
   it("uses bearer auth and removes x-api-key", () => {
     const headers = buildRequestHeaders(
       "https://api.anthropic.com/v1/messages",
