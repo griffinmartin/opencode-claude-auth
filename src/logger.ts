@@ -64,21 +64,26 @@ export function closeLogger(): void {
 }
 
 function redactValue(key: string, value: unknown): unknown {
+  if (
+    /^(access[_-]?token|refresh[_-]?token|authorization|proxy-authorization|x-api-key|api[_-]?key|cookie|set-cookie|client[_-]?secret|password)$/i.test(
+      key,
+    )
+  ) {
+    return "REDACTED"
+  }
+
+  if (Array.isArray(value)) return value.map((item) => redactValue("", item))
+  if (value && typeof value === "object")
+    return redact(value as Record<string, unknown>)
   if (typeof value !== "string") return value
-
-  if (key === "refreshToken" || key === "x-api-key") {
-    return "REDACTED"
-  }
-
-  if (key === "accessToken") {
-    return "REDACTED"
-  }
 
   if (JWT_PATTERN.test(value)) {
     return `${value.slice(0, 8)}...REDACTED`
   }
 
   return value
+    .replace(/\bBearer\s+[^\s,"']+/gi, "Bearer REDACTED")
+    .replace(/\bsk-ant-[A-Za-z0-9_-]+/gi, "REDACTED")
 }
 
 export function redact(data: Record<string, unknown>): Record<string, unknown> {

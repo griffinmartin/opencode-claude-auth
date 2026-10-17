@@ -337,6 +337,7 @@ export async function refreshViaOAuthDetailed(
     log("refresh_started", { source: "oauth" })
     const response = await fetchWithRetry(OAUTH_TOKEN_URL, {
       method: "POST",
+      redirect: "error",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         // OpenCode's default User-Agent can trigger a 429 at the token endpoint.

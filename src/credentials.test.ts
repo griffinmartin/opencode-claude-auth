@@ -1659,6 +1659,7 @@ describe("refreshViaOAuth", () => {
     let requestUrl: string | null = null
     let requestBody: string | null = null
     let requestMethod: string | undefined
+    let redirectMode: RequestInit["redirect"]
 
     globalThis.fetch = (async (
       url: string | URL,
@@ -1667,6 +1668,7 @@ describe("refreshViaOAuth", () => {
       requestUrl = String(url)
       requestBody = String(init?.body ?? "")
       requestMethod = init?.method
+      redirectMode = init?.redirect
       return new Response(
         JSON.stringify({
           access_token: "sk-ant-oat01-fresh",
@@ -1686,6 +1688,11 @@ describe("refreshViaOAuth", () => {
       assert.equal(result.expiresAt, now + 28_800 * 1000)
       assert.equal(requestUrl, OAUTH_TOKEN_URL)
       assert.equal(requestMethod, "POST")
+      assert.equal(
+        redirectMode,
+        "error",
+        "never forward OAuth refresh tokens in redirects",
+      )
       assert.match(String(requestBody), /grant_type=refresh_token/)
       assert.match(String(requestBody), /refresh_token=sk-ant-ort01-current/)
     } finally {
