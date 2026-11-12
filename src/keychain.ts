@@ -315,15 +315,88 @@ export function buildAccountLabels(
   })
 }
 
+/**
+ * Source id for a credentials-file account. One id per profile directory, so
+ * several Claude Code profiles (`~/.claude`, `~/.claude-work`, ...) are several
+ * distinct accounts instead of a single ambiguous `file` source.
+ */
+export function fileSourceFor(configDir: string): string {
+  return `file:${configDir}`
+}
+
+/** True for any credentials-file source, including per-directory ids. */
+export function isFileSource(source: string): boolean {
+  return source === "file" || source.startsWith("file:")
+}
+
+/** Directory encoded in a `file:<dir>` source, or null for a keychain source. */
+export function configDirFromFileSource(source: string): string | null {
+  if (!source.startsWith("file:")) return null
+  return source.slice("file:".length) || null
+}
+
+/**
+ * Every credentials-file profile directory on this machine, in preference
+ * order: $CLAUDE_CONFIG_DIR, ~/.claude, $CLAUDE_EXTRA_CONFIG_DIRS (colon
+ * separated), then any ~/.claude-* directory. Directories without a readable
+ * credentials file are skipped, so a half-initialised profile directory never
+ * shows up as an account.
+ */
+export function listFileConfigDirs(): string[] {
+  const dirs: string[] = []
+  const push = (dir: string | undefined) => {
+    if (!dir) return
+    const cleaned = dir.trim()
+    if (!cleaned || dirs.includes(cleaned)) return
+    if (!existsSync(join(cleaned, ".credentials.json"))) return
+    dirs.push(cleaned)
+  }
+
+  // A set CLAUDE_CONFIG_DIR stays the only profile, as documented: callers
+  // that pin a directory must not silently pick up the user's other ones.
+  const pinned = process.env.CLAUDE_CONFIG_DIR
+  if (pinned !== undefined) {
+    push(pinned)
+    return dirs
+  }
+
+  push(join(homedir(), ".claude"))
+  for (const part of (process.env.CLAUDE_EXTRA_CONFIG_DIRS ?? "").split(":")) {
+    push(part)
+  }
+  try {
+    for (const entry of readdirSync(homedir(), { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith(".claude-")) {
+        push(join(homedir(), entry.name))
+      }
+    }
+  } catch {
+    // Unreadable home directory: keep the directories already found.
+  }
+  return dirs
+}
+
 export function readAllClaudeAccounts(): ClaudeAccount[] {
   if (process.platform !== "darwin") {
-    const configDir =
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
-    const creds = readCredentialsFile(configDir)
-    if (!creds) return []
-    const email = readEmailFromConfigDir(configDir)
-    const [label] = buildAccountLabels([creds], [email])
-    return [{ label, source: "file", configDir, credentials: creds }]
+    const found: Array<{ configDir: string; credentials: ClaudeCredentials }> =
+      []
+    for (const configDir of listFileConfigDirs()) {
+      const credentials = readCredentialsFile(configDir)
+      if (credentials) found.push({ configDir, credentials })
+    }
+    if (found.length === 0) return []
+    const sources = found.map((entry) => fileSourceFor(entry.configDir))
+    const labels = buildAccountLabels(
+      found.map((entry) => entry.credentials),
+      found.map((entry) => readEmailFromConfigDir(entry.configDir)),
+      sources,
+    )
+    return found.map((entry, i) => ({
+      label: labels[i],
+      source: sources[i],
+      configDir: entry.configDir,
+      credentials: entry.credentials,
+    }))
   }
 
   const services = listClaudeKeychainServices()
@@ -353,7 +426,14 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     if (!creds) return []
     const email = readEmailFromConfigDir(configDir)
     const [label] = buildAccountLabels([creds], [email])
-    return [{ label, source: "file", configDir, credentials: creds }]
+    return [
+      {
+        label,
+        source: fileSourceFor(configDir),
+        configDir,
+        credentials: creds,
+      },
+    ]
   }
 
   const suffixToDir = discoverConfigDirsForKeychain(
@@ -486,10 +566,13 @@ export function writeBackCredentials(
     expiresAt: creds.expiresAt,
   }
 
-  if (source === "file") {
+  if (isFileSource(source)) {
     try {
       const dir =
-        configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+        configDir ??
+        configDirFromFileSource(source) ??
+        process.env.CLAUDE_CONFIG_DIR ??
+        join(homedir(), ".claude")
       const credPath = join(dir, ".credentials.json")
       const raw = readFileSync(credPath, "utf-8")
       if (
@@ -579,8 +662,10 @@ export function refreshAccount(
   source: string,
   configDir?: string,
 ): ClaudeCredentials | null {
-  if (source === "file") {
-    return readCredentialsFile(configDir)
+  if (isFileSource(source)) {
+    return readCredentialsFile(
+      configDir ?? configDirFromFileSource(source) ?? undefined,
+    )
   }
   const raw = readKeychainService(source)
   if (!raw) return null
