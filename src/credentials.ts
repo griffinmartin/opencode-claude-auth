@@ -762,27 +762,24 @@ async function performRefresh(
   // credentials to the shared store during the OAuth round trip — far
   // cheaper to re-read than to spawn the CLI.
   //
-  // The file-source exclusion below is a leftover from when refreshIfNeeded
-  // re-read file sources only. That rationale is gone and the exclusion now
-  // has none: a sibling process can write a file source mid-round-trip
-  // exactly as it can a keychain entry. Left in place only to keep this
-  // change off the file path; removing it is tracked as a follow-up.
-  if (target.source !== "file") {
-    let stored: ClaudeCredentials | null = null
-    try {
-      stored = refreshAccount(target.source, target.configDir)
-    } catch {
-      stored = null
-    }
-    if (
-      stored &&
-      stored.accessToken !== creds.accessToken &&
-      stored.expiresAt > Date.now() + 60_000
-    ) {
-      target.credentials = stored
-      log("refresh_adopted_external", { source: target.source })
-      return stored
-    }
+  // The file-source exclusion that used to guard this check is gone: file
+  // sources are per-profile ids now (`file:<dir>`), so a sibling process can
+  // write one mid-round-trip exactly as it can a keychain entry, and
+  // `refreshAccount` resolves the directory from the id itself.
+  let stored: ClaudeCredentials | null = null
+  try {
+    stored = refreshAccount(target.source, target.configDir)
+  } catch {
+    stored = null
+  }
+  if (
+    stored &&
+    stored.accessToken !== creds.accessToken &&
+    stored.expiresAt > Date.now() + 60_000
+  ) {
+    target.credentials = stored
+    log("refresh_adopted_external", { source: target.source })
+    return stored
   }
 
   log("refresh_fallback_cli", { source: target.source })

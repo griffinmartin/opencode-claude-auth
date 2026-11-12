@@ -17,7 +17,7 @@ Self-contained Anthropic auth provider for OpenCode 2 using your Claude Code sub
 
 ## How it works
 
-The plugin registers a Claude Code subscription auth method on OpenCode's built-in Anthropic provider. Run `/connect`, choose **Anthropic**, then **Import Claude Code subscription** — it reads OAuth tokens directly from the macOS Keychain (or `~/.claude/.credentials.json` — or `$CLAUDE_CONFIG_DIR/.credentials.json` if that env var is set — on other platforms) and hands them to OpenCode.
+The plugin registers a Claude Code subscription auth method on OpenCode's built-in Anthropic provider. Run `/connect`, choose **Anthropic**, then **Import Claude Code subscription** — it reads OAuth tokens directly from the macOS Keychain (or from Claude Code profile directories such as `~/.claude/.credentials.json` on other platforms) and hands them to OpenCode.
 
 OpenCode's native Anthropic provider handles prompt conversion and streaming. Session hooks add the Claude Code identity and adjust subscription requests to set `Authorization: Bearer` with the current access token (and strip `x-api-key`), translate tool names, and process responses. OpenCode owns the credential's lifecycle from there and calls back into the plugin to refresh it as needed. Refreshes go directly to Anthropic's OAuth endpoint (zero LLM tokens consumed); the plugin always checks the keychain first and adopts whatever is there if it differs from what OpenCode handed back, so an independent `claude` re-login or refresh doesn't leave OpenCode stuck retrying a dead token. It falls back to the `claude` CLI only in the narrow window where Claude Code will actually rotate the token.
 
@@ -135,13 +135,16 @@ OpenCode 2 replaced the plugin and auth APIs this plugin used under OpenCode 1, 
 The plugin checks these in order:
 
 1. macOS Keychain (all `Claude Code-credentials*` entries — multiple accounts are detected automatically)
-2. `~/.claude/.credentials.json` (fallback, works on all platforms; if `CLAUDE_CONFIG_DIR` is set, reads `$CLAUDE_CONFIG_DIR/.credentials.json` instead)
+2. Credentials files (fallback, works on all platforms): `~/.claude/.credentials.json`, every `~/.claude-*` profile directory, and any directory in `CLAUDE_EXTRA_CONFIG_DIRS`. If `CLAUDE_CONFIG_DIR` is set, that directory is the only profile read.
 
-## Multiple accounts (macOS)
+## Multiple accounts
 
-If you have [multiple Claude Code accounts](https://gist.github.com/KMJ-007/0979814968722051620461ab2aa01bf2) authenticated on macOS, they're all detected from the Keychain automatically and offered as a selection prompt when you run `/connect`. Each account is labeled by its subscription tier (Claude Pro, Claude Max, etc.).
+If you have [multiple Claude Code accounts](https://gist.github.com/KMJ-007/0979814968722051620461ab2aa01bf2), each one is detected and offered as a selection prompt when you run `/connect`:
 
-To switch accounts, re-run `/connect` and pick a different one. Your selection is persisted across sessions.
+- **macOS** — every `Claude Code-credentials*` entry in the Keychain.
+- **Linux/Windows** — every Claude Code profile directory holding a `.credentials.json`: `~/.claude`, any `~/.claude-*` directory (e.g. `~/.claude-work`, created by running `CLAUDE_CONFIG_DIR=~/.claude-work claude`), and directories listed in `CLAUDE_EXTRA_CONFIG_DIRS`. Set `CLAUDE_CONFIG_DIR` to restrict the plugin to a single profile.
+
+Each account is labeled by its subscription tier and email. To switch accounts, re-run `/connect` (or `opencode auth switch anthropic`) and pick a different one. Your selection is persisted across sessions, and refreshed tokens are written back to the profile directory the account came from.
 
 If only one account is found, the selection prompt is skipped and the plugin uses it directly.
 
@@ -210,7 +213,8 @@ All configurable parameters can be overridden via environment variables. If Anth
 | `ANTHROPIC_USER_AGENT`                     | Full User-Agent string (overrides CLI version)                                                                                                                                                                                                                                    | `claude-cli/{version} (external, sdk-cli)`                         |
 | `ANTHROPIC_BETA_FLAGS`                     | Comma-separated beta feature flags                                                                                                                                                                                                                                                | `baseBetas` list in [`src/model-config.ts`](src/model-config.ts)   |
 | `CLAUDE_AUTH_DEBUG`                        | Enable diagnostic logging (`1` for default path, or a custom file path)                                                                                                                                                                                                           | disabled                                                           |
-| `CLAUDE_CONFIG_DIR`                        | Claude Code config directory used for the credentials-file fallback (reads `$CLAUDE_CONFIG_DIR/.credentials.json`). macOS still checks the Keychain first.                                                                                                                        | `~/.claude`                                                        |
+| `CLAUDE_CONFIG_DIR`                        | Claude Code profile directory to read credentials from. When set, it is the only profile the plugin reads. macOS still checks the Keychain first.                                                                                                                                 | `~/.claude`                                                        |
+| `CLAUDE_EXTRA_CONFIG_DIRS`                 | Colon-separated extra Claude Code profile directories to offer as accounts, in addition to `~/.claude` and every `~/.claude-*` directory. Ignored when `CLAUDE_CONFIG_DIR` is set.                                                                                                | unset                                                              |
 | `OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS`        | Max ms the plugin waits when honouring a 429/529 `retry-after` header. Beyond this cap the response surfaces immediately so OpenCode doesn't appear to hang on hour-long quota resets.                                                                                            | `30000`                                                            |
 | `OPENCODE_CLAUDE_AUTH_TOOL_REPAIR`         | Strategy for reconciling `tool_use`/`tool_result` adjacency broken by OpenCode auto-compaction. `placeholder` synthesizes a paired result for orphaned `tool_use` blocks (lossless, preserves `thinking` blocks); `drop` removes orphaned blocks (omitting whole thinking turns). | `placeholder`                                                      |
 | `OPENCODE_CLAUDE_AUTH_REFRESH_WAIT_MS`     | Max ms a single request waits through a transient token-refresh rate-limit (429) before returning a retryable error instead of a hard "run `claude`".                                                                                                                             | `45000`                                                            |
@@ -230,7 +234,7 @@ export ANTHROPIC_CLI_VERSION=2.2.0
 - Uses OpenCode 2's native Anthropic provider for prompt conversion and streaming, while session HTTP hooks in `src/index.ts` apply the subscription transport in `src/provider.ts` only to Claude Code OAuth connections
 - The request hook sets `Authorization: Bearer` with the current OAuth access token and strips `x-api-key`, translates tool names between OpenCode and Anthropic API formats (adds/strips `mcp_` prefix), and sets required API headers (beta flags, billing, user-agent) with model-aware selection; the response hook buffers SSE streams at event boundaries for reliable tool name translation
 - Injects the Claude Code identity into system prompts via the `context`, `compaction`, `generate`, and `title` session hooks — OpenCode 2 dispatches a separate hook per request kind, and all four bill to the connected subscription
-- On macOS, enumerates all `Claude Code-credentials*` Keychain entries and labels them by subscription tier; multiple accounts are offered as a selection prompt during `/connect`
+- On macOS, enumerates all `Claude Code-credentials*` Keychain entries and labels them by subscription tier; multiple accounts are offered as a selection prompt during `/connect`. Off macOS it enumerates every Claude Code profile directory (`~/.claude`, `~/.claude-*`, `CLAUDE_EXTRA_CONFIG_DIRS`) the same way, each with its own `file:<dir>` source id so refreshes stay with the profile they came from.
 - OpenCode persists the resulting OAuth credential (access + refresh token) itself and calls back into the plugin's `refresh` hook whenever it decides one is needed — the plugin doesn't run its own background timer
 - Before ever attempting a network refresh, re-reads the keychain directly and adopts whatever is there if it differs from the token OpenCode handed back. This keeps things working if `claude` rotated credentials independently of this connection (an interactive re-login, its own periodic refresh, ...) — otherwise OpenCode would keep retrying the same now-dead refresh token on every call, forever
 - OpenCode's `refresh` callback and the request path share one in-flight refresh per account behind a cross-process lock, so they never spend the same single-use refresh token twice

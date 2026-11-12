@@ -15,10 +15,12 @@ import { pathToFileURL } from "node:url"
 import {
   buildAccountLabels,
   credentialBlobMatches,
+  fileSourceFor,
   keychainSuffixForDir,
   parseCredentials,
   readAllClaudeAccounts as readAllClaudeAccountsReal,
   readCredentialsFile,
+  refreshAccount,
   updateCredentialBlob,
   writeBackCredentials,
 } from "./keychain.ts"
@@ -1047,7 +1049,7 @@ describe("readAllClaudeAccounts (file source)", () => {
 
       const accounts = readAllClaudeAccountsReal()
       assert.equal(accounts.length, 1)
-      assert.equal(accounts[0].source, "file")
+      assert.equal(accounts[0].source, fileSourceFor(configDir))
       assert.equal(accounts[0].credentials.accessToken, "cfg-at")
     } finally {
       if (typeof originalHome === "string") process.env.HOME = originalHome
@@ -1059,7 +1061,202 @@ describe("readAllClaudeAccounts (file source)", () => {
       rmSync(configDir, { recursive: true, force: true })
     }
   })
+
+  it("treats a pinned CLAUDE_CONFIG_DIR as the only profile", async () => {
+    if (process.platform === "darwin") return
+
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-pinned-home-"),
+    )
+    const pinnedDir = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-pinned-cfg-"),
+    )
+    mkdirSync(join(tempHome, ".claude"), { recursive: true })
+    writeFileSync(
+      join(tempHome, ".claude", ".credentials.json"),
+      makeCreds("home-at"),
+    )
+
+    const saved = saveEnv([
+      "HOME",
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_EXTRA_CONFIG_DIRS",
+    ])
+    process.env.HOME = tempHome
+    process.env.CLAUDE_CONFIG_DIR = pinnedDir
+
+    try {
+      // The pinned directory has no credentials, and the home profile must not
+      // leak into a call that asked for one specific directory.
+      assert.deepEqual(readAllClaudeAccountsReal(), [])
+    } finally {
+      restoreEnv(saved)
+      rmSync(tempHome, { recursive: true, force: true })
+      rmSync(pinnedDir, { recursive: true, force: true })
+    }
+  })
+
+  it("lists every Claude Code profile directory as its own account", async () => {
+    if (process.platform === "darwin") return
+
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-profiles-home-"),
+    )
+    const personalDir = join(tempHome, ".claude")
+    const workDir = join(tempHome, ".claude-work")
+    mkdirSync(personalDir, { recursive: true })
+    mkdirSync(workDir, { recursive: true })
+
+    for (const [dir, email, accessToken] of [
+      [personalDir, "personal@example.com", "personal-at"],
+      [workDir, "work@example.com", "work-at"],
+    ] as const) {
+      writeFileSync(join(dir, ".credentials.json"), makeCreds(accessToken), {
+        encoding: "utf-8",
+        mode: 0o600,
+      })
+      writeFileSync(
+        join(dir, ".claude.json"),
+        JSON.stringify({ oauthAccount: { emailAddress: email } }),
+      )
+    }
+
+    const saved = saveEnv([
+      "HOME",
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_EXTRA_CONFIG_DIRS",
+    ])
+    process.env.HOME = tempHome
+    delete process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_EXTRA_CONFIG_DIRS
+
+    try {
+      const accounts = readAllClaudeAccountsReal()
+      assert.equal(accounts.length, 2)
+      assert.deepEqual(
+        accounts.map((a) => a.source).sort(),
+        [fileSourceFor(personalDir), fileSourceFor(workDir)].sort(),
+      )
+      assert.deepEqual(
+        accounts.map((a) => a.configDir).sort(),
+        [personalDir, workDir].sort(),
+      )
+      // Distinct sources keep the two profiles apart; distinct labels are
+      // what a `/connect` picker can show the user.
+      assert.equal(
+        new Set(accounts.map((a) => a.label)).size,
+        2,
+        "labels must identify the profile, not just the subscription tier",
+      )
+      const work = accounts.find((a) => a.configDir === workDir)
+      assert.equal(work?.credentials.accessToken, "work-at")
+      assert.match(work?.label ?? "", /work@example\.com/)
+    } finally {
+      restoreEnv(saved)
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("includes profiles named by CLAUDE_EXTRA_CONFIG_DIRS", async () => {
+    if (process.platform === "darwin") return
+
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-extra-home-"),
+    )
+    const extraDir = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-extra-cfg-"),
+    )
+    mkdirSync(join(tempHome, ".claude"), { recursive: true })
+    writeFileSync(
+      join(tempHome, ".claude", ".credentials.json"),
+      makeCreds("home-at"),
+    )
+    writeFileSync(join(extraDir, ".credentials.json"), makeCreds("extra-at"))
+
+    const saved = saveEnv([
+      "HOME",
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_EXTRA_CONFIG_DIRS",
+    ])
+    process.env.HOME = tempHome
+    delete process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_EXTRA_CONFIG_DIRS = extraDir
+
+    try {
+      const sources = readAllClaudeAccountsReal().map((a) => a.source)
+      assert.equal(sources.length, 2)
+      assert.ok(sources.includes(fileSourceFor(extraDir)))
+      assert.ok(sources.includes(fileSourceFor(join(tempHome, ".claude"))))
+    } finally {
+      restoreEnv(saved)
+      rmSync(tempHome, { recursive: true, force: true })
+      rmSync(extraDir, { recursive: true, force: true })
+    }
+  })
+
+  it("ignores profile directories without a credentials file", async () => {
+    if (process.platform === "darwin") return
+
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-empty-home-"),
+    )
+    mkdirSync(join(tempHome, ".claude-backup"), { recursive: true })
+
+    const saved = saveEnv([
+      "HOME",
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_EXTRA_CONFIG_DIRS",
+    ])
+    process.env.HOME = tempHome
+    delete process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_EXTRA_CONFIG_DIRS
+
+    try {
+      assert.deepEqual(readAllClaudeAccountsReal(), [])
+    } finally {
+      restoreEnv(saved)
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("reads and writes a profile from its source id alone", async () => {
+    const workDir = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-rd-work-"),
+    )
+    writeFileSync(join(workDir, ".credentials.json"), makeCreds("work-at"))
+
+    try {
+      const source = fileSourceFor(workDir)
+      assert.equal(refreshAccount(source)?.accessToken, "work-at")
+      // No configDir argument: the id itself has to identify the directory,
+      // which is what keeps two profiles' refreshes apart.
+      assert.equal(
+        writeBackCredentials(source, {
+          accessToken: "rotated-at",
+          refreshToken: "rotated-rt",
+          expiresAt: Date.now() + 3_600_000,
+        }),
+        true,
+      )
+      assert.equal(readCredentialsFile(workDir)?.accessToken, "rotated-at")
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
 })
+
+function saveEnv(keys: string[]): Map<string, string | undefined> {
+  const saved = new Map<string, string | undefined>()
+  for (const key of keys) saved.set(key, process.env[key])
+  return saved
+}
+
+function restoreEnv(saved: Map<string, string | undefined>) {
+  for (const [key, value] of saved) {
+    if (typeof value === "string") process.env[key] = value
+    else delete process.env[key]
+  }
+}
 
 function makeCreds(accessToken: string) {
   return JSON.stringify({
